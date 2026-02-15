@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            name: nvcheckup-windows-amd64.exe
+          - goos: linux
+            goarch: amd64
+            ext: ''
+            name: nvcheckup-linux-amd64
+          - goos: linux
+            goarch: arm64
+            ext: ''
+            name: nvcheckup-linux-arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o dist/${{ matrix.name }} ./cmd/nvcheckup
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum ${{ matrix.name }} > ${{ matrix.name }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/${{ matrix.name }}
+            dist/${{ matrix.name }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true
+          body: |
+            ## NVCheckup ${{ github.ref_name }}
+
+            Cross-platform NVIDIA diagnostic tool.
+
+            ### Downloads
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Windows | x86_64 | `nvcheckup-windows-amd64.exe` |
+            | Linux | x86_64 | `nvcheckup-linux-amd64` |
+            | Linux | ARM64 | `nvcheckup-linux-arm64` |
+
+            ### Verify Downloads
+
+            Each binary has a corresponding `.sha256` checksum file.
+
+            ```bash
+            sha256sum -c nvcheckup-linux-amd64.sha256
+            ```
+
+            ### Quick Start
+
+            ```bash
+            # Linux
+            chmod +x nvcheckup-linux-amd64
+            ./nvcheckup-linux-amd64 run --mode full --zip
+
+            # Windows
+            nvcheckup-windows-amd64.exe run --mode full --zip
+            ```
+
+            ---
+            *Unofficial community tool, not affiliated with NVIDIA Corporation.*

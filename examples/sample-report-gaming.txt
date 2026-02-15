@@ -1,0 +1,151 @@
+────────────────────────────────────────────────────────────────────────
+  NVCheckup v0.1.0 — NVIDIA Diagnostic Report
+  NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
+────────────────────────────────────────────────────────────────────────
+  Generated: 2025-01-15 14:32:10 UTC
+  Mode:      gaming
+  Platform:  windows
+  Runtime:   8.3s
+  Redaction: ENABLED (PII removed)
+────────────────────────────────────────────────────────────────────────
+
+== SUMMARY (paste this in support threads) ==
+
+NVCheckup v0.1.0 | 2025-01-15 14:32:10 UTC
+OS: Windows 11 23H2 (Build 22631) | Arch: amd64
+GPU: NVIDIA GeForce RTX 4070 | Driver: 566.36 | VRAM: 12288 MB
+CUDA (driver): 12.7
+Findings: 1 CRITICAL, 2 WARNING, 3 total
+
+────────────────────────────────────────────────────────────────────────
+
+== SYSTEM INFO ==
+
+  OS:           Windows 11 Pro 23H2 (Build 22631)
+  Architecture: amd64
+  CPU:          AMD Ryzen 9 7950X 16-Core Processor
+  RAM:          32768 MB
+  Storage Free: 245760 MB
+  Uptime:       3d 5h 20m
+  Boot Mode:    UEFI
+  Secure Boot:  Enabled
+────────────────────────────────────────────────────────────────────────
+
+== GPU INVENTORY ==
+
+  [GPU 0] NVIDIA GeForce RTX 4070
+    Vendor:    NVIDIA
+    Driver:    566.36
+    PCI Bus:   00000000:01:00.0
+    VRAM:      12288 MB total, 2048 MB used, 10240 MB free
+    Temp:      42°C
+    WDDM:      3.1
+
+  [GPU 1] Intel UHD Graphics 770
+    Vendor:    Intel
+    Driver:    31.0.101.5186
+
+  NVIDIA Driver: 566.36
+  CUDA (driver): 12.7
+────────────────────────────────────────────────────────────────────────
+
+== WINDOWS DETAILS ==
+
+  HAGS:           Enabled
+  Game Mode:      Enabled
+  Power Plan:     Balanced
+
+  Monitors:
+    - Display: 2560x1440 @ 165Hz
+
+  NVIDIA App:     v10.0.1.0
+
+  Overlay Software Detected:
+    - Xbox Game Bar (v6.24.10013.0)
+    - Discord (may have overlay)
+    - RivaTuner Statistics Server (RTSS)
+
+  Event Log Summary (last 30 days):
+    Driver Resets (4101):  7 event(s)
+    nvlddmkm Errors:      3 event(s)
+    WHEA Errors:           0 event(s)
+
+  Recent Windows Updates (last 60 days):
+    - KB5034123: Security Update (2025-01-09)
+    - KB5033375: Update (2024-12-12)
+────────────────────────────────────────────────────────────────────────
+
+== FINDINGS ==
+
+  Total: 1 CRITICAL, 2 WARNING, 3 INFO
+
+  [CRIT] #1: Display Driver Resets Detected (Event ID 4101)
+    Evidence:     7 driver reset event(s) in the last 30 days. Most recent: 2025-01-14 22:15.
+    Why:          Event ID 4101 indicates the display driver stopped responding and was recovered by Windows. Frequent occurrences cause black screens, freezes, and application crashes.
+    Next Steps:
+      • Update to the latest NVIDIA driver (clean install recommended).
+      • Check GPU temperatures — overheating can trigger driver resets.
+      • If overclocked, revert GPU clocks to stock settings.
+      • Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.
+      • If recent Windows Update coincides with issues, consider testing a rollback (understand security implications first).
+
+  [WARN] #2: Hardware-Accelerated GPU Scheduling (HAGS) is Enabled
+    Evidence:     HAGS is currently enabled.
+    Why:          HAGS can improve performance in some scenarios but has been reported to cause stuttering or instability in certain games or driver versions.
+    Next Steps:
+      • If experiencing stutter or instability, try disabling HAGS in Settings > System > Display > Graphics > Change default graphics settings.
+      • This is a reversible change.
+
+  [WARN] #3: Power Plan Not Set to High Performance
+    Evidence:     Active power plan: Balanced.
+    Why:          Balanced or Power Saver plans may throttle CPU/GPU performance. For gaming or CUDA workloads, High Performance is generally recommended.
+    Next Steps:
+      • Open Power Options and switch to 'High Performance' for testing.
+      • This is a reversible change with no risk.
+
+  [INFO] #4: Hybrid GPU Configuration Detected
+    Evidence:     Found 2 GPUs including NVIDIA + integrated graphics.
+    Why:          Hybrid GPU setups can sometimes route display output through the iGPU, causing confusion about which GPU is active.
+    Next Steps:
+      • Verify your application is using the NVIDIA GPU.
+      • Check NVIDIA Control Panel > Manage 3D Settings > Preferred Graphics Processor.
+
+  [INFO] #5: NVIDIA App Detected (v10.0.1.0)
+    Evidence:     NVIDIA App version 10.0.1.0 is installed.
+    Why:          The in-game overlay, Game Filters, and Photo Mode features can occasionally impact performance or cause alt-tab issues in some games.
+    Next Steps:
+      • If experiencing performance drops or alt-tab bugs, try disabling the in-game overlay temporarily.
+
+  [INFO] #6: Overlay/Recording Software Detected
+    Evidence:     Detected: Xbox Game Bar, Discord (may have overlay), RivaTuner Statistics Server (RTSS).
+    Why:          Multiple active overlays can compete for resources and cause frame pacing issues. This is informational.
+    Next Steps:
+      • If experiencing stutter, try disabling overlays one at a time to isolate the cause.
+
+────────────────────────────────────────────────────────────────────────
+
+== TOP ISSUES ==
+
+  1. [CRIT] Display Driver Resets Detected (Event ID 4101)
+  2. [WARN] Hardware-Accelerated GPU Scheduling (HAGS) is Enabled
+  3. [WARN] Power Plan Not Set to High Performance
+
+== RECOMMENDED NEXT STEPS ==
+
+  1. Update to the latest NVIDIA driver (clean install recommended).
+  2. Check GPU temperatures — overheating can trigger driver resets.
+  3. If overclocked, revert GPU clocks to stock settings.
+  4. Try disabling HAGS in Settings > Display > Graphics.
+  5. Switch power plan to High Performance for testing.
+
+────────────────────────────────────────────────────────────────────────
+
+== PRIVACY & DATA ==
+
+  This report was generated locally. No data was sent anywhere.
+  Redaction was applied to remove usernames, hostnames, and IP addresses.
+  NVCheckup does not modify your system, drivers, or settings.
+
+────────────────────────────────────────────────────────────────────────
+  NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
+────────────────────────────────────────────────────────────────────────
