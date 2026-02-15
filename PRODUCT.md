@@ -10,7 +10,7 @@
 NVCheckup is a single-binary, cross-platform diagnostic CLI for NVIDIA GPU environments. It scans your system in read-only mode, identifies common failure patterns across gaming, AI/CUDA, and streaming workloads, and generates clean, privacy-safe reports with ranked findings and actionable next steps.
 
 It is designed for three moments:
-1. **"I'm stuck."** — You have a black screen, a CUDA error, or dropped frames and don't know where to start.
+1. **"I'm stuck."** — You have a black screen, a CUDA error, or driver crashes and don't know where to start.
 2. **"I need to file a bug report."** — You need a clean system summary to paste in a forum or GitHub issue.
 3. **"What changed?"** — You updated a driver or kernel and need to compare before/after state.
 
@@ -87,7 +87,7 @@ nvcheckup doctor
 
 **Questions asked:**
 1. Primary use case (Gaming / AI / Streaming / General)
-2. Issue type (Crashes / Performance / GPU not detected / Encoding / Unsure)
+2. Issue type (Crashes / Performance / GPU not detected / Other / Unsure)
 3. Recent changes (OS update / Driver update / New hardware / Software install / None)
 4. Include extended logs? (Yes / No)
 5. Output format (Text only / Full bundle with JSON + Markdown + Zip)
@@ -127,8 +127,8 @@ Prints version string and disclaimer. Also accepts `--version` and `-v`.
 |------|-----------|----------|
 | `gaming` | GPU, driver, Windows event logs, overlays, power plan, HAGS | Black screens, crashes, stutter, driver resets |
 | `ai` | GPU, driver, Linux modules, Secure Boot, CUDA stack, PyTorch, TensorFlow | `torch.cuda.is_available() == False`, CUDA errors |
-| `streaming` | GPU, driver, Windows gaming checks, overlay detection, NVENC availability | OBS issues, dropped frames, encode errors |
-| `creator` | GPU, driver, Windows gaming checks, CUDA environment | DCC application readiness |
+| `streaming` | GPU, driver, Windows gaming checks, overlay detection | Recording/streaming software conflicts |
+| `creator` | GPU, driver, Windows gaming checks, CUDA environment | Creative application readiness |
 | `full` | Everything: all platform checks, AI/CUDA, WSL, VRAM analysis | When you don't know what's wrong |
 
 ---
@@ -250,7 +250,7 @@ The analyzer processes collected data through 31 diagnostic rules and produces r
 - **Evidence**: What was observed (with data)
 - **Why it matters**: Plain-language impact explanation
 - **Next steps**: Safe, reversible actions (never destructive)
-- **Category**: driver, gpu, cuda, ai, overlay, performance, hardware, secureboot, streaming, wsl, updates
+- **Category**: driver, gpu, cuda, ai, overlay, performance, hardware, secureboot, wsl, updates
 
 ### All 31 Diagnostic Rules
 
@@ -285,7 +285,7 @@ The analyzer processes collected data through 31 diagnostic rules and produces r
 **Streaming (1 rule):**
 | # | Title | Severity | Trigger |
 |---|-------|----------|---------|
-| 13 | No NVIDIA GPU Available for NVENC | CRIT | No NVIDIA GPU in inventory |
+| 13 | No NVIDIA GPU Available for Hardware Encoding | CRIT | No NVIDIA GPU in inventory |
 
 **Linux Kernel Modules (5 rules):**
 | # | Title | Severity | Trigger |

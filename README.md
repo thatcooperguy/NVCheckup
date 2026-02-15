@@ -15,7 +15,7 @@
 
 ## The Problem
 
-You are staring at a black screen. Or `torch.cuda.is_available()` returns `False` and you have burned two hours debugging. Or your stream is dropping frames and NVENC has vanished. You open Event Viewer, scroll through cryptic logs, google error codes, and paste fragments into forums hoping someone recognizes the pattern.
+You are staring at a black screen. Or `torch.cuda.is_available()` returns `False` and you have burned two hours debugging. Or your driver keeps crashing and Event Viewer shows errors you don't understand. You scroll through cryptic logs, google error codes, and paste fragments into forums hoping someone recognizes the pattern.
 
 **NVCheckup turns "I'm stuck" into "here's what's wrong and what to try next."**
 
@@ -122,9 +122,9 @@ NVCheckup checks your entire CUDA stack — driver, toolkit, cuDNN, Python envir
 
 ### Streamers and Creators
 
-NVENC is unavailable in OBS. Dropped frames during recording. Encode errors you cannot explain.
+Dropped frames during recording. Overlay conflicts causing stutter. Driver issues affecting your creative workflow.
 
-NVCheckup verifies your GPU supports hardware encoding, checks driver health, and identifies configuration problems.
+NVCheckup checks your driver health, identifies overlay conflicts, and flags configuration problems that affect recording and creative applications.
 
 ### IT / Power Users
 
@@ -140,8 +140,8 @@ NVCheckup gives you `--json` output, `snapshot` + `compare` commands, and automa
 |------|-------|----------|
 | `gaming` | Driver stability, overlays, event logs, power settings | Black screens, crashes, stutter |
 | `ai` | CUDA stack, PyTorch/TF probes, kernel modules | `torch.cuda.is_available() == False` |
-| `streaming` | NVENC availability, capture/encode checks | OBS issues, dropped frames |
-| `creator` | DCC readiness, CUDA + driver health | Professional application issues |
+| `streaming` | Driver health, overlay detection, capture checks | Recording/streaming issues, dropped frames |
+| `creator` | Driver health, CUDA environment, creative readiness | Creative application issues |
 | `full` | Everything | When you are not sure what is wrong |
 
 ```bash
