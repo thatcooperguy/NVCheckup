@@ -1,0 +1,26 @@
+{
+  "description": "NVIDIA Xid error code reference. Used by Linux Xid error collector and analyzer.",
+  "codes": {
+    "8":   {"severity": "WARN", "summary": "GPU stopped processing", "detail": "The GPU stopped processing requests. May indicate driver bug or hardware issue."},
+    "13":  {"severity": "CRIT", "summary": "Graphics engine fault", "detail": "The GPU graphics engine experienced a fault. Commonly caused by overclocking, overheating, or driver bugs."},
+    "31":  {"severity": "CRIT", "summary": "GPU memory page fault", "detail": "Invalid GPU memory access. May indicate faulty VRAM, driver bug, or application error."},
+    "32":  {"severity": "CRIT", "summary": "Invalid or corrupted push buffer", "detail": "The GPU command buffer was corrupted. Often indicates driver or application bug."},
+    "38":  {"severity": "WARN", "summary": "Driver firmware mismatch", "detail": "GPU firmware version does not match the driver expectation."},
+    "43":  {"severity": "CRIT", "summary": "GPU stopped processing", "detail": "The GPU stopped responding to the driver. Severe — may require reboot."},
+    "45":  {"severity": "WARN", "summary": "Preemptive cleanup", "detail": "Driver performed preemptive cleanup due to previous errors."},
+    "48":  {"severity": "CRIT", "summary": "Double-bit ECC error", "detail": "Uncorrectable memory error detected. Indicates failing VRAM — hardware replacement may be needed."},
+    "56":  {"severity": "WARN", "summary": "Display engine error", "detail": "Error in the display engine pipeline. May cause display glitches or blackouts."},
+    "57":  {"severity": "WARN", "summary": "Encoder/decoder error", "detail": "Hardware video encoder or decoder encountered an error."},
+    "61":  {"severity": "WARN", "summary": "Internal microcontroller error", "detail": "An internal GPU microcontroller reported an error."},
+    "62":  {"severity": "WARN", "summary": "Internal microcontroller breakpoint", "detail": "An internal GPU microcontroller hit a breakpoint/exception."},
+    "63":  {"severity": "CRIT", "summary": "Row remapper failure", "detail": "GPU memory row remapping exhausted. VRAM is degrading — hardware replacement recommended."},
+    "64":  {"severity": "WARN", "summary": "Row remapper recording failure", "detail": "Failed to record row remapping entry."},
+    "68":  {"severity": "WARN", "summary": "Video processor exception", "detail": "The GPU video processor encountered an exception."},
+    "69":  {"severity": "CRIT", "summary": "Graphics engine exception", "detail": "The GPU graphics engine raised an exception. Often related to overclocking or failing hardware."},
+    "79":  {"severity": "CRIT", "summary": "GPU has fallen off the bus", "detail": "The GPU is no longer accessible via PCIe. Critical hardware issue — check PCIe slot, power connections, and GPU seating. May indicate failing GPU or PSU."},
+    "92":  {"severity": "WARN", "summary": "High single-bit ECC rate", "detail": "Elevated rate of correctable ECC errors. VRAM may be degrading."},
+    "94":  {"severity": "WARN", "summary": "Contained ECC error", "detail": "ECC error was contained and corrected, but frequency should be monitored."},
+    "95":  {"severity": "CRIT", "summary": "Uncontained ECC error", "detail": "Uncontained ECC error — data corruption possible. Monitor closely."},
+    "119": {"severity": "CRIT", "summary": "GSP firmware error", "detail": "GPU System Processor firmware encountered an error. Often requires driver reinstall or GPU reset."}
+  }
+}

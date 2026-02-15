@@ -35,31 +35,45 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 	var allErrors []types.CollectorError
 
 	// Phase 1: Collect system info
-	printFn("[1/5] Collecting system information...")
+	printFn("[1/7] Collecting system information...")
 	sysInfo, sysErrs := common.CollectSystemInfo(cfg.Timeout)
 	r.System = sysInfo
 	allErrors = append(allErrors, sysErrs...)
 
 	// Phase 2: Collect GPU info
-	printFn("[2/5] Detecting GPUs and drivers...")
+	printFn("[2/7] Detecting GPUs and drivers...")
 	gpus, driver, gpuErrs := common.CollectGPUInfo(cfg.Timeout)
 	r.GPUs = gpus
 	r.Driver = driver
 	allErrors = append(allErrors, gpuErrs...)
 
-	// Phase 3: Platform-specific collection
-	printFn("[3/5] Running platform-specific checks...")
+	// Phase 3: GPU thermal + PCIe
+	printFn("[3/7] Collecting GPU thermal and PCIe data...")
+	thermalInfo, thermalErrs := common.CollectThermalInfo(cfg.Timeout)
+	if thermalInfo.TemperatureC > 0 || thermalInfo.PowerState != "" {
+		r.Thermal = &thermalInfo
+	}
+	allErrors = append(allErrors, thermalErrs...)
+
+	pcieInfo, pcieErrs := common.CollectPCIeInfo(cfg.Timeout)
+	if pcieInfo.CurrentSpeed != "" || pcieInfo.MaxSpeed != "" {
+		r.PCIe = &pcieInfo
+	}
+	allErrors = append(allErrors, pcieErrs...)
+
+	// Phase 4: Platform-specific collection (Windows/Linux)
+	printFn("[4/7] Running platform-specific checks...")
 	platformErrs := collectPlatformSpecific(r, cfg)
 	allErrors = append(allErrors, platformErrs...)
 
-	// Phase 4: AI/CUDA checks (if applicable mode)
+	// Phase 5: AI/CUDA checks (if applicable mode)
 	if cfg.Mode == types.ModeAI || cfg.Mode == types.ModeFull || cfg.Mode == types.ModeCreator {
-		printFn("[4/5] Checking AI/CUDA environment...")
+		printFn("[5/7] Checking AI/CUDA environment...")
 		aiInfo, aiErrs := ai.CollectAIInfo(cfg.Timeout)
 		r.AI = &aiInfo
 		allErrors = append(allErrors, aiErrs...)
 	} else {
-		printFn("[4/5] Skipping AI checks (not selected)...")
+		printFn("[5/7] Skipping AI checks (not selected)...")
 	}
 
 	// WSL detection (full mode or AI mode)
@@ -71,10 +85,22 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 		allErrors = append(allErrors, wslErrs...)
 	}
 
+	// Phase 6: Network diagnostics (if enabled or relevant mode)
+	if cfg.NetworkTest || cfg.Mode == types.ModeGaming || cfg.Mode == types.ModeStreaming || cfg.Mode == types.ModeFull {
+		printFn("[6/7] Running network diagnostics...")
+		netInfo, netErrs := common.CollectNetworkInfo(cfg.Timeout)
+		if netInfo.InterfaceName != "" {
+			r.Network = &netInfo
+		}
+		allErrors = append(allErrors, netErrs...)
+	} else {
+		printFn("[6/7] Skipping network checks...")
+	}
+
 	r.CollectorErrors = allErrors
 
-	// Phase 5: Analyze and produce findings
-	printFn("[5/5] Analyzing results...")
+	// Phase 7: Analyze and produce findings
+	printFn("[7/7] Analyzing results...")
 	analyzer.Analyze(r, cfg.Mode)
 
 	// Calculate runtime
@@ -169,6 +195,13 @@ func applyRedaction(r *types.Report, redactor *redact.Redactor) {
 		r.AI.NvccPath = redactor.RedactPath(r.AI.NvccPath)
 		for i := range r.AI.PythonVersions {
 			r.AI.PythonVersions[i].Path = redactor.RedactPath(r.AI.PythonVersions[i].Path)
+		}
+	}
+
+	// Redact network hop addresses
+	if r.Network != nil {
+		for i := range r.Network.Hops {
+			r.Network.Hops[i].Address = redactor.Redact(r.Network.Hops[i].Address)
 		}
 	}
 }

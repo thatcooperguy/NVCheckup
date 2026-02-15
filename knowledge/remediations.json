@@ -1,0 +1,65 @@
+{
+  "description": "Remediation actions available in NVCheckup. Each action has platform, risk level, and undo strategy.",
+  "actions": [
+    {
+      "id": "set-high-performance",
+      "title": "Switch Power Plan to High Performance",
+      "risk": "low",
+      "platform": "windows",
+      "description": "Changes the Windows power plan to High Performance using powercfg. This prevents CPU/GPU throttling during demanding workloads.",
+      "dry_run_desc": "Would run: powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+      "undo_desc": "Restore the previous power plan by GUID captured before the change.",
+      "needs_reboot": false,
+      "needs_admin": true,
+      "finding_ids": ["power-plan-suboptimal"]
+    },
+    {
+      "id": "disable-hags",
+      "title": "Disable Hardware-Accelerated GPU Scheduling",
+      "risk": "low",
+      "platform": "windows",
+      "description": "Sets the HAGS registry key to Disabled. HAGS can cause stutter and instability with certain driver versions.",
+      "dry_run_desc": "Would set registry HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\HwSchMode to 1 (Disabled).",
+      "undo_desc": "Restore HwSchMode to 2 (Enabled).",
+      "needs_reboot": true,
+      "needs_admin": true,
+      "finding_ids": ["hags-enabled"]
+    },
+    {
+      "id": "disable-game-mode",
+      "title": "Disable Windows Game Mode",
+      "risk": "low",
+      "platform": "windows",
+      "description": "Disables Windows Game Mode which can interfere with some games and GPU scheduling.",
+      "dry_run_desc": "Would set registry HKCU\\Software\\Microsoft\\GameBar\\AutoGameModeEnabled to 0.",
+      "undo_desc": "Restore AutoGameModeEnabled to 1.",
+      "needs_reboot": false,
+      "needs_admin": false,
+      "finding_ids": []
+    },
+    {
+      "id": "blacklist-nouveau",
+      "title": "Blacklist Nouveau Driver",
+      "risk": "medium",
+      "platform": "linux",
+      "description": "Creates /etc/modprobe.d/blacklist-nouveau.conf to prevent the open-source nouveau driver from loading, which conflicts with the proprietary NVIDIA driver.",
+      "dry_run_desc": "Would create /etc/modprobe.d/blacklist-nouveau.conf with 'blacklist nouveau' and 'options nouveau modeset=0'. Then run update-initramfs or dracut.",
+      "undo_desc": "Remove /etc/modprobe.d/blacklist-nouveau.conf and rebuild initramfs.",
+      "needs_reboot": true,
+      "needs_admin": true,
+      "finding_ids": ["nouveau-active"]
+    },
+    {
+      "id": "update-ldconfig",
+      "title": "Refresh Library Cache (ldconfig)",
+      "risk": "low",
+      "platform": "linux",
+      "description": "Runs ldconfig to refresh the shared library cache, which can fix 'libcuda.so not found' issues after driver installation.",
+      "dry_run_desc": "Would run: sudo ldconfig",
+      "undo_desc": "No undo needed — ldconfig only refreshes the cache from existing library paths.",
+      "needs_reboot": false,
+      "needs_admin": true,
+      "finding_ids": ["libcuda-not-found"]
+    }
+  ]
+}

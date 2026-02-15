@@ -16,6 +16,10 @@ dist/
 # Go workspace file
 go.work
 
+# Local tools and build cache
+.local/
+.claude/
+
 # IDE
 .idea/
 .vscode/

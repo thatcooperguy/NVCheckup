@@ -1,0 +1,453 @@
+{
+  "description": "Diagnostic rules for NVCheckup. Shared between Go and Rust implementations.",
+  "version": "0.2.0",
+  "rules": [
+    {
+      "id": "no-nvidia-gpu",
+      "title": "No NVIDIA GPU Detected",
+      "category": "gpu",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "No NVIDIA GPU was found in the system inventory."
+    },
+    {
+      "id": "hybrid-gpu",
+      "title": "Hybrid GPU Configuration Detected",
+      "category": "gpu",
+      "severity": "INFO",
+      "base_confidence": 90,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Both NVIDIA and integrated graphics detected."
+    },
+    {
+      "id": "driver-not-detected",
+      "title": "NVIDIA Driver Version Not Detected",
+      "category": "driver",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "nvidia-smi did not return a driver version."
+    },
+    {
+      "id": "nvidia-smi-missing",
+      "title": "nvidia-smi Not Found in PATH",
+      "category": "driver",
+      "severity": "WARN",
+      "base_confidence": 90,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "The nvidia-smi utility was not found."
+    },
+    {
+      "id": "driver-resets-4101",
+      "title": "Display Driver Resets Detected (Event ID 4101)",
+      "category": "driver",
+      "severity": "WARN",
+      "severity_escalation": {"threshold": 3, "escalated": "CRIT"},
+      "base_confidence": 90,
+      "modes": ["gaming", "streaming", "creator", "full"],
+      "platform": "windows",
+      "description": "Event ID 4101 indicates the display driver stopped responding.",
+      "remediation_id": null
+    },
+    {
+      "id": "nvlddmkm-errors",
+      "title": "nvlddmkm Driver Errors Detected",
+      "category": "driver",
+      "severity": "WARN",
+      "severity_escalation": {"threshold": 5, "escalated": "CRIT"},
+      "base_confidence": 90,
+      "modes": ["gaming", "streaming", "creator", "full"],
+      "platform": "windows",
+      "description": "nvlddmkm kernel-mode driver errors detected."
+    },
+    {
+      "id": "whea-errors",
+      "title": "Hardware Errors (WHEA) Detected",
+      "category": "hardware",
+      "severity": "WARN",
+      "base_confidence": 75,
+      "modes": ["gaming", "streaming", "creator", "full"],
+      "platform": "windows",
+      "description": "WHEA hardware errors indicate hardware-level issues."
+    },
+    {
+      "id": "power-plan-suboptimal",
+      "title": "Power Plan Not Set to High Performance",
+      "category": "performance",
+      "severity": "INFO",
+      "base_confidence": 40,
+      "modes": ["gaming", "streaming", "creator", "full"],
+      "platform": "windows",
+      "remediation_id": "set-high-performance",
+      "description": "Balanced or Power Saver plans may throttle performance."
+    },
+    {
+      "id": "hags-enabled",
+      "title": "Hardware-Accelerated GPU Scheduling (HAGS) is Enabled",
+      "category": "performance",
+      "severity": "INFO",
+      "base_confidence": 45,
+      "modes": ["gaming", "streaming", "full"],
+      "platform": "windows",
+      "remediation_id": "disable-hags",
+      "description": "HAGS can cause stuttering in certain games or driver versions."
+    },
+    {
+      "id": "recent-windows-updates",
+      "title": "Recent Windows Updates Installed",
+      "category": "updates",
+      "severity": "INFO",
+      "base_confidence": 35,
+      "modes": ["gaming", "full"],
+      "platform": "windows",
+      "description": "Windows Updates can occasionally introduce driver compatibility issues."
+    },
+    {
+      "id": "nvidia-app-detected",
+      "title": "NVIDIA App / GeForce Experience Detected",
+      "category": "overlay",
+      "severity": "INFO",
+      "base_confidence": 50,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "NVIDIA overlay software detected."
+    },
+    {
+      "id": "overlay-software",
+      "title": "Overlay/Recording Software Detected",
+      "category": "overlay",
+      "severity": "INFO",
+      "base_confidence": 50,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "Multiple overlays can compete for resources."
+    },
+    {
+      "id": "no-nvidia-gpu-encoding",
+      "title": "No NVIDIA GPU Available for Hardware Encoding",
+      "category": "gpu",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["streaming", "full"],
+      "description": "NVIDIA GPU not detected — hardware encoding is not available."
+    },
+    {
+      "id": "nouveau-active",
+      "title": "Nouveau Driver is Active (Instead of NVIDIA)",
+      "category": "driver",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "remediation_id": "blacklist-nouveau",
+      "description": "The open-source nouveau driver is loaded instead of proprietary NVIDIA."
+    },
+    {
+      "id": "nvidia-module-not-loaded",
+      "title": "NVIDIA Kernel Module Not Loaded",
+      "category": "driver",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "description": "The nvidia kernel module is not loaded."
+    },
+    {
+      "id": "no-dev-nvidia",
+      "title": "No /dev/nvidia* Device Nodes Found",
+      "category": "driver",
+      "severity": "WARN",
+      "base_confidence": 85,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "description": "NVIDIA module loaded but device nodes are missing."
+    },
+    {
+      "id": "libcuda-not-found",
+      "title": "libcuda.so Not Found",
+      "category": "cuda",
+      "severity": "WARN",
+      "base_confidence": 85,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "remediation_id": "update-ldconfig",
+      "description": "libcuda.so could not be located."
+    },
+    {
+      "id": "dkms-failure",
+      "title": "DKMS Build Failure Detected",
+      "category": "driver",
+      "severity": "CRIT",
+      "base_confidence": 90,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "description": "DKMS failed to build NVIDIA modules for current kernel."
+    },
+    {
+      "id": "secureboot-blocking",
+      "title": "Secure Boot Enabled — NVIDIA Module May Be Blocked",
+      "category": "secureboot",
+      "severity": "CRIT",
+      "base_confidence": 85,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "description": "Secure Boot is on and NVIDIA module is not loaded."
+    },
+    {
+      "id": "secureboot-ok",
+      "title": "Secure Boot Enabled — NVIDIA Module Loading Successfully",
+      "category": "secureboot",
+      "severity": "INFO",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "platform": "linux",
+      "description": "Secure Boot is on and module signing is configured correctly."
+    },
+    {
+      "id": "cuda-mismatch",
+      "title": "CUDA Toolkit / Driver Version Mismatch",
+      "category": "cuda",
+      "severity": "WARN",
+      "base_confidence": 80,
+      "modes": ["ai", "creator", "full"],
+      "description": "Major version difference between CUDA toolkit and driver."
+    },
+    {
+      "id": "pytorch-import-error",
+      "title": "PyTorch Import Error",
+      "category": "ai",
+      "severity": "WARN",
+      "base_confidence": 90,
+      "modes": ["ai", "full"],
+      "description": "PyTorch could not be imported."
+    },
+    {
+      "id": "pytorch-cpu-only",
+      "title": "PyTorch Installed Without CUDA Support",
+      "category": "ai",
+      "severity": "WARN",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "description": "CPU-only PyTorch build detected."
+    },
+    {
+      "id": "pytorch-cuda-no-gpu",
+      "title": "PyTorch CUDA Available but GPU Not Accessible",
+      "category": "ai",
+      "severity": "WARN",
+      "base_confidence": 80,
+      "modes": ["ai", "full"],
+      "description": "PyTorch has CUDA but cannot access the GPU."
+    },
+    {
+      "id": "pytorch-cuda-ok",
+      "title": "PyTorch CUDA is Working",
+      "category": "ai",
+      "severity": "INFO",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "description": "PyTorch GPU acceleration is functional."
+    },
+    {
+      "id": "tensorflow-import-error",
+      "title": "TensorFlow Import Error",
+      "category": "ai",
+      "severity": "WARN",
+      "base_confidence": 90,
+      "modes": ["ai", "full"],
+      "description": "TensorFlow could not be imported."
+    },
+    {
+      "id": "tensorflow-no-gpu",
+      "title": "TensorFlow Cannot See GPU",
+      "category": "ai",
+      "severity": "WARN",
+      "base_confidence": 85,
+      "modes": ["ai", "full"],
+      "description": "TensorFlow detected no GPU devices."
+    },
+    {
+      "id": "tensorflow-gpu-ok",
+      "title": "TensorFlow GPU is Working",
+      "category": "ai",
+      "severity": "INFO",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "description": "TensorFlow GPU acceleration is functional."
+    },
+    {
+      "id": "wsl-no-dxg",
+      "title": "WSL2 GPU Device (/dev/dxg) Not Found",
+      "category": "wsl",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["ai", "full"],
+      "description": "/dev/dxg missing in WSL2 environment."
+    },
+    {
+      "id": "wsl-dxg-smi-fail",
+      "title": "WSL2: /dev/dxg Exists but nvidia-smi Fails",
+      "category": "wsl",
+      "severity": "WARN",
+      "base_confidence": 80,
+      "modes": ["ai", "full"],
+      "description": "GPU device exists but NVIDIA tools are misconfigured in WSL2."
+    },
+    {
+      "id": "low-vram",
+      "title": "Low VRAM Detected",
+      "category": "hardware",
+      "severity": "INFO",
+      "base_confidence": 90,
+      "modes": ["full"],
+      "description": "GPU has less than 4 GB VRAM."
+    },
+    {
+      "id": "thermal-throttling",
+      "title": "GPU Thermal Throttling Active",
+      "category": "performance",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "GPU is actively thermal throttling — temperature exceeds safe limits or slowdown is active."
+    },
+    {
+      "id": "gpu-running-hot",
+      "title": "GPU Running Hot",
+      "category": "performance",
+      "severity": "WARN",
+      "base_confidence": 80,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "GPU temperature is elevated (75-85°C)."
+    },
+    {
+      "id": "fan-not-spinning",
+      "title": "GPU Fan Not Spinning at Elevated Temperature",
+      "category": "hardware",
+      "severity": "WARN",
+      "base_confidence": 70,
+      "modes": ["gaming", "ai", "full"],
+      "description": "Fan speed is 0% while GPU temperature exceeds 60°C."
+    },
+    {
+      "id": "pcie-downshift",
+      "title": "PCIe Link Downshifted",
+      "category": "performance",
+      "severity": "WARN",
+      "base_confidence": 90,
+      "modes": ["gaming", "ai", "full"],
+      "description": "PCIe link is running below maximum capability."
+    },
+    {
+      "id": "pcie-legacy-speed",
+      "title": "PCIe Running at Legacy Speed",
+      "category": "performance",
+      "severity": "INFO",
+      "base_confidence": 85,
+      "modes": ["gaming", "ai", "full"],
+      "description": "PCIe link is Gen1 or Gen2 — significantly below modern GPU capability."
+    },
+    {
+      "id": "mixed-refresh-rate",
+      "title": "Mixed Refresh Rate Multi-Monitor Setup",
+      "category": "display",
+      "severity": "INFO",
+      "base_confidence": 65,
+      "modes": ["gaming", "full"],
+      "description": "Monitors with different refresh rates detected — can cause frame pacing issues."
+    },
+    {
+      "id": "display-chain-complex",
+      "title": "High Display Chain Complexity",
+      "category": "display",
+      "severity": "INFO",
+      "base_confidence": 50,
+      "modes": ["gaming", "full"],
+      "description": "3+ monitors on the same GPU may affect gaming performance."
+    },
+    {
+      "id": "high-jitter",
+      "title": "High Network Jitter Detected",
+      "category": "network",
+      "severity": "WARN",
+      "base_confidence": 85,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "Network jitter exceeds 15ms — may cause lag and stutter in online applications."
+    },
+    {
+      "id": "packet-loss",
+      "title": "Packet Loss Detected",
+      "category": "network",
+      "severity": "WARN",
+      "severity_escalation": {"threshold": 5, "escalated": "CRIT"},
+      "base_confidence": 90,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "Network packet loss detected."
+    },
+    {
+      "id": "wifi-congestion",
+      "title": "Wi-Fi Congestion Likely",
+      "category": "network",
+      "severity": "INFO",
+      "base_confidence": 60,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "Connected on 2.4GHz Wi-Fi with weak signal."
+    },
+    {
+      "id": "dns-slow",
+      "title": "Slow DNS Resolution",
+      "category": "network",
+      "severity": "INFO",
+      "base_confidence": 70,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "DNS resolution exceeds 100ms."
+    },
+    {
+      "id": "xid-errors",
+      "title": "NVIDIA Xid Errors Detected",
+      "category": "hardware",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["gaming", "ai", "full"],
+      "platform": "linux",
+      "description": "GPU hardware errors (Xid) found in kernel logs."
+    },
+    {
+      "id": "llvmpipe-fallback",
+      "title": "Software Rendering (llvmpipe) Active",
+      "category": "driver",
+      "severity": "CRIT",
+      "base_confidence": 95,
+      "modes": ["gaming", "ai", "full"],
+      "platform": "linux",
+      "description": "GPU is not being used for rendering — falling back to CPU-based llvmpipe."
+    },
+    {
+      "id": "wayland-nvidia-issue",
+      "title": "Wayland Session with NVIDIA — Known Compatibility Issues",
+      "category": "driver",
+      "severity": "WARN",
+      "base_confidence": 70,
+      "modes": ["gaming", "full"],
+      "platform": "linux",
+      "description": "Wayland + NVIDIA can cause screen tearing, window glitches, and application crashes."
+    },
+    {
+      "id": "gpu-power-state-stuck",
+      "title": "GPU Power State Not Reaching Maximum Performance",
+      "category": "performance",
+      "severity": "WARN",
+      "base_confidence": 75,
+      "modes": ["gaming", "ai", "full"],
+      "description": "GPU power state is stuck above P0 — not reaching full performance."
+    },
+    {
+      "id": "network-healthy",
+      "title": "Network Appears Healthy",
+      "category": "network",
+      "severity": "INFO",
+      "base_confidence": 80,
+      "modes": ["gaming", "streaming", "full"],
+      "description": "Local network and LAN appear healthy. If experiencing online issues, they may be upstream or service-side."
+    }
+  ]
+}

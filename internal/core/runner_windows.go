@@ -8,11 +8,21 @@ import (
 )
 
 func collectPlatformSpecific(r *types.Report, cfg types.RunConfig) []types.CollectorError {
+	var allErrs []types.CollectorError
+
 	if cfg.Mode == types.ModeGaming || cfg.Mode == types.ModeStreaming ||
 		cfg.Mode == types.ModeCreator || cfg.Mode == types.ModeFull {
 		winInfo, winErrs := winCollector.CollectWindowsInfo(cfg.Timeout, cfg.IncludeLogs)
 		r.Windows = &winInfo
-		return winErrs
+		allErrs = append(allErrs, winErrs...)
 	}
-	return nil
+
+	// Collect display info for gaming, streaming, and full modes
+	if cfg.Mode == types.ModeGaming || cfg.Mode == types.ModeStreaming || cfg.Mode == types.ModeFull {
+		displays, displayErrs := winCollector.CollectDisplayInfo(cfg.Timeout)
+		r.Displays = displays
+		allErrs = append(allErrs, displayErrs...)
+	}
+
+	return allErrs
 }

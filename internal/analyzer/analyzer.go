@@ -15,25 +15,34 @@ func Analyze(report *types.Report, mode types.RunMode) {
 	// Always run universal checks
 	findings = append(findings, analyzeGPUPresence(report)...)
 	findings = append(findings, analyzeDriverBasics(report)...)
+	findings = append(findings, analyzeThermal(report)...)
+	findings = append(findings, analyzePCIe(report)...)
 
 	// Mode-specific analysis
 	switch mode {
 	case types.ModeGaming:
 		findings = append(findings, analyzeWindowsGaming(report)...)
 		findings = append(findings, analyzeOverlays(report)...)
+		findings = append(findings, analyzeDisplay(report)...)
+		findings = append(findings, analyzeLinuxModules(report)...)
+		findings = append(findings, analyzeLinuxAdvanced(report)...)
+		findings = append(findings, analyzeNetwork(report)...)
 	case types.ModeStreaming:
 		findings = append(findings, analyzeWindowsGaming(report)...)
 		findings = append(findings, analyzeOverlays(report)...)
 		findings = append(findings, analyzeStreaming(report)...)
+		findings = append(findings, analyzeNetwork(report)...)
 	case types.ModeAI:
 		findings = append(findings, analyzeLinuxModules(report)...)
 		findings = append(findings, analyzeSecureBoot(report)...)
 		findings = append(findings, analyzeCUDA(report)...)
 		findings = append(findings, analyzePyTorch(report)...)
 		findings = append(findings, analyzeTensorFlow(report)...)
+		findings = append(findings, analyzeLinuxAdvanced(report)...)
 	case types.ModeCreator:
 		findings = append(findings, analyzeWindowsGaming(report)...)
 		findings = append(findings, analyzeCUDA(report)...)
+		findings = append(findings, analyzeDisplay(report)...)
 	case types.ModeFull:
 		findings = append(findings, analyzeWindowsGaming(report)...)
 		findings = append(findings, analyzeOverlays(report)...)
@@ -45,6 +54,9 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzeTensorFlow(report)...)
 		findings = append(findings, analyzeWSL(report)...)
 		findings = append(findings, analyzeVRAM(report)...)
+		findings = append(findings, analyzeDisplay(report)...)
+		findings = append(findings, analyzeNetwork(report)...)
+		findings = append(findings, analyzeLinuxAdvanced(report)...)
 	}
 
 	// Sort by severity: CRIT first, then WARN, then INFO
@@ -79,7 +91,8 @@ func analyzeGPUPresence(report *types.Report) []types.Finding {
 				"Check Device Manager (Windows) or lspci (Linux) for the GPU.",
 				"Ensure the NVIDIA driver is installed.",
 			},
-			Category: "gpu",
+			Category:   "gpu",
+			Confidence: 95,
 		})
 	}
 
@@ -106,7 +119,8 @@ func analyzeGPUPresence(report *types.Report) []types.Finding {
 					"On Windows: Check NVIDIA Control Panel > Manage 3D Settings > Preferred Graphics Processor.",
 					"On Linux: Check PRIME offloading status or use __NV_PRIME_RENDER_OFFLOAD=1.",
 				},
-				Category: "gpu",
+				Category:   "gpu",
+				Confidence: 90,
 			})
 		}
 	}
@@ -124,13 +138,14 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 			Severity:     types.SeverityCrit,
 			Title:        "NVIDIA Driver Version Not Detected",
 			Evidence:     "nvidia-smi did not return a driver version.",
-			WhyItMatters: "Without a working NVIDIA driver, GPU acceleration (gaming, CUDA, NVENC) will not function.",
+			WhyItMatters: "Without a working NVIDIA driver, GPU acceleration (gaming, CUDA, hardware encoding) will not function.",
 			NextSteps: []string{
 				"Install the NVIDIA driver from https://www.nvidia.com/drivers or your Linux distribution's package manager.",
 				"On Linux: Check if the nvidia kernel module is loaded with 'lsmod | grep nvidia'.",
 				"After install, reboot and run NVCheckup again.",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: 95,
 		})
 	}
 
@@ -145,8 +160,402 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 				"On Windows: nvidia-smi is typically at C:\\Windows\\System32\\nvidia-smi.exe.",
 				"On Linux: Ensure the nvidia-utils package is installed.",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: 90,
 		})
+	}
+
+	return findings
+}
+
+// ── Thermal Analysis ──────────────────────────────────────────────────
+
+func analyzeThermal(report *types.Report) []types.Finding {
+	var findings []types.Finding
+
+	if report.Thermal == nil {
+		return findings
+	}
+
+	t := report.Thermal
+
+	// Critical: active thermal throttling
+	if t.ThermalThrottle || t.SlowdownActive {
+		reason := "GPU temperature is critically high"
+		if t.SlowdownReason != "" {
+			reason = t.SlowdownReason
+		}
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityCrit,
+			Title:        "GPU Thermal Throttling Active",
+			Evidence:     fmt.Sprintf("Temperature: %d°C. Throttle active: %v. Reason: %s.", t.TemperatureC, t.SlowdownActive, reason),
+			WhyItMatters: "The GPU is actively reducing performance to prevent heat damage. This causes frame drops, stutter, and reduced compute throughput.",
+			NextSteps: []string{
+				"Check that case airflow is adequate and intake fans are working.",
+				"Clean dust from the GPU heatsink and fans.",
+				"Verify thermal paste condition if GPU is older than 3 years.",
+				"If overclocked, reduce clocks to stock settings.",
+				"Consider adding case fans or improving ventilation.",
+			},
+			Category:   "performance",
+			Confidence: 95,
+		})
+	} else if t.TemperatureC >= 75 && t.TemperatureC < 85 {
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityWarn,
+			Title:        "GPU Running Hot",
+			Evidence:     fmt.Sprintf("GPU temperature: %d°C (elevated but not throttling yet).", t.TemperatureC),
+			WhyItMatters: "While not critically high, sustained temperatures above 75°C reduce GPU lifespan and may lead to throttling under sustained load.",
+			NextSteps: []string{
+				"Monitor temperatures during extended gaming/compute sessions.",
+				"Ensure GPU fans are spinning and case airflow is adequate.",
+				"Consider adjusting fan curves to be more aggressive.",
+			},
+			Category:   "performance",
+			Confidence: 80,
+		})
+	}
+
+	// Fan not spinning at elevated temp
+	if t.FanSpeedPct == 0 && t.TemperatureC > 60 {
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityWarn,
+			Title:        "GPU Fan Not Spinning at Elevated Temperature",
+			Evidence:     fmt.Sprintf("Fan speed: 0%% while temperature is %d°C.", t.TemperatureC),
+			WhyItMatters: "The GPU fan should be spinning at temperatures above 60°C. This may indicate a fan failure or aggressive zero-RPM fan curve.",
+			NextSteps: []string{
+				"Check if the GPU uses a zero-RPM fan mode (some cards stop fans below 60°C).",
+				"If temperature continues to rise without fan activity, the fan may be faulty.",
+				"Use MSI Afterburner or similar to set a manual fan curve.",
+			},
+			Category:   "hardware",
+			Confidence: 70,
+		})
+	}
+
+	// Power state analysis
+	if t.PowerState != "" && t.PowerState != "P0" && t.PowerState != "P1" && t.PowerState != "P2" {
+		// Only flag if GPU should be under load (we check if clock is well below max)
+		if t.MaxClockMHz > 0 && t.CurrentClockMHz > 0 {
+			ratio := float64(t.CurrentClockMHz) / float64(t.MaxClockMHz)
+			if ratio < 0.5 {
+				findings = append(findings, types.Finding{
+					Severity:     types.SeverityWarn,
+					Title:        "GPU Power State Not Reaching Maximum Performance",
+					Evidence:     fmt.Sprintf("Power state: %s. Clock: %d MHz / %d MHz max (%.0f%%).", t.PowerState, t.CurrentClockMHz, t.MaxClockMHz, ratio*100),
+					WhyItMatters: "The GPU is not running at full performance. This may be normal at idle, but if under load it indicates a power management issue.",
+					NextSteps: []string{
+						"Check if this reading was taken under load or at idle.",
+						"On Windows: Set power plan to High Performance.",
+						"Set NVIDIA Control Panel > Power Management Mode to 'Prefer Maximum Performance'.",
+						"Check for PCIe power cable connections to the GPU.",
+					},
+					Category:   "performance",
+					Confidence: 60,
+				})
+			}
+		}
+	}
+
+	return findings
+}
+
+// ── PCIe Analysis ─────────────────────────────────────────────────────
+
+func analyzePCIe(report *types.Report) []types.Finding {
+	var findings []types.Finding
+
+	if report.PCIe == nil {
+		return findings
+	}
+
+	p := report.PCIe
+
+	if p.Downshifted {
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityWarn,
+			Title:        "PCIe Link Downshifted",
+			Evidence:     fmt.Sprintf("Current: %s %s. Maximum: %s %s.", p.CurrentSpeed, p.CurrentWidth, p.MaxSpeed, p.MaxWidth),
+			WhyItMatters: "The GPU PCIe link is running below its maximum capability. This can reduce GPU bandwidth and cause performance degradation in GPU-bound workloads.",
+			NextSteps: []string{
+				"Reseat the GPU in the PCIe slot.",
+				"Check for bent or dirty PCIe slot pins.",
+				"Try a different PCIe slot if available.",
+				"Update motherboard BIOS/UEFI.",
+				"Note: PCIe link may power-save at idle — recheck under GPU load.",
+			},
+			Category:   "performance",
+			Confidence: 90,
+		})
+	}
+
+	// Check for legacy PCIe speed
+	if p.CurrentSpeed == "Gen1" || p.CurrentSpeed == "Gen2" {
+		confidence := 85
+		if p.MaxSpeed == p.CurrentSpeed {
+			confidence = 50 // Might just be an old slot/GPU
+		}
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityInfo,
+			Title:        "PCIe Running at Legacy Speed",
+			Evidence:     fmt.Sprintf("Link speed: %s %s.", p.CurrentSpeed, p.CurrentWidth),
+			WhyItMatters: "Gen1/Gen2 PCIe speeds significantly limit bandwidth for modern GPUs. This may be normal for older hardware or indicate a configuration issue.",
+			NextSteps: []string{
+				"Verify the GPU is in a PCIe 3.0 or 4.0 x16 slot.",
+				"Check BIOS PCIe settings (some BIOSes default to Gen2 for compatibility).",
+				"Ensure no riser cables or adapters are limiting link speed.",
+			},
+			Category:   "performance",
+			Confidence: confidence,
+		})
+	}
+
+	return findings
+}
+
+// ── Display Analysis ──────────────────────────────────────────────────
+
+func analyzeDisplay(report *types.Report) []types.Finding {
+	var findings []types.Finding
+
+	if len(report.Displays) < 2 {
+		return findings
+	}
+
+	// Check mixed refresh rates
+	refreshRates := map[int]bool{}
+	for _, d := range report.Displays {
+		if d.RefreshHz > 0 {
+			refreshRates[d.RefreshHz] = true
+		}
+	}
+	if len(refreshRates) > 1 {
+		var rates []string
+		for r := range refreshRates {
+			rates = append(rates, fmt.Sprintf("%dHz", r))
+		}
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityInfo,
+			Title:        "Mixed Refresh Rate Multi-Monitor Setup",
+			Evidence:     fmt.Sprintf("%d monitors with different refresh rates: %s.", len(report.Displays), strings.Join(rates, ", ")),
+			WhyItMatters: "Mixed refresh rates across monitors can cause frame pacing issues, stutter, and micro-lag in some applications and desktop compositors.",
+			NextSteps: []string{
+				"If experiencing stutter, try disabling hardware acceleration in browser/apps on the secondary monitor.",
+				"On Windows: Ensure both monitors use the correct refresh rate in Display Settings.",
+				"Consider closing secondary monitor apps during competitive gaming.",
+			},
+			Category:   "display",
+			Confidence: 65,
+		})
+	}
+
+	// High display chain complexity (3+ monitors on same GPU)
+	if len(report.Displays) >= 3 {
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityInfo,
+			Title:        "High Display Chain Complexity",
+			Evidence:     fmt.Sprintf("%d displays connected.", len(report.Displays)),
+			WhyItMatters: "Running 3 or more displays from a single GPU increases GPU compositor load and may reduce gaming performance by a few percent.",
+			NextSteps: []string{
+				"If experiencing performance issues, try disconnecting unused monitors during demanding workloads.",
+				"Consider using the iGPU for secondary displays if available.",
+			},
+			Category:   "display",
+			Confidence: 50,
+		})
+	}
+
+	return findings
+}
+
+// ── Network Analysis ──────────────────────────────────────────────────
+
+func analyzeNetwork(report *types.Report) []types.Finding {
+	var findings []types.Finding
+
+	if report.Network == nil {
+		return findings
+	}
+
+	n := report.Network
+	hasIssue := false
+
+	// High jitter
+	if n.JitterMs > 15 {
+		hasIssue = true
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityWarn,
+			Title:        "High Network Jitter Detected",
+			Evidence:     fmt.Sprintf("Jitter: %.1f ms (threshold: 15 ms). Interface: %s (%s).", n.JitterMs, n.InterfaceName, n.InterfaceType),
+			WhyItMatters: "High jitter causes inconsistent latency, leading to lag spikes and stutter in online games and real-time applications.",
+			NextSteps: []string{
+				"If on Wi-Fi, switch to ethernet for lower and more consistent latency.",
+				"Check for background downloads or streaming on the network.",
+				"If on ethernet, check cable quality and switch/router condition.",
+			},
+			Category:   "network",
+			Confidence: 85,
+		})
+	}
+
+	// Packet loss
+	if n.PacketLossPct > 0 {
+		hasIssue = true
+		sev := types.SeverityWarn
+		confidence := 90
+		if n.PacketLossPct > 5 {
+			sev = types.SeverityCrit
+			confidence = 95
+		}
+		findings = append(findings, types.Finding{
+			Severity:     sev,
+			Title:        "Packet Loss Detected",
+			Evidence:     fmt.Sprintf("Packet loss: %.1f%%. Interface: %s (%s).", n.PacketLossPct, n.InterfaceName, n.InterfaceType),
+			WhyItMatters: "Packet loss causes disconnections, rubber-banding in games, and degraded streaming quality. This is a significant network quality issue.",
+			NextSteps: []string{
+				"If on Wi-Fi, switch to ethernet.",
+				"Restart your router/modem.",
+				"Contact your ISP if packet loss persists on ethernet.",
+				"Check for failing network hardware (cable, switch, NIC).",
+			},
+			Category:   "network",
+			Confidence: confidence,
+		})
+	}
+
+	// Wi-Fi congestion
+	if n.InterfaceType == "wifi" && n.WifiBand == "2.4GHz" {
+		hasIssue = true
+		confidence := 60
+		if n.WifiSignalDBM < -70 {
+			confidence = 75
+		}
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityInfo,
+			Title:        "Wi-Fi Congestion Likely",
+			Evidence:     fmt.Sprintf("Connected on %s Wi-Fi. Signal: %d dBm.", n.WifiBand, n.WifiSignalDBM),
+			WhyItMatters: "2.4 GHz Wi-Fi is more susceptible to congestion from nearby networks, microwaves, and other devices. This can cause latency spikes.",
+			NextSteps: []string{
+				"Switch to 5 GHz or 6 GHz Wi-Fi band if available.",
+				"Use ethernet for the most reliable connection.",
+				"Move closer to the router or remove obstructions.",
+			},
+			Category:   "network",
+			Confidence: confidence,
+		})
+	}
+
+	// DNS slow
+	if n.DNSTimeMs > 100 {
+		hasIssue = true
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityInfo,
+			Title:        "Slow DNS Resolution",
+			Evidence:     fmt.Sprintf("DNS resolution time: %.0f ms.", n.DNSTimeMs),
+			WhyItMatters: "Slow DNS adds latency to the initial connection to servers. While it doesn't affect ongoing connections, it delays matchmaking and page loads.",
+			NextSteps: []string{
+				"Consider switching to a faster DNS provider (1.1.1.1, 8.8.8.8, or 9.9.9.9).",
+				"Check if your router's DNS settings are optimal.",
+			},
+			Category:   "network",
+			Confidence: 70,
+		})
+	}
+
+	// Network healthy
+	if !hasIssue {
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityInfo,
+			Title:        "Network Appears Healthy",
+			Evidence:     fmt.Sprintf("Latency: %.1f ms. Jitter: %.1f ms. Packet loss: %.1f%%. DNS: %.0f ms.", n.LatencyMs, n.JitterMs, n.PacketLossPct, n.DNSTimeMs),
+			WhyItMatters: "Local network and LAN diagnostics look good. If you are experiencing online issues, they are likely upstream or service-side.",
+			NextSteps:    []string{"No network action needed. Issue may be external to your network."},
+			Category:     "network",
+			Confidence:   80,
+		})
+	}
+
+	return findings
+}
+
+// ── Linux Advanced (Xid, llvmpipe, Wayland) ───────────────────────────
+
+func analyzeLinuxAdvanced(report *types.Report) []types.Finding {
+	var findings []types.Finding
+
+	if report.Linux == nil {
+		return findings
+	}
+
+	// Xid errors
+	if len(report.Linux.XidErrors) > 0 {
+		totalCount := 0
+		var codes []string
+		for _, xid := range report.Linux.XidErrors {
+			totalCount += xid.Count
+			codes = append(codes, fmt.Sprintf("Xid %d (%s) x%d", xid.Code, xid.Message, xid.Count))
+		}
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityCrit,
+			Title:        "NVIDIA Xid Errors Detected",
+			Evidence:     fmt.Sprintf("%d Xid error(s) found: %s.", totalCount, strings.Join(codes, "; ")),
+			WhyItMatters: "Xid errors are GPU hardware/driver fault reports from the NVIDIA kernel module. They indicate serious issues ranging from memory faults to the GPU falling off the PCIe bus.",
+			NextSteps: []string{
+				"Update to the latest NVIDIA driver.",
+				"If Xid 79 (fallen off bus): Check PCIe power connections and slot seating.",
+				"If Xid 48/63 (ECC/remapper): GPU VRAM may be degrading — consider RMA.",
+				"If overclocked, revert to stock clocks.",
+				"Run a GPU stress test (e.g., furmark) while monitoring for new Xid errors.",
+			},
+			Category:   "hardware",
+			Confidence: 95,
+		})
+	}
+
+	// llvmpipe fallback
+	if report.Linux.LlvmpipeFallback {
+		renderer := report.Linux.GLRenderer
+		if renderer == "" {
+			renderer = "llvmpipe (software)"
+		}
+		findings = append(findings, types.Finding{
+			Severity:     types.SeverityCrit,
+			Title:        "Software Rendering (llvmpipe) Active",
+			Evidence:     fmt.Sprintf("OpenGL renderer: %s.", renderer),
+			WhyItMatters: "The system is using CPU-based software rendering instead of the NVIDIA GPU. All graphics and CUDA workloads will be extremely slow.",
+			NextSteps: []string{
+				"Ensure the NVIDIA driver is installed and the nvidia kernel module is loaded.",
+				"Check that LIBGL_ALWAYS_SOFTWARE is not set to 1.",
+				"Verify /dev/nvidia* device nodes exist.",
+				"If using Wayland, ensure the correct EGL driver is being selected.",
+			},
+			Category:   "driver",
+			Confidence: 95,
+		})
+	}
+
+	// Wayland + NVIDIA
+	if report.Linux.SessionType == "wayland" {
+		// Check if driver is loaded
+		nvidiaLoaded := false
+		if loaded, exists := report.Linux.LoadedModules["nvidia"]; exists && loaded {
+			nvidiaLoaded = true
+		}
+		if nvidiaLoaded {
+			findings = append(findings, types.Finding{
+				Severity:     types.SeverityWarn,
+				Title:        "Wayland Session with NVIDIA — Known Compatibility Issues",
+				Evidence:     fmt.Sprintf("Session type: Wayland. NVIDIA driver: %s.", report.Driver.Version),
+				WhyItMatters: "While NVIDIA Wayland support has improved significantly, some applications and compositors may still exhibit screen tearing, window glitches, or reduced performance compared to X11.",
+				NextSteps: []string{
+					"Ensure you are using driver 535+ with explicit sync support.",
+					"If experiencing issues, test with X11 session to compare.",
+					"Check if your compositor supports direct scanout and explicit sync.",
+				},
+				Category:   "driver",
+				Confidence: 70,
+			})
+		}
 	}
 
 	return findings
@@ -168,8 +577,10 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 		lastEvent := w.DriverResetEvents[0] // Most recent first
 
 		sev := types.SeverityWarn
+		confidence := 85
 		if count >= 3 {
 			sev = types.SeverityCrit
+			confidence = 92
 		}
 
 		findings = append(findings, types.Finding{
@@ -185,7 +596,8 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 				"Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.",
 				"If recent Windows Update coincides with issues, consider testing a rollback (understand security implications first).",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: confidence,
 		})
 	}
 
@@ -193,8 +605,10 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 	if len(w.NvlddmkmErrors) > 0 {
 		count := len(w.NvlddmkmErrors)
 		sev := types.SeverityWarn
+		confidence := 85
 		if count >= 5 {
 			sev = types.SeverityCrit
+			confidence = 92
 		}
 
 		findings = append(findings, types.Finding{
@@ -208,7 +622,8 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 				"Check for BIOS/UEFI updates for your motherboard.",
 				"Test GPU in another PCIe slot if available.",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: confidence,
 		})
 	}
 
@@ -225,7 +640,8 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 				"Check PCIe slot seating and power connections.",
 				"Update motherboard BIOS/UEFI to latest version.",
 			},
-			Category: "hardware",
+			Category:   "hardware",
+			Confidence: 75,
 		})
 	}
 
@@ -240,7 +656,19 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 				"Open Power Options and switch to 'High Performance' for testing.",
 				"This is a reversible change with no risk.",
 			},
-			Category: "performance",
+			Category:   "performance",
+			Confidence: 40,
+			Remediation: &types.RemediationAction{
+				ID:          "set-high-performance",
+				Title:       "Switch Power Plan to High Performance",
+				Risk:        types.RiskLow,
+				Description: "Changes the Windows power plan to High Performance using powercfg.",
+				DryRunDesc:  "Would run: powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+				UndoDesc:    "Restore the previous power plan.",
+				Platform:    "windows",
+				NeedsReboot: false,
+				NeedsAdmin:  true,
+			},
 		})
 	}
 
@@ -255,7 +683,19 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 				"If experiencing stutter or instability, try disabling HAGS in Settings > System > Display > Graphics > Change default graphics settings.",
 				"This is a reversible change.",
 			},
-			Category: "performance",
+			Category:   "performance",
+			Confidence: 45,
+			Remediation: &types.RemediationAction{
+				ID:          "disable-hags",
+				Title:       "Disable Hardware-Accelerated GPU Scheduling",
+				Risk:        types.RiskLow,
+				Description: "Sets the HAGS registry key to Disabled.",
+				DryRunDesc:  "Would set registry HwSchMode to 1 (Disabled).",
+				UndoDesc:    "Restore HwSchMode to 2 (Enabled). Requires reboot.",
+				Platform:    "windows",
+				NeedsReboot: true,
+				NeedsAdmin:  true,
+			},
 		})
 	}
 
@@ -271,7 +711,8 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 				"Rollback specific updates only if you understand the security implications.",
 				"Prefer updating NVIDIA drivers over rolling back Windows updates.",
 			},
-			Category: "updates",
+			Category:   "updates",
+			Confidence: 35,
 		})
 	}
 
@@ -305,7 +746,8 @@ func analyzeOverlays(report *types.Report) []types.Finding {
 				"If experiencing performance drops or alt-tab bugs, try disabling the in-game overlay temporarily.",
 				"This does not require uninstalling — just toggle the overlay feature off in settings.",
 			},
-			Category: "overlay",
+			Category:   "overlay",
+			Confidence: 50,
 		})
 	}
 
@@ -321,19 +763,19 @@ func analyzeOverlays(report *types.Report) []types.Finding {
 				"If experiencing stutter, try disabling overlays one at a time to isolate the cause.",
 				"Ensure only one overlay/recording tool is active during gaming.",
 			},
-			Category: "overlay",
+			Category:   "overlay",
+			Confidence: 50,
 		})
 	}
 
 	return findings
 }
 
-// ── Streaming / NVENC ─────────────────────────────────────────────────
+// ── Streaming ─────────────────────────────────────────────────────────
 
 func analyzeStreaming(report *types.Report) []types.Finding {
 	var findings []types.Finding
 
-	// Check for NVENC capability (basic: is NVIDIA GPU present with driver)
 	hasNvidiaGPU := false
 	for _, gpu := range report.GPUs {
 		if gpu.IsNVIDIA {
@@ -345,14 +787,15 @@ func analyzeStreaming(report *types.Report) []types.Finding {
 	if !hasNvidiaGPU {
 		findings = append(findings, types.Finding{
 			Severity:     types.SeverityCrit,
-			Title:        "No NVIDIA GPU Available for NVENC",
-			Evidence:     "No NVIDIA GPU detected — NVENC hardware encoding is not available.",
-			WhyItMatters: "NVENC is NVIDIA's hardware video encoder used by OBS, Shadowplay, and other streaming/recording tools. Without an NVIDIA GPU, software encoding must be used instead.",
+			Title:        "No NVIDIA GPU Available for Hardware Encoding",
+			Evidence:     "No NVIDIA GPU detected — hardware encoding is not available.",
+			WhyItMatters: "NVIDIA hardware encoding is used by OBS, Shadowplay, and other streaming/recording tools. Without an NVIDIA GPU, software encoding must be used instead.",
 			NextSteps: []string{
 				"Ensure the NVIDIA GPU is properly installed and detected.",
 				"Install the NVIDIA driver.",
 			},
-			Category: "streaming",
+			Category:   "gpu",
+			Confidence: 95,
 		})
 	}
 
@@ -376,7 +819,7 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 			Severity:     types.SeverityCrit,
 			Title:        "Nouveau Driver is Active (Instead of NVIDIA)",
 			Evidence:     "The open-source 'nouveau' kernel module is loaded instead of the proprietary NVIDIA driver.",
-			WhyItMatters: "Nouveau does not support CUDA, NVENC, or Vulkan performance comparable to the NVIDIA driver. GPU acceleration will be severely limited.",
+			WhyItMatters: "Nouveau does not support CUDA or Vulkan performance comparable to the NVIDIA driver. GPU acceleration will be severely limited.",
 			NextSteps: []string{
 				"Install the proprietary NVIDIA driver for your distribution.",
 				"Blacklist nouveau: add 'blacklist nouveau' and 'options nouveau modeset=0' to /etc/modprobe.d/blacklist-nouveau.conf.",
@@ -385,7 +828,19 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"Fedora: sudo dnf install akmod-nvidia",
 				"Arch: sudo pacman -S nvidia",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: 95,
+			Remediation: &types.RemediationAction{
+				ID:          "blacklist-nouveau",
+				Title:       "Blacklist Nouveau Driver",
+				Risk:        types.RiskMedium,
+				Description: "Creates /etc/modprobe.d/blacklist-nouveau.conf to prevent nouveau from loading.",
+				DryRunDesc:  "Would create /etc/modprobe.d/blacklist-nouveau.conf with blacklist entries.",
+				UndoDesc:    "Remove /etc/modprobe.d/blacklist-nouveau.conf and rebuild initramfs.",
+				Platform:    "linux",
+				NeedsReboot: true,
+				NeedsAdmin:  true,
+			},
 		})
 	}
 
@@ -400,7 +855,7 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 			Severity:     types.SeverityCrit,
 			Title:        "NVIDIA Kernel Module Not Loaded",
 			Evidence:     "The 'nvidia' kernel module is not loaded. nvidia-smi will fail.",
-			WhyItMatters: "Without the NVIDIA kernel module, the GPU cannot be used for any accelerated workload (display, CUDA, NVENC).",
+			WhyItMatters: "Without the NVIDIA kernel module, the GPU cannot be used for any accelerated workload.",
 			NextSteps: []string{
 				"Check if the module exists: modinfo nvidia",
 				"Try loading manually: sudo modprobe nvidia",
@@ -408,7 +863,8 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"If Secure Boot is enabled, the module may need to be signed (see Secure Boot finding).",
 				"If using DKMS, check dkms status for build failures.",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: 95,
 		})
 	}
 
@@ -424,7 +880,8 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"Check if nvidia-persistenced is running.",
 				"Ensure nvidia_uvm module is loaded: sudo modprobe nvidia_uvm.",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: 85,
 		})
 	}
 
@@ -440,7 +897,19 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"Run 'sudo ldconfig' to update the library cache.",
 				"Check LD_LIBRARY_PATH if using a non-standard installation.",
 			},
-			Category: "cuda",
+			Category:   "cuda",
+			Confidence: 85,
+			Remediation: &types.RemediationAction{
+				ID:          "update-ldconfig",
+				Title:       "Refresh Library Cache (ldconfig)",
+				Risk:        types.RiskLow,
+				Description: "Runs ldconfig to refresh the shared library cache.",
+				DryRunDesc:  "Would run: sudo ldconfig",
+				UndoDesc:    "No undo needed — ldconfig only refreshes the cache.",
+				Platform:    "linux",
+				NeedsReboot: false,
+				NeedsAdmin:  true,
+			},
 		})
 	}
 
@@ -458,7 +927,8 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"Fedora: sudo dnf install kernel-devel-$(uname -r)",
 				"Check 'dkms status' output for specific error details.",
 			},
-			Category: "driver",
+			Category:   "driver",
+			Confidence: 90,
 		})
 	}
 
@@ -475,7 +945,6 @@ func analyzeSecureBoot(report *types.Report) []types.Finding {
 	}
 
 	if report.Linux.SecureBootState == "Enabled" {
-		// Check if nvidia module is actually loading
 		nvidiaLoaded := false
 		if loaded, exists := report.Linux.LoadedModules["nvidia"]; exists && loaded {
 			nvidiaLoaded = true
@@ -488,14 +957,12 @@ func analyzeSecureBoot(report *types.Report) []types.Finding {
 				Evidence:     "Secure Boot is enabled and the NVIDIA kernel module is not loaded.",
 				WhyItMatters: "Secure Boot requires kernel modules to be signed with an enrolled key. Unsigned NVIDIA modules will be rejected by the kernel.",
 				NextSteps: []string{
-					"Option A (Recommended): Sign the NVIDIA module and enroll the key with MOK (Machine Owner Key).",
-					"  - Generate a signing key: openssl req -new -x509 -newkey rsa:2048 -keyout MOK.priv -outform DER -out MOK.der -nodes -days 36500 -subj '/CN=NVIDIA Module Signing/'",
-					"  - Enroll: sudo mokutil --import MOK.der (reboot and confirm in UEFI)",
-					"  - Sign: sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 MOK.priv MOK.der /path/to/nvidia.ko",
-					"Option B: Disable Secure Boot in BIOS/UEFI (reduces system security — understand the tradeoff).",
-					"Some distributions (Ubuntu) handle signing automatically with DKMS — check if a MOK enrollment prompt appeared during driver install.",
+					"Option A (Recommended): Sign the NVIDIA module and enroll the key with MOK.",
+					"Option B: Disable Secure Boot in BIOS/UEFI (reduces system security).",
+					"Some distributions (Ubuntu) handle signing automatically with DKMS.",
 				},
-				Category: "secureboot",
+				Category:   "secureboot",
+				Confidence: 85,
 			})
 		} else {
 			findings = append(findings, types.Finding{
@@ -505,6 +972,7 @@ func analyzeSecureBoot(report *types.Report) []types.Finding {
 				WhyItMatters: "This is the ideal configuration — security is maintained while NVIDIA drivers function correctly.",
 				NextSteps:    []string{"No action needed."},
 				Category:     "secureboot",
+				Confidence:   95,
 			})
 		}
 	}
@@ -538,7 +1006,8 @@ func analyzeCUDA(report *types.Report) []types.Finding {
 					"Or install a CUDA toolkit version matching the driver's supported CUDA version.",
 					"Check compatibility at: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/",
 				},
-				Category: "cuda",
+				Category:   "cuda",
+				Confidence: 80,
 			})
 		}
 	}
@@ -565,7 +1034,8 @@ func analyzePyTorch(report *types.Report) []types.Finding {
 				"Check your Python environment and PyTorch installation.",
 				"Reinstall PyTorch: pip install torch --index-url https://download.pytorch.org/whl/cu121",
 			},
-			Category: "ai",
+			Category:   "ai",
+			Confidence: 90,
 		})
 		return findings
 	}
@@ -573,9 +1043,9 @@ func analyzePyTorch(report *types.Report) []types.Finding {
 	if !pt.CUDAAvailable {
 		if pt.CUDAVersion == "" {
 			findings = append(findings, types.Finding{
-				Severity: types.SeverityWarn,
-				Title:    "PyTorch Installed Without CUDA Support",
-				Evidence: fmt.Sprintf("PyTorch %s is installed but torch.version.cuda is empty — this is a CPU-only build.", pt.Version),
+				Severity:     types.SeverityWarn,
+				Title:        "PyTorch Installed Without CUDA Support",
+				Evidence:     fmt.Sprintf("PyTorch %s is installed but torch.version.cuda is empty — this is a CPU-only build.", pt.Version),
 				WhyItMatters: "A CPU-only PyTorch wheel was installed. torch.cuda.is_available() returns False because the CUDA runtime is not compiled in.",
 				NextSteps: []string{
 					"Uninstall the current PyTorch: pip uninstall torch torchvision torchaudio",
@@ -583,13 +1053,14 @@ func analyzePyTorch(report *types.Report) []types.Finding {
 					"Example: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121",
 					"Make sure to select the correct CUDA version matching your driver.",
 				},
-				Category: "ai",
+				Category:   "ai",
+				Confidence: 95,
 			})
 		} else {
 			findings = append(findings, types.Finding{
-				Severity: types.SeverityWarn,
-				Title:    "PyTorch CUDA Available but GPU Not Accessible",
-				Evidence: fmt.Sprintf("PyTorch %s has CUDA %s compiled in, but torch.cuda.is_available() is False.", pt.Version, pt.CUDAVersion),
+				Severity:     types.SeverityWarn,
+				Title:        "PyTorch CUDA Available but GPU Not Accessible",
+				Evidence:     fmt.Sprintf("PyTorch %s has CUDA %s compiled in, but torch.cuda.is_available() is False.", pt.Version, pt.CUDAVersion),
 				WhyItMatters: "PyTorch was built with CUDA support but cannot access the GPU. This usually indicates a driver issue or environment mismatch.",
 				NextSteps: []string{
 					"Ensure nvidia-smi works and shows your GPU.",
@@ -597,7 +1068,8 @@ func analyzePyTorch(report *types.Report) []types.Finding {
 					"If using conda, ensure you're in the correct environment.",
 					"Check LD_LIBRARY_PATH (Linux) or PATH (Windows) includes CUDA libraries.",
 				},
-				Category: "ai",
+				Category:   "ai",
+				Confidence: 80,
 			})
 		}
 	} else {
@@ -608,6 +1080,7 @@ func analyzePyTorch(report *types.Report) []types.Finding {
 			WhyItMatters: "GPU acceleration is available for PyTorch workloads.",
 			NextSteps:    []string{"No action needed."},
 			Category:     "ai",
+			Confidence:   95,
 		})
 	}
 
@@ -633,7 +1106,8 @@ func analyzeTensorFlow(report *types.Report) []types.Finding {
 				"Check your Python environment and TensorFlow installation.",
 				"Reinstall: pip install tensorflow[and-cuda]",
 			},
-			Category: "ai",
+			Category:   "ai",
+			Confidence: 90,
 		})
 		return findings
 	}
@@ -650,7 +1124,8 @@ func analyzeTensorFlow(report *types.Report) []types.Finding {
 				"Verify nvidia-smi shows your GPU and driver is working.",
 				"See https://www.tensorflow.org/install/pip for compatibility matrix.",
 			},
-			Category: "ai",
+			Category:   "ai",
+			Confidence: 85,
 		})
 	} else {
 		findings = append(findings, types.Finding{
@@ -660,6 +1135,7 @@ func analyzeTensorFlow(report *types.Report) []types.Finding {
 			WhyItMatters: "GPU acceleration is available for TensorFlow workloads.",
 			NextSteps:    []string{"No action needed."},
 			Category:     "ai",
+			Confidence:   95,
 		})
 	}
 
@@ -687,7 +1163,8 @@ func analyzeWSL(report *types.Report) []types.Finding {
 				"Update WSL: wsl --update",
 				"Restart WSL: wsl --shutdown, then reopen.",
 			},
-			Category: "wsl",
+			Category:   "wsl",
+			Confidence: 95,
 		})
 	}
 
@@ -702,7 +1179,8 @@ func analyzeWSL(report *types.Report) []types.Finding {
 				"Ensure nvidia-smi is available: it should be provided by the Windows driver.",
 				"Try: wsl --shutdown from Windows, then reopen WSL.",
 			},
-			Category: "wsl",
+			Category:   "wsl",
+			Confidence: 80,
 		})
 	}
 
@@ -717,15 +1195,16 @@ func analyzeVRAM(report *types.Report) []types.Finding {
 	for _, gpu := range report.GPUs {
 		if gpu.IsNVIDIA && gpu.VRAMTotalMB > 0 && gpu.VRAMTotalMB < 4096 {
 			findings = append(findings, types.Finding{
-				Severity: types.SeverityInfo,
-				Title:    fmt.Sprintf("Low VRAM Detected: %s (%d MB)", gpu.Name, gpu.VRAMTotalMB),
-				Evidence: fmt.Sprintf("GPU %s has %d MB of VRAM.", gpu.Name, gpu.VRAMTotalMB),
+				Severity:     types.SeverityInfo,
+				Title:        fmt.Sprintf("Low VRAM Detected: %s (%d MB)", gpu.Name, gpu.VRAMTotalMB),
+				Evidence:     fmt.Sprintf("GPU %s has %d MB of VRAM.", gpu.Name, gpu.VRAMTotalMB),
 				WhyItMatters: "Less than 4 GB of VRAM may limit performance in modern games and prevent loading larger AI models.",
 				NextSteps: []string{
 					"For AI workloads: use smaller model variants, reduce batch sizes, or enable gradient checkpointing.",
 					"For gaming: lower texture quality and resolution settings.",
 				},
-				Category: "hardware",
+				Category:   "hardware",
+				Confidence: 90,
 			})
 		}
 	}
@@ -736,7 +1215,6 @@ func analyzeVRAM(report *types.Report) []types.Finding {
 // ── Helpers ───────────────────────────────────────────────────────────
 
 func sortFindings(findings []types.Finding) {
-	// Simple bubble sort by severity (CRIT > WARN > INFO)
 	sevOrder := map[types.Severity]int{
 		types.SeverityCrit: 0,
 		types.SeverityWarn: 1,
@@ -756,7 +1234,11 @@ func buildTopIssues(findings []types.Finding) []string {
 	count := 0
 	for _, f := range findings {
 		if f.Severity == types.SeverityCrit || f.Severity == types.SeverityWarn {
-			issues = append(issues, fmt.Sprintf("[%s] %s", f.Severity, f.Title))
+			conf := ""
+			if f.Confidence > 0 {
+				conf = fmt.Sprintf(" (%d%% confidence)", f.Confidence)
+			}
+			issues = append(issues, fmt.Sprintf("[%s] %s%s", f.Severity, f.Title, conf))
 			count++
 			if count >= 5 {
 				break
@@ -826,7 +1308,26 @@ func buildSummaryBlock(report *types.Report) string {
 		sb.WriteString("\n")
 	}
 
+	// Thermal summary
+	if report.Thermal != nil {
+		sb.WriteString(fmt.Sprintf("Temp: %d°C", report.Thermal.TemperatureC))
+		if report.Thermal.PowerState != "" {
+			sb.WriteString(fmt.Sprintf(" | P-State: %s", report.Thermal.PowerState))
+		}
+		sb.WriteString("\n")
+	}
+
+	// PCIe summary
+	if report.PCIe != nil {
+		sb.WriteString(fmt.Sprintf("PCIe: %s %s", report.PCIe.CurrentSpeed, report.PCIe.CurrentWidth))
+		if report.PCIe.Downshifted {
+			sb.WriteString(" (DOWNSHIFTED)")
+		}
+		sb.WriteString("\n")
+	}
+
 	critCount, warnCount := 0, 0
+	fixAvailable := 0
 	for _, f := range report.Findings {
 		switch f.Severity {
 		case types.SeverityCrit:
@@ -834,8 +1335,15 @@ func buildSummaryBlock(report *types.Report) string {
 		case types.SeverityWarn:
 			warnCount++
 		}
+		if f.Remediation != nil {
+			fixAvailable++
+		}
 	}
-	sb.WriteString(fmt.Sprintf("Findings: %d CRITICAL, %d WARNING, %d total\n", critCount, warnCount, len(report.Findings)))
+	sb.WriteString(fmt.Sprintf("Findings: %d CRITICAL, %d WARNING, %d total", critCount, warnCount, len(report.Findings)))
+	if fixAvailable > 0 {
+		sb.WriteString(fmt.Sprintf(" | %d auto-fixable", fixAvailable))
+	}
+	sb.WriteString("\n")
 
 	return sb.String()
 }

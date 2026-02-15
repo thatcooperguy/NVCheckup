@@ -4,7 +4,7 @@ package types
 import "time"
 
 // Version of NVCheckup
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Disclaimer shown in all reports
 const Disclaimer = "NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation."
@@ -37,6 +37,15 @@ const (
 	ExitError    = 3
 )
 
+// RiskLevel for remediation actions
+type RiskLevel string
+
+const (
+	RiskLow    RiskLevel = "low"
+	RiskMedium RiskLevel = "medium"
+	RiskHigh   RiskLevel = "high"
+)
+
 // RunConfig holds all CLI flags and options for a run
 type RunConfig struct {
 	Mode        RunMode
@@ -48,7 +57,9 @@ type RunConfig struct {
 	NoAdmin     bool
 	Timeout     int // seconds
 	Redact      bool
-	IncludeLogs bool
+	IncludeLogs    bool
+	NetworkTest    bool // run network diagnostics
+	KnowledgePath  string // optional path to override embedded knowledge pack
 }
 
 // DefaultRunConfig returns a RunConfig with safe defaults
@@ -100,6 +111,8 @@ type GPUInfo struct {
 	Temperature   int    `json:"temperature_c,omitempty"`
 	PowerDraw     string `json:"power_draw,omitempty"`
 	IsNVIDIA      bool   `json:"is_nvidia"`
+	PCIeLinkSpeed string `json:"pcie_link_speed,omitempty"` // "Gen4"
+	PCIeLinkWidth string `json:"pcie_link_width,omitempty"` // "x16"
 }
 
 // DriverInfo holds NVIDIA driver details
@@ -170,6 +183,9 @@ type LinuxInfo struct {
 	NVContainerToolkit string          `json:"nv_container_toolkit,omitempty"`
 	JournalSnippets    string          `json:"journal_snippets,omitempty"` // opt-in
 	DmesgSnippets      string          `json:"dmesg_snippets,omitempty"`  // opt-in
+	XidErrors          []XidError      `json:"xid_errors,omitempty"`
+	LlvmpipeFallback   bool            `json:"llvmpipe_fallback"`
+	GLRenderer         string          `json:"gl_renderer,omitempty"`
 }
 
 // AIInfo holds AI/CUDA framework info
@@ -225,13 +241,121 @@ type WSLInfo struct {
 
 // Finding represents an actionable diagnostic finding
 type Finding struct {
-	Severity     Severity `json:"severity"`
-	Title        string   `json:"title"`
-	Evidence     string   `json:"evidence"`
-	WhyItMatters string   `json:"why_it_matters"`
-	NextSteps    []string `json:"next_steps"`
-	References   []string `json:"references,omitempty"`
-	Category     string   `json:"category,omitempty"` // "driver", "cuda", "overlay", etc.
+	Severity     Severity           `json:"severity"`
+	Title        string             `json:"title"`
+	Evidence     string             `json:"evidence"`
+	WhyItMatters string             `json:"why_it_matters"`
+	NextSteps    []string           `json:"next_steps"`
+	References   []string           `json:"references,omitempty"`
+	Category     string             `json:"category,omitempty"` // "driver", "cuda", "overlay", etc.
+	Confidence   int                `json:"confidence"`         // 0-100 confidence score
+	Remediation  *RemediationAction `json:"remediation,omitempty"`
+}
+
+// RemediationAction describes a safe, reversible fix for a finding
+type RemediationAction struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Risk        RiskLevel `json:"risk"`
+	Description string    `json:"description"`
+	DryRunDesc  string    `json:"dry_run_desc"`
+	UndoDesc    string    `json:"undo_desc"`
+	Platform    string    `json:"platform"` // "windows", "linux", "all"
+	NeedsReboot bool      `json:"needs_reboot"`
+	NeedsAdmin  bool      `json:"needs_admin"`
+	Category    string    `json:"category,omitempty"`     // "power", "registry", "driver"
+	RelatedFind string    `json:"related_find,omitempty"` // human description of related finding
+}
+
+// RemediationResult holds the outcome of applying a remediation
+type RemediationResult struct {
+	ActionID  string    `json:"action_id"`
+	Success   bool      `json:"success"`
+	Output    string    `json:"output"`
+	Error     string    `json:"error,omitempty"`
+	UndoInfo  string    `json:"undo_info,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	DryRun    bool      `json:"dry_run"`
+}
+
+// ChangeJournalEntry records an applied change for undo tracking
+type ChangeJournalEntry struct {
+	ActionID    string    `json:"action_id"`
+	Title       string    `json:"title"`
+	AppliedAt   time.Time `json:"applied_at"`
+	Success     bool      `json:"success"`
+	Output      string    `json:"output,omitempty"`
+	UndoInfo    string    `json:"undo_info,omitempty"`
+	UndoneAt    time.Time `json:"undone_at,omitempty"`
+	UndoSuccess bool      `json:"undo_success,omitempty"`
+	UndoOutput  string    `json:"undo_output,omitempty"`
+}
+
+// ThermalInfo holds GPU thermal and power state data
+type ThermalInfo struct {
+	TemperatureC    int    `json:"temperature_c"`
+	ThermalThrottle bool   `json:"thermal_throttle"`
+	PowerState      string `json:"power_state"`       // P0-P12
+	CurrentClockMHz int    `json:"current_clock_mhz"`
+	MaxClockMHz     int    `json:"max_clock_mhz"`
+	PowerLimitW     string `json:"power_limit_w"`
+	PowerDrawW      string `json:"power_draw_w"`
+	FanSpeedPct     int    `json:"fan_speed_pct"`
+	SlowdownActive  bool   `json:"slowdown_active"`
+	SlowdownReason  string `json:"slowdown_reason,omitempty"`
+}
+
+// PCIeInfo holds PCIe link state data
+type PCIeInfo struct {
+	CurrentSpeed string `json:"current_speed"` // "Gen4"
+	MaxSpeed     string `json:"max_speed"`     // "Gen4"
+	CurrentWidth string `json:"current_width"` // "x16"
+	MaxWidth     string `json:"max_width"`     // "x16"
+	Downshifted  bool   `json:"downshifted"`
+}
+
+// DisplayInfo holds display/monitor pipeline data
+type DisplayInfo struct {
+	Name       string `json:"name"`
+	Resolution string `json:"resolution"`
+	RefreshHz  int    `json:"refresh_hz"`
+	HDREnabled bool   `json:"hdr_enabled"`
+	HDRCapable bool   `json:"hdr_capable"`
+	VRREnabled bool   `json:"vrr_enabled"` // G-Sync / FreeSync
+	ColorDepth string `json:"color_depth"` // "8-bit", "10-bit"
+	OutputType string `json:"output_type"` // "HDMI", "DP", "USB-C"
+	GPUIndex   int    `json:"gpu_index"`   // which GPU drives this
+	Primary    bool   `json:"primary"`
+	ScalingPct int    `json:"scaling_pct"`
+}
+
+// NetworkInfo holds network diagnostic results
+type NetworkInfo struct {
+	InterfaceName string    `json:"interface_name"`
+	InterfaceType string    `json:"interface_type"` // "ethernet", "wifi"
+	WifiBand      string    `json:"wifi_band,omitempty"`
+	WifiSignalDBM int       `json:"wifi_signal_dbm,omitempty"`
+	LatencyMs     float64   `json:"latency_ms"`
+	JitterMs      float64   `json:"jitter_ms"`
+	PacketLossPct float64   `json:"packet_loss_pct"`
+	DNSTimeMs     float64   `json:"dns_time_ms"`
+	Hops          []HopInfo `json:"hops,omitempty"`
+}
+
+// HopInfo holds a single traceroute hop
+type HopInfo struct {
+	Number    int     `json:"number"`
+	Address   string  `json:"address"` // redacted
+	LatencyMs float64 `json:"latency_ms"`
+	Loss      bool    `json:"loss"`
+}
+
+// XidError holds a parsed NVIDIA Xid error from kernel logs
+type XidError struct {
+	Code      int       `json:"code"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+	Count     int       `json:"count"`
 }
 
 // CollectorError records a non-fatal error from a collector
@@ -251,6 +375,10 @@ type Report struct {
 	Linux           *LinuxInfo       `json:"linux,omitempty"`
 	WSL             *WSLInfo         `json:"wsl,omitempty"`
 	AI              *AIInfo          `json:"ai,omitempty"`
+	Thermal         *ThermalInfo     `json:"thermal,omitempty"`
+	PCIe            *PCIeInfo        `json:"pcie,omitempty"`
+	Displays        []DisplayInfo    `json:"displays,omitempty"`
+	Network         *NetworkInfo     `json:"network,omitempty"`
 	Findings        []Finding        `json:"findings"`
 	CollectorErrors []CollectorError `json:"collector_errors,omitempty"`
 	TopIssues       []string         `json:"top_issues"`
