@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NVCheckup — Cross-platform NVIDIA Diagnostics</title>
+<meta name="description" content="Open-source NVIDIA GPU diagnostic tool for gaming, AI, and creators. Windows + Linux. Safe, private, read-only.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════
+   NVCheckup — Premium GPU Diagnostic Aesthetic
+   ═══════════════════════════════════════════════════════ */
+
+:root {
+  --nv-green: #76b900;
+  --nv-green-bright: #8fd400;
+  --nv-green-dim: #4a7a00;
+  --nv-green-glow: rgba(118, 185, 0, 0.4);
+  --nv-green-subtle: rgba(118, 185, 0, 0.08);
+  --bg-primary: #0a0a0c;
+  --bg-secondary: #111114;
+  --bg-card: #16161a;
+  --bg-card-hover: #1c1c22;
+  --text-primary: #e8e8ec;
+  --text-secondary: #9898a4;
+  --text-dim: #5c5c68;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-green: rgba(118, 185, 0, 0.2);
+}
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+/* ── Canvas Background ─────────────────────────────── */
+
+#particle-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* ── Hero Section ──────────────────────────────────── */
+
+.hero {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(ellipse, var(--nv-green-glow) 0%, transparent 70%);
+  opacity: 0.15;
+  pointer-events: none;
+  animation: pulse-glow 8s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.12; transform: translateX(-50%) scale(1); }
+  50% { opacity: 0.2; transform: translateX(-50%) scale(1.05); }
+}
+
+/* ── Hero Title ────────────────────────────────────── */
+
+.hero-title-container {
+  position: relative;
+  margin-bottom: 1.5rem;
+}
+
+.hero-title {
+  font-family: 'Orbitron', monospace;
+  font-weight: 800;
+  font-size: clamp(3rem, 8vw, 6.5rem);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  position: relative;
+  display: inline-block;
+  line-height: 1.1;
+}
+
+.hero-title .nv {
+  color: var(--nv-green);
+  text-shadow:
+    0 0 20px var(--nv-green-glow),
+    0 0 40px rgba(118, 185, 0, 0.15);
+}
+
+.hero-title .checkup {
+  color: var(--text-primary);
+}
+
+/* Subtle glitch on hover — clean, minimal */
+.hero-title:hover {
+  animation: glitch-subtle 0.5s ease-in-out;
+}
+
+@keyframes glitch-subtle {
+  0% { transform: translate(0); }
+  10% { transform: translate(-1px, 0); }
+  20% { transform: translate(1px, 0); }
+  30% { transform: translate(0, -1px); }
+  40% { transform: translate(0); text-shadow: -1px 0 var(--nv-green), 1px 0 #ff0040; }
+  50% { transform: translate(0); text-shadow: none; }
+  60% { transform: translate(1px, 0); }
+  70% { transform: translate(-1px, 0); text-shadow: 1px 0 var(--nv-green), -1px 0 #4040ff; }
+  80% { transform: translate(0); text-shadow: none; }
+  100% { transform: translate(0); }
+}
+
+/* Intro animation — runs once on load */
+.hero-title.animate-in {
+  animation: title-enter 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes title-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+    filter: blur(8px);
+  }
+  40% {
+    opacity: 1;
+    text-shadow: -2px 0 var(--nv-green), 2px 0 #ff0040;
+    filter: blur(0);
+  }
+  50% {
+    text-shadow: 1px 0 #4040ff, -1px 0 var(--nv-green);
+  }
+  60% {
+    text-shadow: none;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 1;
+    text-shadow: none;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* Scanline overlay — very subtle */
+.hero-title::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+}
+
+/* ── Subtitle ──────────────────────────────────────── */
+
+.hero-subtitle {
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: clamp(1rem, 2.5vw, 1.35rem);
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+  margin-bottom: 0.5rem;
+  opacity: 0;
+  animation: fade-up 0.6s ease 0.4s forwards;
+}
+
+.hero-tagline {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: clamp(0.75rem, 1.5vw, 0.9rem);
+  color: var(--text-dim);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 2.5rem;
+  opacity: 0;
+  animation: fade-up 0.6s ease 0.6s forwards;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── CTA Buttons ───────────────────────────────────── */
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  opacity: 0;
+  animation: fade-up 0.6s ease 0.8s forwards;
+}
+
+.btn {
+  font-family: 'Orbitron', monospace;
+  font-weight: 600;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 0.9rem 2rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary {
+  background: var(--nv-green);
+  color: #000;
+  box-shadow: 0 0 20px rgba(118, 185, 0, 0.25);
+}
+
+.btn-primary:hover {
+  background: var(--nv-green-bright);
+  box-shadow: 0 0 30px rgba(118, 185, 0, 0.4);
+  transform: translateY(-2px);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-green);
+}
+
+.btn-secondary:hover {
+  background: var(--nv-green-subtle);
+  border-color: var(--nv-green);
+  transform: translateY(-2px);
+}
+
+/* ── Terminal Preview ──────────────────────────────── */
+
+.terminal-section {
+  position: relative;
+  z-index: 1;
+  padding: 4rem 2rem 6rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.terminal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 40px rgba(118, 185, 0, 0.05);
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.terminal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminal-dot.red { background: #ff5f57; }
+.terminal-dot.yellow { background: #febc2e; }
+.terminal-dot.green { background: #28c840; }
+
+.terminal-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+
+.terminal-body {
+  padding: 1.5rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+
+.terminal-body .prompt {
+  color: var(--nv-green);
+}
+
+.terminal-body .cmd {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.terminal-body .output {
+  color: var(--text-secondary);
+}
+
+.terminal-body .highlight {
+  color: var(--nv-green);
+}
+
+.terminal-body .warn {
+  color: #f0a030;
+}
+
+.terminal-body .crit {
+  color: #ff4444;
+}
+
+.terminal-body .info-label {
+  color: #4488ff;
+}
+
+.terminal-body .dim {
+  color: var(--text-dim);
+}
+
+/* ── Features Grid ─────────────────────────────────── */
+
+.features-section {
+  position: relative;
+  z-index: 1;
+  padding: 4rem 2rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.section-title {
+  font-family: 'Orbitron', monospace;
+  font-weight: 700;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.section-title span {
+  color: var(--nv-green);
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.feature-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 2rem;
+  transition: all 0.3s ease;
+}
+
+.feature-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-green);
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3), 0 0 20px rgba(118, 185, 0, 0.05);
+}
+
+.feature-icon {
+  font-size: 1.8rem;
+  margin-bottom: 1rem;
+}
+
+.feature-title {
+  font-family: 'Orbitron', monospace;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin-bottom: 0.75rem;
+}
+
+.feature-desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ── Safety Banner ─────────────────────────────────── */
+
+.safety-section {
+  position: relative;
+  z-index: 1;
+  padding: 4rem 2rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.safety-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.safety-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.safety-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.safety-check {
+  color: var(--nv-green);
+}
+
+.safety-x {
+  color: #ff4444;
+}
+
+/* ── Footer ────────────────────────────────────────── */
+
+.footer {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 3rem 2rem;
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 4rem;
+}
+
+.footer p {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 0.5rem;
+}
+
+.footer a {
+  color: var(--nv-green);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  text-decoration: underline;
+}
+
+/* ── Status Bar ────────────────────────────────────── */
+
+.status-bar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  padding: 2rem;
+  margin-top: 1rem;
+  opacity: 0;
+  animation: fade-up 0.6s ease 1s forwards;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nv-green);
+  box-shadow: 0 0 8px var(--nv-green-glow);
+  animation: blink 3s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Responsive ────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .hero {
+    padding: 1.5rem;
+    min-height: 90vh;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    width: 100%;
+    max-width: 300px;
+  }
+
+  .btn {
+    text-align: center;
+    width: 100%;
+  }
+
+  .terminal-body {
+    font-size: 0.7rem;
+    padding: 1rem;
+  }
+
+  .features-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .status-bar {
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+  }
+}
+</style>
+</head>
+<body>
+
+<canvas id="particle-canvas"></canvas>
+
+<!-- ══════════════ HERO ══════════════ -->
+<section class="hero">
+  <div class="hero-title-container">
+    <h1 class="hero-title animate-in">
+      <span class="nv">NV</span><span class="checkup">Checkup</span>
+    </h1>
+  </div>
+
+  <p class="hero-subtitle">Cross-platform NVIDIA diagnostics for gaming, AI, and creators.</p>
+  <p class="hero-tagline">Read-only &middot; Privacy-first &middot; Open Source</p>
+
+  <div class="hero-actions">
+    <a href="https://github.com/thatcooperguy/NVCheckup/releases" class="btn btn-primary">Download</a>
+    <a href="https://github.com/thatcooperguy/NVCheckup" class="btn btn-secondary">View on GitHub</a>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-item">
+      <span class="status-dot"></span>
+      v0.1.0
+    </div>
+    <div class="status-item">
+      <span class="status-dot"></span>
+      Windows + Linux
+    </div>
+    <div class="status-item">
+      <span class="status-dot"></span>
+      x86_64 + ARM64
+    </div>
+    <div class="status-item">
+      <span class="status-dot"></span>
+      MIT License
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ TERMINAL PREVIEW ══════════════ -->
+<section class="terminal-section">
+  <div class="terminal">
+    <div class="terminal-header">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+      <span class="terminal-title">nvcheckup &mdash; full diagnostic</span>
+    </div>
+    <div class="terminal-body">
+      <span class="prompt">$</span> <span class="cmd">nvcheckup run --mode full --zip</span><br><br>
+      <span class="dim">[1/5] Collecting system information...</span><br>
+      <span class="dim">[2/5] Detecting GPUs and drivers...</span><br>
+      <span class="dim">[3/5] Running platform-specific checks...</span><br>
+      <span class="dim">[4/5] Checking AI/CUDA environment...</span><br>
+      <span class="dim">[5/5] Analyzing results...</span><br><br>
+      <span class="output">NVCheckup v0.1.0 | 2025-01-15 14:32:10 UTC</span><br>
+      <span class="output">OS: Windows 11 23H2 | Arch: amd64</span><br>
+      <span class="output">GPU: <span class="highlight">NVIDIA GeForce RTX 4070</span> | Driver: <span class="highlight">566.36</span> | VRAM: 12288 MB</span><br>
+      <span class="output">CUDA (driver): <span class="highlight">12.7</span></span><br>
+      <span class="output">Findings: <span class="crit">1 CRITICAL</span>, <span class="warn">2 WARNING</span>, 5 total</span><br><br>
+      <span class="output">Top Issues:</span><br>
+      <span class="output">&nbsp;&nbsp;1. <span class="crit">[CRIT]</span> Display Driver Resets Detected (Event ID 4101)</span><br>
+      <span class="output">&nbsp;&nbsp;2. <span class="warn">[WARN]</span> PyTorch Installed Without CUDA Support</span><br>
+      <span class="output">&nbsp;&nbsp;3. <span class="warn">[WARN]</span> HAGS is Enabled</span><br>
+      <span class="output">&nbsp;&nbsp;4. <span class="info-label">[INFO]</span> Overlay Software Detected</span><br>
+      <span class="output">&nbsp;&nbsp;5. <span class="info-label">[INFO]</span> Hybrid GPU Configuration</span><br><br>
+      <span class="dim">Written: report.txt, report.json, report.md</span><br>
+      <span class="dim">Bundle:  nvcheckup-bundle-20250115-143210.zip</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ FEATURES ══════════════ -->
+<section class="features-section">
+  <h2 class="section-title">What <span>NVCheckup</span> Detects</h2>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">&#x1F3AE;</div>
+      <h3 class="feature-title">Driver Crashes</h3>
+      <p class="feature-desc">Scans Windows Event Logs for Event ID 4101, nvlddmkm errors, and WHEA hardware faults. Correlates with recent Windows Updates.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#x1F9E0;</div>
+      <h3 class="feature-title">CUDA Stack Issues</h3>
+      <p class="feature-desc">Detects driver/toolkit version mismatches, missing libcuda.so, broken DKMS builds, and Secure Boot blocking NVIDIA kernel modules.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#x1F40D;</div>
+      <h3 class="feature-title">PyTorch + TensorFlow</h3>
+      <p class="feature-desc">Probes torch.cuda.is_available(), detects CPU-only wheels, version mismatches, and environment confusion between conda/venv.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#x1F4BB;</div>
+      <h3 class="feature-title">Hybrid GPU</h3>
+      <p class="feature-desc">Detects NVIDIA + iGPU configurations, PRIME offloading state, and applications potentially running on the wrong GPU.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#x1F3A5;</div>
+      <h3 class="feature-title">Overlay Conflicts</h3>
+      <p class="feature-desc">Identifies Xbox Game Bar, Discord, RTSS, and other overlay software that may contribute to stutter or frame pacing issues.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#x1F4E6;</div>
+      <h3 class="feature-title">Support Bundles</h3>
+      <p class="feature-desc">Generates redacted reports in TXT, JSON, and Markdown. Packages everything into a zip bundle ready for GitHub issues or forums.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ SAFETY ══════════════ -->
+<section class="safety-section">
+  <h2 class="section-title">Built for <span>Trust</span></h2>
+  <div class="safety-grid">
+    <div class="safety-item">
+      <span class="safety-icon safety-check">&#x2714;</span>
+      <span>Read-only by default</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-check">&#x2714;</span>
+      <span>PII redaction ON</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-check">&#x2714;</span>
+      <span>Zero network calls</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-check">&#x2714;</span>
+      <span>No background services</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-x">&#x2718;</span>
+      <span>No telemetry</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-x">&#x2718;</span>
+      <span>No driver modification</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-x">&#x2718;</span>
+      <span>No registry edits</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-x">&#x2718;</span>
+      <span>No data uploads</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ FOOTER ══════════════ -->
+<footer class="footer">
+  <p>NVCheckup is an unofficial community tool. Not affiliated with or endorsed by NVIDIA Corporation.</p>
+  <p><a href="https://github.com/thatcooperguy/NVCheckup">GitHub</a> &middot; <a href="https://github.com/thatcooperguy/NVCheckup/releases">Releases</a> &middot; MIT License</p>
+  <p style="margin-top: 1rem; color: var(--text-dim);">NVCheckup exists to make diagnosing NVIDIA ecosystem issues faster, safer, and less frustrating.</p>
+</footer>
+
+<!-- ══════════════ PARTICLE SCRIPT ══════════════ -->
+<script>
+(function() {
+  const canvas = document.getElementById('particle-canvas');
+  const ctx = canvas.getContext('2d');
+  let particles = [];
+  let w, h;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+
+  function createParticles() {
+    particles = [];
+    const count = Math.floor((w * h) / 15000);
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        size: Math.random() * 1.5 + 0.5,
+        opacity: Math.random() * 0.4 + 0.1,
+      });
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+
+      if (p.x < 0) p.x = w;
+      if (p.x > w) p.x = 0;
+      if (p.y < 0) p.y = h;
+      if (p.y > h) p.y = 0;
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(118, 185, 0, ${p.opacity})`;
+      ctx.fill();
+
+      // Draw connections
+      for (let j = i + 1; j < particles.length; j++) {
+        const p2 = particles[j];
+        const dx = p.x - p2.x;
+        const dy = p.y - p2.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 120) {
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.strokeStyle = `rgba(118, 185, 0, ${0.06 * (1 - dist / 120)})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); createParticles(); });
+  resize();
+  createParticles();
+  draw();
+})();
+</script>
+
+</body>
+</html>
