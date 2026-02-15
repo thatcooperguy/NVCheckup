@@ -1,14 +1,5 @@
 <div align="center">
 
-```
- ███╗   ██╗██╗   ██╗ ██████╗██╗  ██╗███████╗ ██████╗██╗  ██╗██╗   ██╗██████╗
- ████╗  ██║██║   ██║██╔════╝██║  ██║██╔════╝██╔════╝██║ ██╔╝██║   ██║██╔══██╗
- ██╔██╗ ██║██║   ██║██║     ███████║█████╗  ██║     █████╔╝ ██║   ██║██████╔╝
- ██║╚██╗██║╚██╗ ██╔╝██║     ██╔══██║██╔══╝  ██║     ██╔═██╗ ██║   ██║██╔═══╝
- ██║ ╚████║ ╚████╔╝ ╚██████╗██║  ██║███████╗╚██████╗██║  ██╗╚██████╔╝██║
- ╚═╝  ╚═══╝  ╚═══╝   ╚═════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝
-```
-
 **Cross-platform NVIDIA diagnostics. For gamers, AI developers, and creators.**
 
 [![CI](https://github.com/nicholasgasior/nvcheckup/actions/workflows/ci.yml/badge.svg)](https://github.com/nicholasgasior/nvcheckup/actions/workflows/ci.yml)
