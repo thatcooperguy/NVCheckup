@@ -240,20 +240,22 @@ func collectPythonEcosystem(info *types.EcosystemInfo, errs *[]types.CollectorEr
 		return
 	}
 	applyEcosystemProbe(info, p, r.Stderr)
-	if p.Triton != nil && p.Triton.Ptxas != "" && info.TritonPtxasPath == "" {
-		// No override: report the bundled binary that Triton will use.
-		info.TritonPtxasPath = p.Triton.Ptxas
+	measureBundledPtxas(info, p, timeout)
+}
+
+// measureBundledPtxas records the version of the ptxas that Triton *bundles*
+// (WP1 item 8, EcosystemInfo.TritonPtxasVersion). TritonPtxasPath is the
+// TRITON_PTXAS_PATH environment value set by CollectEcosystem and is never
+// overwritten here: rule sm121-triton-ptxas-stale fires on "bundled ptxas <
+// 13.0 AND TRITON_PTXAS_PATH unset" and prints "TRITON_PTXAS_PATH={val}", so
+// the two fields must keep their spec meaning even when an override is set.
+func measureBundledPtxas(info *types.EcosystemInfo, p ecosystemProbe, timeout int) {
+	if p.Triton == nil || p.Triton.Ptxas == "" {
+		return
 	}
-	// TritonPtxasVersion is the version of the ptxas Triton will actually run:
-	// the TRITON_PTXAS_PATH override when set, otherwise the bundled binary.
-	// Rule sm121-triton-ptxas-stale ("bundled ptxas < 13.0 AND
-	// TRITON_PTXAS_PATH unset") therefore reduces to TritonPtxasVersion < 13.0:
-	// a user who exported a CUDA 13 ptxas reports that version here.
-	if p.Triton != nil && info.TritonPtxasPath != "" {
-		pr := util.RunCommand(timeout, info.TritonPtxasPath, "--version")
-		if pr.Err == nil {
-			info.TritonPtxasVersion = parseNvccVersion(pr.Stdout)
-		}
+	pr := util.RunCommand(timeout, p.Triton.Ptxas, "--version")
+	if pr.Err == nil {
+		info.TritonPtxasVersion = parseNvccVersion(pr.Stdout)
 	}
 }
 
