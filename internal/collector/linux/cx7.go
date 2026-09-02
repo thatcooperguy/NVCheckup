@@ -146,7 +146,15 @@ func discoverFabricPorts(timeout int) []types.FabricPort {
 	add := func(netdev, rdma, pci string) *types.FabricPort {
 		for _, k := range order {
 			p := byKey[k]
-			if (netdev != "" && p.Netdev == netdev) || (rdma != "" && p.RDMADev == rdma) || (pci != "" && p.PCIAddr == pci && netdev == "" && rdma == "") {
+			// One PCI function carries exactly one netdev and one RDMA device,
+			// so an entry with the same PCIAddr is the same port whenever the
+			// netdev/rdma slots agree or are still empty (device/net may be
+			// absent and ibdev2netdev missing; without this merge one function
+			// would show up twice and look like a third port in the cage).
+			samePCI := pci != "" && p.PCIAddr == pci &&
+				(netdev == "" || p.Netdev == "" || p.Netdev == netdev) &&
+				(rdma == "" || p.RDMADev == "" || p.RDMADev == rdma)
+			if (netdev != "" && p.Netdev == netdev) || (rdma != "" && p.RDMADev == rdma) || samePCI {
 				if p.Netdev == "" {
 					p.Netdev = netdev
 				}

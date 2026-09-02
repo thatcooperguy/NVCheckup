@@ -70,7 +70,10 @@ func readKernelLog(timeout int) (out, tried string, ok bool) {
 		tried = "dmesg"
 	}
 	if util.CommandExists("journalctl") {
-		r := util.RunCommand(timeout, "journalctl", "-k", "-b", "--no-pager", "-q")
+		// -o cat prints the message field only: the marker match needs no
+		// timestamp and the hostname of the default short format must not
+		// reach GSPFailureLines verbatim.
+		r := util.RunCommand(timeout, "journalctl", "-k", "-b", "--no-pager", "-q", "-o", "cat")
 		if r.Err == nil {
 			return r.Stdout, "journalctl", true
 		}

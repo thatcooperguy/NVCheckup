@@ -23,6 +23,14 @@ const (
 	// clockCapUnit is the systemd unit that locks GB10 clocks (spec 4
 	// PlatformInfo.ClockCapUnit comment, rule gb10-clock-cap-active, S48).
 	clockCapUnit = "gb10-clock-cap.service"
+	// clockCapUnitFile is where the S48 instructions install that unit; rule
+	// gb10-clock-cap-active triggers on "gb10-clock-cap.service exists", not
+	// only on it being active.
+	clockCapUnitFile = "/etc/systemd/system/" + clockCapUnit
+	// nvidiaSuspendUnit is the driver's suspend hook whose failed state is
+	// the second variant of rule dgx-spark-suspend-failure ("OR
+	// nvidia-suspend.service failed").
+	nvidiaSuspendUnit = "nvidia-suspend.service"
 	// pstoreDir holds crash records that a logless hard power-off leaves
 	// empty (rule gb10-logless-hard-poweroff, S48).
 	pstoreDir = "/sys/fs/pstore"
@@ -38,9 +46,11 @@ const (
 	gdmSleepKey = "sleep-inactive-ac-type"
 	// maxBootsChecked bounds how many previous boots are classified.
 	maxBootsChecked = 5
-	// uncleanBootWindowDays is "N days" in rule gb10-logless-hard-poweroff.
-	// ASSUMPTION: the spec leaves N open; 7 days is a working default.
-	uncleanBootWindowDays = 7
+	// UncleanBootWindowDays is the {days} window of rule
+	// gb10-logless-hard-poweroff (spark-rules.json: "in the last {days} days
+	// (default 14)"). Exported so the analyzer's evidence template can print
+	// the same window that UncleanBoots was counted over.
+	UncleanBootWindowDays = 14
 	// prevBootTailLines is how many lines of the previous boot are inspected
 	// for a clean-shutdown marker.
 	prevBootTailLines = 30
@@ -55,6 +65,20 @@ var cleanShutdownMarkers = []string{
 	"Reached target Power-Off",
 	"Reached target Reboot",
 	"Reached target Halt",
+}
+
+// loggedFailureMarkers identify boots that ended in a logged failure: kernel
+// panic, OOM kill, Xid, thermal shutdown. Rule gb10-logless-hard-poweroff
+// requires "no panic/OOM/Xid/thermal lines", so such boots are unclean but
+// not log-less and never count towards UncleanBoots (a GSP crash, rule
+// dgx-spark-gsp-init-failure, must not look like a hard power-off). Matched
+// case-insensitively.
+var loggedFailureMarkers = []string{
+	"kernel panic",
+	"out of memory:",
+	"nvrm: xid",
+	"critical temperature",
+	"thermal",
 }
 
 // suspendEntryMarker counts suspend attempts; suspendFailureMarkers mark a
@@ -77,15 +101,18 @@ func CollectDGXHostState(timeout int, p *types.PlatformInfo) []types.CollectorEr
 	}
 
 	if util.CommandExists("fwupdmgr") {
-		r := util.RunCommand(timeout, "fwupdmgr", append([]string{"get-devices"}, fwupdmgrArgs...)...)
-		if comps := parseFwupdDevices(r.Stdout); len(comps) > 0 {
+		// get-devices output is shared with CollectDGXOS through runFwupdmgr.
+		comps := parseFwupdDevices(runFwupdmgr(timeout, "get-devices").Stdout)
+		// get-upgrades exits 2 when nothing is pending; its stdout is parsed
+		// regardless (rule dgx-spark-firmware-behind, OEM path: "report only
+		// pending capsules from fwupdmgr get-upgrades").
+		comps = applyPendingFirmware(comps, parseFwupdUpgrades(runFwupdmgr(timeout, "get-upgrades").Stdout))
+		if len(comps) > 0 {
 			p.Firmware = comps
 		}
 	}
 
-	if unitState(timeout, clockCapUnit) == "active" {
-		p.ClockCapUnit = clockCapUnit
-	}
+	p.ClockCapUnit = clockCapUnitState(timeout)
 
 	collectBootHistory(p, timeout, time.Now())
 	p.PstoreEmpty = dirEmpty(pstoreDir)
@@ -151,6 +178,106 @@ func parseFwupdDevices(out string) []types.FirmwareComponent {
 	return comps
 }
 
+// parseFwupdUpgrades parses "fwupdmgr get-upgrades" into device name ->
+// pending version. A device block ("System Firmware:" followed by Device ID /
+// Current version / GUIDs) is followed by one or more release blocks ("UEFI
+// Firmware Update:" ... "New version: 2.160.1"); the first, newest, New
+// version per device is kept. The "Devices with the latest available
+// firmware version:" bullet list has no key/value rows and is skipped. Rule
+// dgx-spark-firmware-behind (OEM path). ASSUMPTION: layout taken from
+// fwupdmgr's documented tree output pending a GB10 capture (spec section 12).
+func parseFwupdUpgrades(out string) map[string]string {
+	pending := map[string]string{}
+	var device, header string
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(stripTreeChars(raw))
+		if line == "" {
+			continue
+		}
+		if strings.HasSuffix(line, ":") && strings.Count(line, ":") == 1 {
+			header = strings.TrimSuffix(line, ":")
+			continue
+		}
+		m := fwupdKV.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		key, val := strings.ToLower(strings.TrimSpace(m[1])), strings.TrimSpace(m[2])
+		switch key {
+		case "device id", "current version", "guid", "guids":
+			// Keys that only device blocks carry: the last header named a device.
+			if header != "" {
+				device, header = header, ""
+			}
+		case "new version":
+			// The last header (if any) named a release of the current device.
+			header = ""
+			if device != "" && val != "" && pending[device] == "" {
+				pending[device] = normalizeFirmwareVersion(val)
+			}
+		}
+	}
+	return pending
+}
+
+// applyPendingFirmware fills FirmwareComponent.Pending from the get-upgrades
+// map (a pending capsule version replaces the bare "Update State" word that
+// get-devices may have left there) and appends devices that get-devices did
+// not list.
+func applyPendingFirmware(comps []types.FirmwareComponent, pending map[string]string) []types.FirmwareComponent {
+	if len(pending) == 0 {
+		return comps
+	}
+	seen := map[string]bool{}
+	for i := range comps {
+		seen[comps[i].Name] = true
+		if v, ok := pending[comps[i].Name]; ok {
+			comps[i].Pending = v
+		}
+	}
+	names := make([]string, 0, len(pending))
+	for n := range pending {
+		if !seen[n] {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		comps = append(comps, types.FirmwareComponent{Name: n, Pending: pending[n]})
+	}
+	return comps
+}
+
+// clockCapUnitState returns "" when gb10-clock-cap.service neither runs nor
+// exists, the bare unit name when it is active, and "gb10-clock-cap.service
+// (<state>)" when the unit file exists but is inactive or failed. systemctl
+// is-active prints "inactive" for a missing unit and for an installed but
+// stopped one alike, so existence is checked separately (unit file under
+// /etc/systemd/system or LoadState=loaded).
+func clockCapUnitState(timeout int) string {
+	state := unitState(timeout, clockCapUnit)
+	if state == "active" {
+		return clockCapUnit
+	}
+	if !simFileExists(clockCapUnitFile) && !unitLoaded(timeout, clockCapUnit) {
+		return ""
+	}
+	if state == "" {
+		state = "inactive"
+	}
+	return clockCapUnit + " (" + state + ")"
+}
+
+// unitLoaded reports whether systemd knows the unit file (LoadState=loaded;
+// a missing unit prints not-found).
+func unitLoaded(timeout int, unit string) bool {
+	if !util.CommandExists("systemctl") {
+		return false
+	}
+	r := util.RunCommand(timeout, "systemctl", "show", "-p", "LoadState", "--value", unit)
+	return firstLineOfText(r.Stdout) == "loaded"
+}
+
 // hexVersionRe matches the hex form fwupd reports for some GB10 components,
 // e.g. 0x03000508.
 var hexVersionRe = regexp.MustCompile(`^0[xX]([0-9a-fA-F]{1,8})$`)
@@ -212,31 +339,51 @@ func parseBootList(out string) []bootEntry {
 	return boots
 }
 
-// classifyBootTail reports whether a boot's final journal lines contain a
-// clean-shutdown marker, and returns the last non-empty line.
-func classifyBootTail(out string) (clean bool, lastLine string) {
+// bootTail is the classification of one boot's final journal lines.
+type bootTail struct {
+	Clean         bool   // a clean-shutdown marker is present
+	LoggedFailure bool   // a panic/OOM/Xid/thermal line is present
+	LastLine      string // last non-empty line, truncated
+}
+
+// Logless reports whether the boot ended with neither a clean-shutdown marker
+// nor a logged failure: the signature rule gb10-logless-hard-poweroff counts.
+func (b bootTail) Logless() bool { return !b.Clean && !b.LoggedFailure }
+
+// classifyBootTail inspects a boot's final journal lines for clean-shutdown
+// and logged-failure markers and keeps the last non-empty line.
+func classifyBootTail(out string) bootTail {
+	var b bootTail
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := strings.TrimSpace(lines[i])
 		if l == "" {
 			continue
 		}
-		if lastLine == "" {
-			lastLine = util.TruncateString(l, 200)
+		if b.LastLine == "" {
+			b.LastLine = util.TruncateString(l, 200)
 		}
 		for _, marker := range cleanShutdownMarkers {
 			if strings.Contains(l, marker) {
-				clean = true
+				b.Clean = true
+			}
+		}
+		lower := strings.ToLower(l)
+		for _, marker := range loggedFailureMarkers {
+			if strings.Contains(lower, marker) {
+				b.LoggedFailure = true
 			}
 		}
 	}
-	return clean, lastLine
+	return b
 }
 
 // collectBootHistory classifies the previous boot (PrevBootClean,
-// PrevBootLastLine) and counts unclean boots inside the window
-// (UncleanBoots). Without journalctl or a persistent journal everything
-// stays nil/zero.
+// PrevBootLastLine) and counts log-less boots inside the window
+// (UncleanBoots: no clean-shutdown marker AND no panic/OOM/Xid/thermal line,
+// per rule gb10-logless-hard-poweroff). Without journalctl or a persistent
+// journal everything stays nil/zero. The tail is read with -o cat (message
+// only) so no hostname reaches PrevBootLastLine.
 func collectBootHistory(p *types.PlatformInfo, timeout int, now time.Time) {
 	if !util.CommandExists("journalctl") {
 		return
@@ -249,20 +396,20 @@ func collectBootHistory(p *types.PlatformInfo, timeout int, now time.Time) {
 	if len(boots) > maxBootsChecked {
 		boots = boots[:maxBootsChecked]
 	}
-	cutoff := now.AddDate(0, 0, -uncleanBootWindowDays)
+	cutoff := now.AddDate(0, 0, -UncleanBootWindowDays)
 	for _, b := range boots {
-		tail := util.RunCommand(timeout, "journalctl", "-b", strconv.Itoa(b.Index), "--no-pager", "-q", "-n", strconv.Itoa(prevBootTailLines))
+		tail := util.RunCommand(timeout, "journalctl", "-b", strconv.Itoa(b.Index), "--no-pager", "-q", "-o", "cat", "-n", strconv.Itoa(prevBootTailLines))
 		if strings.TrimSpace(tail.Stdout) == "" {
 			continue
 		}
-		clean, last := classifyBootTail(tail.Stdout)
+		t := classifyBootTail(tail.Stdout)
 		if b.Index == -1 {
-			c := clean
+			c := t.Clean
 			p.PrevBootClean = &c
-			p.PrevBootLastLine = last
+			p.PrevBootLastLine = t.LastLine
 		}
 		inWindow := b.LastDay.IsZero() || !b.LastDay.Before(cutoff)
-		if !clean && inWindow {
+		if t.Logless() && inWindow {
 			p.UncleanBoots++
 		}
 	}
@@ -337,7 +484,8 @@ func parseSuspendMarkers(out string) (attempts int, failed bool) {
 }
 
 // collectSuspendMarkers reads the current boot's journal (dmesg fallback) for
-// suspend attempts and failures.
+// suspend attempts and failures, then checks the nvidia-suspend.service unit
+// (rule dgx-spark-suspend-failure: "... OR nvidia-suspend.service failed").
 func collectSuspendMarkers(p *types.PlatformInfo, timeout int) {
 	var out string
 	switch {
@@ -348,8 +496,14 @@ func collectSuspendMarkers(p *types.PlatformInfo, timeout int) {
 	case util.CommandExists("dmesg"):
 		r := util.RunCommand(timeout, "dmesg")
 		out = r.Stdout
-	default:
-		return
 	}
-	p.SuspendAttempts, p.SuspendFailed = parseSuspendMarkers(out)
+	if out != "" {
+		p.SuspendAttempts, p.SuspendFailed = parseSuspendMarkers(out)
+	}
+	if unitState(timeout, nvidiaSuspendUnit) == "failed" {
+		p.SuspendFailed = true
+		if p.SuspendAttempts == 0 {
+			p.SuspendAttempts = 1
+		}
+	}
 }

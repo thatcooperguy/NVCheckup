@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
@@ -162,19 +163,32 @@ func parseOTASummary(out string) (name string, failed []string) {
 	return name, failed
 }
 
-// firstIntRe finds the first integer in a tool's output.
-var firstIntRe = regexp.MustCompile(`-?\d+`)
+// tornScoreRe captures the integer that follows a "torn score" / "torn-score"
+// / "torn_score" label.
+var tornScoreRe = regexp.MustCompile(`(?i)torn[-_ ]?score\D*?(-?\d+)`)
 
-// parseTornScore returns the first integer printed by "nvidia-spark-ota-check
+// intRe finds integers in a tool's output.
+var intRe = regexp.MustCompile(`-?\d+`)
+
+// parseTornScore returns the score printed by "nvidia-spark-ota-check
 // torn-score". ASSUMPTION: the exact output format of torn-score is not in
-// the spec (only that a score > 0 means a torn OTA); the first integer is
-// taken pending a field capture (spec section 12).
+// the spec (only that a score > 0 means a torn OTA; spec 2.1 "Updates"). The
+// number after a "torn-score" label is preferred; without the label the LAST
+// integer is taken after removing OTA names (OTA2607, spec 2.1), so the OTA
+// name can never be mistaken for the score. Pending a field capture (spec
+// section 12).
 func parseTornScore(out string) (int, bool) {
-	m := firstIntRe.FindString(out)
-	if m == "" {
+	stripped := otaNameRe.ReplaceAllString(out, "")
+	if m := tornScoreRe.FindStringSubmatch(stripped); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n, true
+		}
+	}
+	all := intRe.FindAllString(stripped, -1)
+	if len(all) == 0 {
 		return 0, false
 	}
-	n, err := strconv.Atoi(m)
+	n, err := strconv.Atoi(all[len(all)-1])
 	if err != nil {
 		return 0, false
 	}
@@ -284,6 +298,7 @@ var (
 // linux-modules-nvidia-* package matches the running kernel.
 func dgxPackageFacts(pkgs []dpkgPackage, kernel string) (driver, firmware string, modulesForKernel bool) {
 	var fallbackDriver string
+	var firmwares []string
 	for _, p := range pkgs {
 		if !p.Installed {
 			continue
@@ -298,8 +313,8 @@ func dgxPackageFacts(pkgs []dpkgPackage, kernel string) (driver, firmware string
 			}
 			continue
 		}
-		if firmwarePkgRe.MatchString(p.Name) && firmware == "" {
-			firmware = p.Version
+		if firmwarePkgRe.MatchString(p.Name) {
+			firmwares = append(firmwares, p.Version)
 			continue
 		}
 		if m := modulesPkgRe.FindStringSubmatch(p.Name); m != nil && kernel != "" && m[3] == kernel {
@@ -309,7 +324,122 @@ func dgxPackageFacts(pkgs []dpkgPackage, kernel string) (driver, firmware string
 	if driver == "" {
 		driver = fallbackDriver
 	}
-	return driver, firmware, modulesForKernel
+	return driver, pickFirmwareVersion(firmwares, driver), modulesForKernel
+}
+
+// pickFirmwareVersion chooses among the installed nvidia-firmware-<branch>-*
+// rows. After an OTA the previous versioned firmware package (e.g.
+// nvidia-firmware-580-580.126.09) routinely stays installed until autoremove
+// and sorts before the current one in dpkg-query output, so taking the first
+// row would report a false pairing mismatch (rule dgx-spark-ota-torn:
+// "nvidia-driver-580-open version != nvidia-firmware-580-* version"). The row
+// equal to the driver version wins; otherwise the highest version by dpkg
+// ordering.
+func pickFirmwareVersion(versions []string, driver string) string {
+	best := ""
+	for _, v := range versions {
+		if v == driver && v != "" {
+			return v
+		}
+		if best == "" || compareDebVersion(best, v) < 0 {
+			best = v
+		}
+	}
+	return best
+}
+
+// compareDebVersion orders two Debian package versions like dpkg
+// --compare-versions: epoch, then upstream, then revision, each compared by
+// alternating non-digit and digit runs with '~' sorting before everything
+// (including the end of the string). Returns -1, 0 or 1.
+func compareDebVersion(a, b string) int {
+	ea, ua, ra := splitDebVersion(a)
+	eb, ub, rb := splitDebVersion(b)
+	switch {
+	case ea < eb:
+		return -1
+	case ea > eb:
+		return 1
+	}
+	if c := compareDebPart(ua, ub); c != 0 {
+		return c
+	}
+	return compareDebPart(ra, rb)
+}
+
+// splitDebVersion splits [epoch:]upstream[-revision].
+func splitDebVersion(v string) (epoch int, upstream, revision string) {
+	if i := strings.IndexByte(v, ':'); i >= 0 {
+		epoch, _ = strconv.Atoi(v[:i])
+		v = v[i+1:]
+	}
+	if i := strings.LastIndexByte(v, '-'); i >= 0 {
+		return epoch, v[:i], v[i+1:]
+	}
+	return epoch, v, ""
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// debCharOrder ranks a byte for the non-digit comparison (dpkg's order()):
+// '~' before everything, then end-of-string/digit, then letters, then the
+// remaining punctuation.
+func debCharOrder(c byte) int {
+	switch {
+	case c == '~':
+		return -1
+	case c == 0 || isASCIIDigit(c):
+		return 0
+	case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+		return int(c)
+	default:
+		return int(c) + 256
+	}
+}
+
+func compareDebPart(a, b string) int {
+	at := func(s string) byte {
+		if s == "" {
+			return 0
+		}
+		return s[0]
+	}
+	for a != "" || b != "" {
+		for (a != "" && !isASCIIDigit(a[0])) || (b != "" && !isASCIIDigit(b[0])) {
+			oa, ob := debCharOrder(at(a)), debCharOrder(at(b))
+			if oa != ob {
+				if oa < ob {
+					return -1
+				}
+				return 1
+			}
+			// Same order and at least one side is a non-digit character, so
+			// both sides hold the same character: advance both.
+			a, b = a[1:], b[1:]
+		}
+		i, j := 0, 0
+		for i < len(a) && isASCIIDigit(a[i]) {
+			i++
+		}
+		for j < len(b) && isASCIIDigit(b[j]) {
+			j++
+		}
+		da, db := strings.TrimLeft(a[:i], "0"), strings.TrimLeft(b[:j], "0")
+		a, b = a[i:], b[j:]
+		switch {
+		case len(da) != len(db):
+			if len(da) < len(db) {
+				return -1
+			}
+			return 1
+		case da != db:
+			if da < db {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
 
 // runningKernel returns the running kernel release from
@@ -473,11 +603,33 @@ func fwupdErrorFromOutput(stdout, stderr string) string {
 // refresh, no remote check, no prompts.
 var fwupdmgrArgs = []string{"--no-unreported-check", "--no-metadata-check", "--no-remote-check", "--no-device-prompt"}
 
+// fwupdOutputs caches each fwupdmgr sub-command result for the life of the
+// process so CollectDGXOS (mismatch/error text) and CollectDGXHostState
+// (device tree, pending capsules) run every query once. One CLI invocation is
+// one pipeline, so the cache never goes stale in practice.
+var fwupdOutputs = struct {
+	sync.Mutex
+	byCmd map[string]util.CommandResult
+}{byCmd: map[string]util.CommandResult{}}
+
+// runFwupdmgr runs "fwupdmgr <sub>" with the offline flags, memoised per
+// sub-command.
+func runFwupdmgr(timeout int, sub string) util.CommandResult {
+	fwupdOutputs.Lock()
+	defer fwupdOutputs.Unlock()
+	if r, ok := fwupdOutputs.byCmd[sub]; ok {
+		return r
+	}
+	r := util.RunCommand(timeout, "fwupdmgr", append([]string{sub}, fwupdmgrArgs...)...)
+	fwupdOutputs.byCmd[sub] = r
+	return r
+}
+
 func collectFwupdError(info *types.DGXOSInfo, timeout int) {
 	if !util.CommandExists("fwupdmgr") {
 		return
 	}
-	r := util.RunCommand(timeout, "fwupdmgr", append([]string{"get-devices"}, fwupdmgrArgs...)...)
+	r := runFwupdmgr(timeout, "get-devices")
 	if r.Err == nil && !fwupdMismatchRe.MatchString(r.Stdout+r.Stderr) {
 		return
 	}

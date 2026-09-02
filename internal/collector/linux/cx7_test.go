@@ -210,3 +210,37 @@ func TestDiscoverFabricPortsFromSimRoot(t *testing.T) {
 		t.Errorf("NetplanMTU = %d, want 9000", info.NetplanMTU)
 	}
 }
+
+// TestDiscoverFabricPortsWithoutDeviceNet: when /sys/class/infiniband/<dev>/
+// device/net is absent (and ibdev2netdev is not on PATH) the netdev and the
+// RDMA device of one function must still merge into one FabricPort by PCI
+// address, or cx7-twin-link-mismatch would see a phantom third port.
+func TestDiscoverFabricPortsWithoutDeviceNet(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(simRootEnv, root)
+	t.Setenv("PATH", "")
+
+	writeFixture(t, root, "sys/class/net/enp1s0f0np0/operstate", "up\n")
+	writeFixture(t, root, "sys/class/net/enp1s0f0np0/device/vendor", "0x15b3\n")
+	writeFixture(t, root, "sys/class/net/enp1s0f0np0/device/uevent", "PCI_SLOT_NAME=0000:01:00.0\n")
+	writeFixture(t, root, "sys/class/infiniband/rocep1s0f0/ports/1/state", "4: ACTIVE\n")
+	writeFixture(t, root, "sys/class/infiniband/rocep1s0f0/ports/1/rate", "200 Gb/sec (4X NDR)\n")
+	writeFixture(t, root, "sys/class/infiniband/rocep1s0f0/device/uevent", "PCI_SLOT_NAME=0000:01:00.0\n")
+	// Second function of the same cage keeps its own entry.
+	writeFixture(t, root, "sys/class/net/enP2p1s0f0np0/operstate", "down\n")
+	writeFixture(t, root, "sys/class/net/enP2p1s0f0np0/device/vendor", "0x15b3\n")
+	writeFixture(t, root, "sys/class/net/enP2p1s0f0np0/device/uevent", "PCI_SLOT_NAME=0002:01:00.0\n")
+	writeFixture(t, root, "sys/class/infiniband/rocep2p1s0f0/ports/1/state", "1: DOWN\n")
+	writeFixture(t, root, "sys/class/infiniband/rocep2p1s0f0/device/uevent", "PCI_SLOT_NAME=0002:01:00.0\n")
+
+	ports := discoverFabricPorts(5)
+	if len(ports) != 2 {
+		t.Fatalf("ports = %+v, want 2 (one per PCI function)", ports)
+	}
+	if ports[0].Netdev != "enp1s0f0np0" || ports[0].RDMADev != "rocep1s0f0" || ports[0].PCIAddr != "0000:01:00.0" || ports[0].State != "4: ACTIVE" {
+		t.Errorf("port 0 = %+v", ports[0])
+	}
+	if ports[1].Netdev != "enP2p1s0f0np0" || ports[1].RDMADev != "rocep2p1s0f0" || ports[1].PCIAddr != "0002:01:00.0" || ports[1].State != "1: DOWN" {
+		t.Errorf("port 1 = %+v", ports[1])
+	}
+}

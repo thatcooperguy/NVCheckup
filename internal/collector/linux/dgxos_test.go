@@ -79,14 +79,26 @@ func TestParseOTASummary(t *testing.T) {
 }
 
 func TestParseTornScore(t *testing.T) {
-	if n, ok := parseTornScore("torn-score: 3\n"); !ok || n != 3 {
-		t.Errorf("torn score = %d %v, want 3", n, ok)
+	cases := []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"torn-score: 3\n", 3, true},
+		{"0", 0, true},
+		{"no score", 0, false},
+		// The OTA name must never be read as the score (would be 2607).
+		{"OTA2607 torn-score: 0", 0, true},
+		{"detected_ota OTA2607\ntorn_score 2\n", 2, true},
+		{"detected_ota OTA2607\n1\n", 1, true},
+		{"OTA2607", 0, false},
+		{"Torn score for OTA2607: 4", 4, true},
 	}
-	if n, ok := parseTornScore("0"); !ok || n != 0 {
-		t.Errorf("torn score zero = %d %v", n, ok)
-	}
-	if _, ok := parseTornScore("no score"); ok {
-		t.Error("expected no score")
+	for _, c := range cases {
+		n, ok := parseTornScore(c.in)
+		if ok != c.ok || n != c.want {
+			t.Errorf("parseTornScore(%q) = %d %v, want %d %v", c.in, n, ok, c.want, c.ok)
+		}
 	}
 }
 
@@ -142,6 +154,58 @@ func TestDgxPackageFactsFromDpkgQuery(t *testing.T) {
 	only := []dpkgPackage{{Name: "nvidia-driver-570-server", Version: "570.86.15", Installed: true}}
 	if d, _, _ := dgxPackageFacts(only, ""); d != "570.86.15" {
 		t.Errorf("fallback driver = %q", d)
+	}
+}
+
+// TestDgxPackageFactsLeftoverFirmware: after an OTA the previous versioned
+// firmware package stays installed until autoremove and sorts first in
+// dpkg-query output; the firmware version must still pair with the driver so
+// dgx-spark-ota-torn does not fire on a healthy machine.
+func TestDgxPackageFactsLeftoverFirmware(t *testing.T) {
+	out := "nvidia-driver-580-open\t580.159.03-0ubuntu0.24.04.1\tinstall ok installed\n" +
+		"nvidia-firmware-580-580.126.09\t580.126.09-0ubuntu0.24.04.1\tinstall ok installed\n" +
+		"nvidia-firmware-580-580.159.03\t580.159.03-0ubuntu0.24.04.1\tinstall ok installed\n"
+	driver, firmware, _ := dgxPackageFacts(parseDpkgQuery(out), "")
+	if driver != firmware || firmware != "580.159.03-0ubuntu0.24.04.1" {
+		t.Errorf("driver/firmware = %q/%q, want the paired 580.159.03 row", driver, firmware)
+	}
+	// Without a driver row the highest firmware wins (dpkg ordering, not row order).
+	noDriver := "nvidia-firmware-580-580.173.02\t580.173.02-0ubuntu0.24.04.1\tinstall ok installed\n" +
+		"nvidia-firmware-580-580.95.05\t580.95.05-0ubuntu0.24.04.1\tinstall ok installed\n" +
+		"nvidia-firmware-580-580.126.09\t580.126.09-0ubuntu0.24.04.1\tinstall ok installed\n"
+	if _, fw, _ := dgxPackageFacts(parseDpkgQuery(noDriver), ""); fw != "580.173.02-0ubuntu0.24.04.1" {
+		t.Errorf("highest firmware = %q", fw)
+	}
+	// A driver newer than every firmware (plain apt upgrade, the torn case)
+	// still reports the highest firmware so the mismatch is visible.
+	torn := "nvidia-driver-580-open\t580.173.02-0ubuntu0.24.04.1\tinstall ok installed\n" +
+		"nvidia-firmware-580-580.126.09\t580.126.09-0ubuntu0.24.04.1\tinstall ok installed\n" +
+		"nvidia-firmware-580-580.159.03\t580.159.03-0ubuntu0.24.04.1\tinstall ok installed\n"
+	if d, fw, _ := dgxPackageFacts(parseDpkgQuery(torn), ""); d == fw || fw != "580.159.03-0ubuntu0.24.04.1" {
+		t.Errorf("torn driver/firmware = %q/%q", d, fw)
+	}
+}
+
+func TestCompareDebVersion(t *testing.T) {
+	less := [][2]string{
+		{"580.126.09-0ubuntu0.24.04.1", "580.159.03-0ubuntu0.24.04.1"},
+		{"580.95.05", "580.126.09"},
+		{"580.159.03-0ubuntu0.24.04.1", "580.159.03-0ubuntu0.24.04.2"},
+		{"1.0~rc1", "1.0"},
+		{"1.0", "1:0.1"},
+		{"2.9.0", "2.9.0+cu130"},
+		{"6.17.0-1026.26+3", "6.17.0-1031.31"},
+	}
+	for _, c := range less {
+		if compareDebVersion(c[0], c[1]) >= 0 {
+			t.Errorf("compareDebVersion(%q, %q) should be < 0", c[0], c[1])
+		}
+		if compareDebVersion(c[1], c[0]) <= 0 {
+			t.Errorf("compareDebVersion(%q, %q) should be > 0", c[1], c[0])
+		}
+	}
+	if compareDebVersion("580.159.03-0ubuntu0.24.04.1", "580.159.03-0ubuntu0.24.04.1") != 0 {
+		t.Error("equal versions must compare 0")
 	}
 }
 
@@ -232,6 +296,54 @@ func TestParseFwupdDevices(t *testing.T) {
 	}
 }
 
+// fwupdUpgradesFixture follows fwupdmgr's tree layout: the bullet list of
+// current devices, then one device block with two release blocks (newest
+// first). ASSUMPTION: layout pending a GB10 capture (spec section 12).
+const fwupdUpgradesFixture = `Devices with the latest available firmware version:
+ • Embedded Controller
+ • USB-PD Controller
+DGX Spark
+│
+└─System Firmware:
+  │   Device ID:          1a2b3c4d5e6f
+  │   Summary:            UEFI System Firmware
+  │   Current version:    0x02009b0b
+  │   Minimum Version:    0x02000000
+  │   Vendor:             NVIDIA (DMI:NVIDIA)
+  │   GUIDs:              230c8b18-8d9b-53ec-838b-6cfc0383493a
+  │
+  ├─UEFI Firmware Update:
+  │     New version:      0x0200a001
+  │     Remote ID:        lvfs
+  │     Summary:          UEFI System Firmware update
+  │     Vendor:           NVIDIA
+  │
+  └─UEFI Firmware Update:
+        New version:      0x02009c00
+        Remote ID:        lvfs
+`
+
+func TestParseFwupdUpgradesAndApplyPending(t *testing.T) {
+	pending := parseFwupdUpgrades(fwupdUpgradesFixture)
+	if want := map[string]string{"System Firmware": "2.160.1"}; !reflect.DeepEqual(pending, want) {
+		t.Errorf("parseFwupdUpgrades = %v, want %v", pending, want)
+	}
+	if got := parseFwupdUpgrades("No updates available\n"); len(got) != 0 {
+		t.Errorf("no-upgrades output must yield nothing, got %v", got)
+	}
+	comps := []types.FirmwareComponent{
+		{Name: "Embedded Controller", Version: "3.5.8"},
+		{Name: "System Firmware", Version: "2.155.11"},
+	}
+	comps = applyPendingFirmware(comps, map[string]string{"System Firmware": "2.160.1", "USB-PD Controller": "0.5.22"})
+	if len(comps) != 3 || comps[1].Pending != "2.160.1" || comps[0].Pending != "" {
+		t.Errorf("applyPendingFirmware = %+v", comps)
+	}
+	if comps[2].Name != "USB-PD Controller" || comps[2].Pending != "0.5.22" || comps[2].Version != "" {
+		t.Errorf("device only in get-upgrades = %+v", comps[2])
+	}
+}
+
 func TestNormalizeFirmwareVersion(t *testing.T) {
 	cases := map[string]string{
 		"0x03000508": "3.5.8",    // EC 3.5.8 (spec 2.1 FE table)
@@ -262,13 +374,34 @@ func TestParseBootListAndClassify(t *testing.T) {
 		t.Errorf("boot -1 last day = %v", boots[0].LastDay)
 	}
 
-	clean, last := classifyBootTail("Sep 01 17:59:58 spark systemd[1]: Reached target Power-Off.\nSep 01 17:59:59 spark systemd-journald[300]: Journal stopped\n")
-	if !clean || last != "Sep 01 17:59:59 spark systemd-journald[300]: Journal stopped" {
-		t.Errorf("clean tail: clean=%v last=%q", clean, last)
+	// -o cat output (message only, no hostname) is what the collector reads.
+	b := classifyBootTail("Reached target Power-Off.\nJournal stopped\n")
+	if !b.Clean || b.LoggedFailure || b.Logless() || b.LastLine != "Journal stopped" {
+		t.Errorf("clean tail: %+v", b)
 	}
-	clean, last = classifyBootTail("Aug 24 22:10:00 spark kernel: NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!\n")
-	if clean || !strings.Contains(last, "Xid") {
-		t.Errorf("unclean tail: clean=%v last=%q", clean, last)
+	// The default short format still classifies (hostname present).
+	b = classifyBootTail("Sep 01 17:59:58 spark systemd[1]: Reached target Power-Off.\nSep 01 17:59:59 spark systemd-journald[300]: Journal stopped\n")
+	if !b.Clean || b.LastLine != "Sep 01 17:59:59 spark systemd-journald[300]: Journal stopped" {
+		t.Errorf("clean short tail: %+v", b)
+	}
+	// A log-less power-off: ordinary lines, then nothing.
+	b = classifyBootTail("Started GNOME Display Manager.\nnvidia-persistenced: Started (1234)\n")
+	if b.Clean || b.LoggedFailure || !b.Logless() {
+		t.Errorf("logless tail: %+v", b)
+	}
+	// Boots that ended in a logged failure are unclean but not log-less and
+	// must not count towards UncleanBoots (rule gb10-logless-hard-poweroff:
+	// "AND no panic/OOM/Xid/thermal lines").
+	for _, tail := range []string{
+		"NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!\n",
+		"Kernel panic - not syncing: Fatal exception\n",
+		"Out of memory: Killed process 4242 (python3) total-vm:120000000kB\n",
+		"thermal thermal_zone0: critical temperature reached (105 C), shutting down\n",
+	} {
+		b = classifyBootTail(tail)
+		if b.Clean || !b.LoggedFailure || b.Logless() {
+			t.Errorf("logged-failure tail %q: %+v", tail, b)
+		}
 	}
 }
 
@@ -351,6 +484,18 @@ func TestCollectDGXHostStateFromSimRoot(t *testing.T) {
 	}
 	if p.GDMSleepPolicy != "nothing" {
 		t.Errorf("GDMSleepPolicy = %q", p.GDMSleepPolicy)
+	}
+	if p.ClockCapUnit != "" {
+		t.Errorf("ClockCapUnit = %q without a unit file", p.ClockCapUnit)
+	}
+
+	// An installed but stopped clock-cap unit is still reported (rule
+	// gb10-clock-cap-active: "gb10-clock-cap.service exists").
+	writeFixture(t, root, "etc/systemd/system/gb10-clock-cap.service", "[Service]\nExecStart=/usr/bin/nvidia-smi -lgc 300,2200\n")
+	var q types.PlatformInfo
+	CollectDGXHostState(5, &q)
+	if q.ClockCapUnit != "gb10-clock-cap.service (inactive)" {
+		t.Errorf("ClockCapUnit = %q, want the unit marked inactive", q.ClockCapUnit)
 	}
 }
 
