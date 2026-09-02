@@ -1,4 +1,6 @@
-$ nvcheckup llm-plan --model "Llama 3.1 8B Instruct" --quant bf16 --context 32768 --profile agent --concurrency 4 --runtime vllm
+$ nvcheckup llm-plan --model llama-3.1-8b-instruct --profile agent --runtime vllm --json --out plan
+  (agent profile = 4 streams x 32768 tokens; BF16 is the model's default format; the same plan is produced
+   offline from a saved report with: nvcheckup llm-plan --report report.json --model llama-3.1-8b-instruct --profile agent --runtime vllm)
 
 ────────────────────────────────────────────────────────────────────────
   NVCheckup v0.3.0-dev — LLM deployment plan
@@ -13,7 +15,7 @@ $ nvcheckup llm-plan --model "Llama 3.1 8B Instruct" --quant bf16 --context 3276
 
 == VERDICT: FITS WITH WARNINGS (exit code 1) ==
 
-  Llama 3.1 8B Instruct, BF16, agent profile: 4 streams (1 + 3 subagents) x 32768 tokens, f16 KV, vLLM
+  llama-3.1-8b-instruct (Llama 3.1 8B Instruct), BF16, agent profile: 4 streams (1 + 3 subagents) x 32768 tokens, f16 KV, vLLM
 
   Component                                 GiB     How it was computed
   ----------------------------------------  ------  ----------------------------------------------------------
@@ -96,8 +98,13 @@ This is an ILLUSTRATION of the plan nvcheckup llm-plan prints, rendered by hand 
 example of docs/roadmap/spark-support.md section 7.5 (Llama 3.1 8B BF16, agent 4 x 32K, f16 KV, vLLM
 on a 128 GB DGX Spark whose measured MemTotal is 119.7 GiB). Every number is taken from sections 7.3-7.5
 of the spec: W 15.0 GiB, KV 16.0 GiB, R 12 GiB, F 8 GiB, u = 0.40, ceilings 17 tok/s weights-only and
-13.4 tok/s at 32K, FP8 34 / 22 and NVFP4 61 / 31. The MemAvailable, swap and prerequisite values come
-from the simulated GB10 scenario used in CI, with a CUDA 12.8 torch wheel added so that the WARN path
-is visible. The layout is what section 7.8 specifies (header, verdict with arithmetic, runtime command,
-environment, prerequisites, estimates, warnings); column spacing may differ from the shipped renderer.
+13.4 tok/s at 32K, FP8 34 / 22 and NVFP4 61 / 31. The command line, the model id (llama-3.1-8b-instruct,
+as printed by --list-models), the --profile agent defaults (4 x 32K) and the plan.json keys checked in
+CI (fit.total_gib = 51.0, fit.gpu_memory_utilization = 0.40) are those of the shipped wizard; the
+simulated gb10 CI job produces the same plan offline with --report gb10/report.json. The MemAvailable,
+swap and prerequisite values come from the simulated GB10 scenario, with a CUDA 12.8 torch wheel added
+so that the WARN path is visible. The layout is what section 7.8 specifies (header, verdict with
+arithmetic, runtime command, environment, prerequisites, estimates, warnings); column spacing, the
+vLLM tool-call parser placeholder and the exact prerequisite wording may differ from the shipped renderer
+(internal/llmplan/render.go is authoritative; regenerate this file from a real run when hardware exists).
 No plan has been produced on real hardware yet (issue #3).

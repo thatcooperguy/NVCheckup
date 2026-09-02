@@ -131,13 +131,13 @@ The things we most want to see verbatim: the `nvidia-smi -L` line and the CSV va
 
 ## Adding a simulated scenario and shim
 
-Scenarios are JSON files under `.github/fieldtest/scenarios/`. A scenario describes one machine: the GPU rows (`index`, `name`, `uuid`, `driver_version`, `pci.bus_id`, the `memory.*`, `temperature.gpu`, `power.*`, `pstate`, `clocks.*`, `fan.speed`, `utilization.gpu`, `pcie.link.*`, `clocks_event_reasons.active`, `compute_cap` fields the shim answers per query field), plus line lists that the other shims replay verbatim (`lspci_lines`, `dpkg_lines`, `lsmod_lines`, `dmesg_lines`, `lscpu_lines`, `cpuinfo_lines`, `ibdev2netdev_lines`), structured blocks for `dmi`, `meminfo`, `fwupd_devices`, `spark_ota_check_summary`, and the file contents the job writes under `NVC_SIM_ROOT` (`dgx_release`, `fastos_release`, `os_release`, `device_tree_model`). Look at `gb10.json` for the full shape and at `rig3.json` for a plain multi-GPU rig.
+Scenarios are JSON files under `.github/fieldtest/scenarios/`. A scenario describes one machine: the GPU rows (`index`, `name`, `uuid`, `driver_version`, `pci.bus_id`, the `memory.*`, `temperature.gpu`, `power.*`, `pstate`, `clocks.*`, `fan.speed`, `utilization.gpu`, `pcie.link.*`, `clocks_event_reasons.active`, `compute_cap` fields the shim answers per query field, plus `compute_apps` and `performance_counters_us`), line lists that the other shims replay verbatim (`lspci_lines`, `dpkg_lines`, `lsmod_lines`, `dmesg_lines`, `lscpu_lines`, `cpuinfo_lines`, `ldconfig_libs`), structured blocks for `dmi`, `meminfo`, `swaps`, `thermal_zones`, `listening_tcp_ports`, `cx7_ports` and `other_netdevs` (one source for `ibdev2netdev`, `ibstat`, `ip` and the sysfs tree), `systemd_units`, `fwupd_devices` / `fwupd_updates`, `spark_ota_*`, `journal_boots` / `journal_units` / `hostname` (the `journalctl` shim), `netplan`, `cx7_hotplug_enabled`, `docker`, `apt_sources`, and the file contents written under `NVC_SIM_ROOT` (`dgx_release`, `fastos_release`, `os_release`, `kernel`, `device_tree_model`). Look at `gb10.json` for the full shape (its `description` names every placeholder) and at `rig3.json` for a plain multi-GPU rig.
 
 1. **Start from a capture.** Copy real command output into the line lists; use `[N/A]`, `Not Supported` and odd formatting exactly as the tool printed them. Mark anything you had to invent in the scenario's `description` so a later capture can replace it.
-2. **Shims answer only what the collectors ask.** Each shim in `.github/fieldtest/shims/` is a small script that reads the scenario named by the workflow and prints the answer for the exact arguments the collector passes (`nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits`, `lspci -nn`, `dpkg-query -W ...`, `fwupdmgr get-devices`, ...). When you add a collector that runs a new command, add a shim for it and a scenario key it reads; when you add a query field, teach the `nvidia-smi` shim to answer it and print `[N/A]` verbatim where the hardware would.
-3. **Files go under `NVC_SIM_ROOT`.** The workflow step creates a temporary root and writes `/etc/dgx-release`, `/etc/fastos-release`, `/etc/os-release`, `/sys/class/dmi/id/*`, `/proc/meminfo`, `/proc/cpuinfo` and `/sys/class/thermal/*` fixtures under it from the scenario, then exports `NVC_SIM_ROOT` for the run. Anything a collector reads from the filesystem must be provided this way; anything it runs is a shim on `PATH`.
-4. **Add a job with assertions.** Each scenario gets a workflow step that runs `self-test` and `run --json`, then asserts the exit code, the expected finding ids present, the forbidden ids absent, the summary lines and the `report.json` fields that prove the platform logic worked. The `gb10` job asserts, among others, `platform.class == "dgx-spark"`, `pcie.on_package == true`, `gpus[0].memory_reporting == "not-supported"`, `unified_memory.mem_total_kb == 125513944` and a non-empty `impact` on every finding; the `gb10-gsp-fail` variant asserts `dgx-spark-gsp-init-failure` and no `no-nvidia-gpu`.
-5. **Run it locally** before pushing: build the binary, put the shims first on `PATH`, point them at your scenario, create the fixture root and run `NVC_SIM_ROOT=/tmp/simroot ./nvcheckup run --mode full --json --out /tmp/out`. The workflow file shows the exact environment variable the shims read for the scenario path.
+2. **Shims answer only what the collectors ask.** Each shim in `.github/fieldtest/shims/` is a small script that reads the scenario named by `NVC_SIM_SCENARIO` and prints the answer for the exact arguments the collector passes (`nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits`, `lspci -nn`, `dpkg-query -W -f ...`, `systemctl is-active` / `show -p LoadState --value`, `journalctl --list-boots` / `-b -1 -o cat -n 30` / `-k -b -g ...`, `ldconfig -p`, `ip -4 -o addr show`, `fwupdmgr get-devices` / `get-upgrades`, ...). A shim never calls the tool it replaces and refuses every state-changing form (`systemctl start`, `ldconfig` without `-p`, `journalctl --vacuum-*`, `ip link set`, `fwupdmgr update`, ...). When you add a collector that runs a new command, add a shim for it and a scenario key it reads (`grep -rn "RunCommand(" internal/collector` lists every command the collectors run); when you add a query field, teach the `nvidia-smi` shim to answer it and print `[N/A]` verbatim where the hardware would.
+3. **Files go under `NVC_SIM_ROOT`.** `scripts/make-simroot.sh <scenario.json> <outdir>` writes the file side of a scenario (`/etc/dgx-release`, `/etc/fastos-release`, `/etc/os-release`, `/etc/ufw/ufw.conf`, `/etc/netplan/*.yaml`, `/etc/nvidia/cx7-hotplug-enabled`, `/etc/docker/daemon.json`, `/etc/cdi/nvidia.yaml`, `/etc/apt/sources.list.d/*`, `/proc/{meminfo,cpuinfo,version,swaps,vmstat}`, `/proc/sys/kernel/osrelease`, `/proc/sys/vm/swappiness`, `/proc/pressure/memory`, `/proc/net/tcp`, `/sys/class/dmi/id/*`, `/sys/class/thermal/*`, the ConnectX-7 `/sys/class/infiniband` and `/sys/class/net` trees, an empty `/sys/fs/pstore` and `/sys/firmware/efi`, `/lib/modules/<kernel>/modules.dep`). The trees for `gb10*.json` are committed under `.github/fieldtest/simroot/`; run `scripts/make-simroot.sh --all` after changing a scenario or the generator and commit the result, because CI regenerates them and fails when the committed copy is stale. Anything a collector reads from the filesystem must be provided this way (`grep -rn '"/etc/\|"/proc/\|"/sys/' internal/collector` lists the paths); anything it runs is a shim on `PATH`.
+4. **Add a job with assertions.** Each scenario gets a workflow step that runs `self-test` and `run --json`, then asserts the exit code, the expected finding ids present, the forbidden ids absent, the summary lines and the `report.json` fields that prove the platform logic worked. The `gb10` job asserts, among others, `platform.class == "dgx-spark"`, `pcie.on_package == true`, `gpus[0].memory_reporting == "not-supported"`, `unified_memory.mem_total_kb == 125513944`, `dgx_os.units_queried == true` with no `dgx-spark-dashboard-unhealthy`, four ConnectX-7 ports with the two cage-0 twins `ACTIVE`, a non-empty `impact` on every finding and the spec 7.5 numbers from `llm-plan --report gb10/report.json`; the `gb10-gsp-fail` variant asserts `dgx-spark-gsp-init-failure` and no `no-nvidia-gpu`.
+5. **Run it locally** before pushing: build the binary, put the shims first on `PATH`, point `NVC_SIM_SCENARIO` at your scenario, generate the fixture root and run: `export PATH="$PWD/.github/fieldtest/shims:$PATH" NVC_SIM_SCENARIO="$PWD/.github/fieldtest/scenarios/gb10.json" NVC_SIM_ROOT="$PWD/.github/fieldtest/simroot/gb10"; ./nvcheckup run --mode full --json --out /tmp/out`. The bash shims need a Python 3 for JSON; on a Windows checkout whose `python3` is the Store stub set `NVC_SIM_PYTHON=python` and run the Python shims as `python .github/fieldtest/shims/nvidia-smi ...`.
 
 ### The NVC_SIM_ROOT contract
 
@@ -291,15 +291,23 @@ Rules live in `internal/analyzer/` and produce `types.Finding`. General rules ar
 
 ## Adding a model shape to knowledge/models.json
 
-`nvcheckup llm-plan` sizes models from `knowledge/models.json`. Each entry is one
-model shape, taken from the model's Hugging Face `config.json` (spec section 7.3):
-the name and aliases the `--model` flag accepts, total and active parameters,
-`num_hidden_layers`, `num_key_value_heads`, `head_dim` (or `hidden_size /
-num_attention_heads`), `num_local_experts` / `num_experts_per_tok` for MoE models,
-`sliding_window` where some layers use one, a measured checkpoint size per
-quantization when one is published (the wizard prefers it to the bytes-per-
-parameter formula), and the source URL of every number. Mirror the keys of an
-existing entry exactly; the file is read by `internal/llmplan/models.go`.
+`nvcheckup llm-plan` sizes models from the catalogue in `internal/llmplan/models.go`;
+`knowledge/models.json` is its reference copy, kept identical by
+`TestModelsJSON_MatchesCatalogue` (the binary embeds no file at runtime). Each entry
+is one model shape, taken from the model's Hugging Face `config.json` (spec section
+7.3): the id and aliases the `--model` flag accepts (`--list-models` prints them),
+total and active parameters, `num_hidden_layers`, `num_key_value_heads`, `head_dim`
+(or `hidden_size / num_attention_heads`), `num_local_experts` /
+`num_experts_per_tok` for MoE models, `sliding_window` where some layers use one, a
+measured checkpoint size per quantization when one is published (the wizard prefers
+it to the bytes-per-parameter formula), and the source URL of every number. Add the
+shape to the Go catalogue, then regenerate the JSON and the golden plans:
+
+```
+go test ./internal/llmplan -run TestModelsJSON -update-models   # rewrites knowledge/models.json
+go test ./internal/llmplan -update                              # rewrites the golden plan files
+go test ./internal/llmplan ./cmd/nvcheckup
+```
 
 1. **Take the numbers from `config.json`**, not from a blog post. Record the
    URL. If a value has a single source (as the Nemotron-3-Super Mamba state term

@@ -255,8 +255,13 @@ Clustering two Sparks over the QSFP cage is where most of the field reports come
 The question every Spark owner asks first, answered from measured memory instead of the number on the box.
 
 ```
-nvcheckup llm-plan --model "Llama 3.1 8B Instruct" --quant bf16 --context 32768 --profile agent --concurrency 4 --runtime vllm
+nvcheckup llm-plan --list-models
+nvcheckup llm-plan --model llama-3.1-8b-instruct --profile agent --runtime vllm --json
+nvcheckup llm-plan --model llama-3.3-70b-instruct --quant nvfp4 --context 131072
+nvcheckup llm-plan --report report.json --model llama-3.1-8b-instruct --profile agent   # offline, from a saved report
 ```
+
+The first worked example (Llama 3.1 8B in its default BF16 weights, `agent` profile = 1 + 3 subagent streams x 32K tokens, f16 KV, vLLM) prints:
 
 ```
 == VERDICT: FITS WITH WARNINGS (exit code 1) ==
@@ -276,7 +281,7 @@ nvcheckup llm-plan --model "Llama 3.1 8B Instruct" --quant bf16 --context 32768 
   Decode ceiling, one stream, at 32K context: 13.4 tok/s   (realistic band 6.7 - 10.7)
 ```
 
-The full plan (prerequisite table, the `docker run` line, environment, warnings) is in [`examples/sample-llm-plan.txt`](examples/sample-llm-plan.txt). Without `--model` the wizard asks doctor-style questions; `--hf-config config.json` sizes a model from a local Hugging Face config offline; `--json` writes `plan.json`. Exit codes: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. The three worked examples from the spec, on a 128 GB unit whose measured pool is 119.7 GiB:
+The full plan (prerequisite table, the `docker run` line, environment, warnings) is in [`examples/sample-llm-plan.txt`](examples/sample-llm-plan.txt). Model ids are the `--list-models` spellings (`llama-3.1-8b-instruct`, `llama-3.3-70b-instruct`, ...); `--profile chat|agent|batch|rag` sets the context and concurrency defaults, `--context` / `--concurrency` override them. Without `--model` the wizard asks doctor-style questions on a terminal (and exits 3 when there is none); `--hf-config config.json` sizes a model from a local Hugging Face config; `--report report.json` plans from a saved report without running any collector; `--json` writes `plan.json` next to `plan.txt` under `--out`. Exit codes: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. The three worked examples from the spec, on a 128 GB unit whose measured pool is 119.7 GiB:
 
 | Model | Footprint (W + KV + R) | Verdict |
 |-------|------------------------|---------|
@@ -288,7 +293,7 @@ The full plan (prerequisite table, the `docker run` line, environment, warnings)
 
 ### The simulated GB10 in CI
 
-CI cannot buy a Spark either. The "Linux field test (simulated GPU)" workflow gets a `gb10` job on an Arm64 Ubuntu runner: shims answer `nvidia-smi` (with `compute_cap`, `[N/A]` memory, `Not Supported` in the table), `lspci`, `dpkg`, `lsmod`, `dmesg`, `dmidecode`, `lscpu`, `ibdev2netdev`, `fwupdmgr` and `nvidia-spark-ota-check` from `.github/fieldtest/scenarios/gb10.json`, and `/etc/dgx-release`, `/etc/fastos-release`, DMI, meminfo, cpuinfo and thermal fixtures are injected under `NVC_SIM_ROOT`. The job asserts the expected findings, the absence of every discrete-GPU false alarm, `Platform: DGX Spark` and `Unified memory` in the summary, `platform.class == "dgx-spark"`, `pcie.on_package == true`, `gpus[0].memory_reporting == "not-supported"`, `unified_memory.mem_total_kb == 125513944` and an `impact` on every finding. A `gb10-gsp-fail` variant (`No devices were found` plus the SEC2 / GSP dmesg lines) must produce `dgx-spark-gsp-init-failure` and not `no-nvidia-gpu`. [`examples/sample-report-dgx-spark.txt`](examples/sample-report-dgx-spark.txt) shows what the scenario looks like as a report.
+CI cannot buy a Spark either. The "Linux field test (simulated GPU)" workflow gets a `gb10` job on Arm64 and x86_64 Ubuntu runners: shims answer `nvidia-smi` (with `compute_cap`, `[N/A]` memory, `Not Supported` in the table, an empty `--query-compute-apps` and `-q -d PERFORMANCE` counters), `lspci`, `dpkg` / `dpkg-query`, `lsmod`, `modinfo`, `dmesg`, `dmidecode`, `lscpu`, `uname`, `systemctl`, `journalctl`, `ldconfig`, `ip`, `ibdev2netdev`, `ibstat`, `fwupdmgr` and `nvidia-spark-ota-check` from `.github/fieldtest/scenarios/gb10.json`, and `scripts/make-simroot.sh` generates the file side from the same scenario under `NVC_SIM_ROOT` (`/etc/dgx-release`, `/etc/fastos-release`, `/etc/os-release`, DMI, meminfo, cpuinfo, swaps, vmstat, PSI, `/proc/net/tcp`, thermal zones, an empty pstore, the ConnectX-7 `/sys/class/infiniband` and `/sys/class/net` trees, netplan, ufw, `cx7-hotplug-enabled`, Docker `daemon.json` and CDI spec, the container-toolkit apt source). The job asserts the expected findings, the absence of every discrete-GPU false alarm, `Platform: DGX Spark` and `Unified memory` in the summary, `platform.class == "dgx-spark"`, `pcie.on_package == true`, `gpus[0].memory_reporting == "not-supported"`, `unified_memory.mem_total_kb == 125513944`, an `impact` on every finding, `dgx_os.units_queried == true` with no `dgx-spark-dashboard-unhealthy`, four ConnectX-7 ports of which exactly the two cage-0 twins are `ACTIVE`, a clean previous boot from the journal fixture, redaction of the serial, both hostnames and the fabric addresses, and a tolerated-if-absent `ecosystem` section (the runner has no torch and no NVIDIA container runtime). It then runs `nvcheckup llm-plan --report gb10/report.json --model llama-3.1-8b-instruct --profile agent --runtime vllm --json` and checks the spec 7.5 numbers (`fit.total_gib` 51.0, `fit.gpu_memory_utilization` 0.40, pool 119.7 GiB). A `gb10-gsp-fail` variant (`No devices were found` plus the SEC2 / GSP dmesg lines and `failed: ["driver"]`) must produce `dgx-spark-gsp-init-failure` and not `no-nvidia-gpu`. [`examples/sample-report-dgx-spark.txt`](examples/sample-report-dgx-spark.txt) shows what the scenario looks like as a report.
 
 ### What is not verified
 
@@ -381,7 +386,7 @@ NVCheckup is built on a simple principle: **your data stays on your machine.** I
 |-----------|--------|
 | No telemetry | Zero analytics, zero tracking, zero phone-home. There is no server to phone. |
 | Network | None, unless you pass `--network` to `run`, answer yes to the network question in `doctor`, or use `network-test`. Then NVCheckup runs an ICMP ping and a traceroute to `1.1.1.1` and a DNS lookup of `google.com`, locally, and says so in the report footer. Nothing is uploaded anywhere. |
-| Read-only | `run`, `snapshot`, `compare`, and `doctor` never modify anything. `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in: it asks for confirmation, journals every change, and can be reversed with `undo`. |
+| Read-only | `run`, `snapshot`, `compare`, `doctor` and `llm-plan` never modify anything (`llm-plan` writes only its `plan.*` files under `--out`). `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in: it asks for confirmation, journals every change, and can be reversed with `undo`. |
 | No background services | No daemons, no scheduled tasks, no auto-updates, no tray icon, nothing in your startup apps. |
 | PII redaction ON by default | For both `run` and `snapshot`. Usernames, hostnames, home paths, IPs, and email addresses are scrubbed before anything is written. |
 
@@ -542,26 +547,35 @@ nvcheckup doctor
 Sizes an LLM deployment against the memory this machine actually has. Read-only; see [the Spark section](#nvcheckup-llm-plan-will-this-model-fit) for the arithmetic and a worked example.
 
 ```
-nvcheckup llm-plan [--model NAME | --params B --active-params B --layers N --kv-heads N --head-dim N | --hf-config config.json] [flags]
+nvcheckup llm-plan --list-models
+nvcheckup llm-plan [--model ID | --params B [--active-params B] --layers N --kv-heads N --head-dim N | --hf-config config.json] [flags]
+nvcheckup llm-plan --report report.json --model ID [flags]
+
+nvcheckup llm-plan --model llama-3.1-8b-instruct --profile agent --runtime vllm --json
+nvcheckup llm-plan --model llama-3.3-70b-instruct --quant nvfp4 --context 131072
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | (asks) | A shape from `knowledge/models.json` (Llama 3.1 8B, Llama 3.3 70B, Qwen3-32B, Qwen3-235B-A22B, gpt-oss-120b, gpt-oss-20b, Nemotron-3-Super-120B-A12B). Without it the wizard asks doctor-style questions |
-| `--params`, `--active-params`, `--layers`, `--kv-heads`, `--head-dim` | | Describe a model by hand (parameters in billions) |
+| `--list-models` | | Print the model ids and shapes of `knowledge/models.json` and exit |
+| `--model` | (asks) | A model id as printed by `--list-models` (`llama-3.1-8b-instruct`, `llama-3.3-70b-instruct`, and the ids of the other spec 7.3 shapes: Qwen3-32B, Qwen3-235B-A22B, gpt-oss-120b, gpt-oss-20b, Nemotron-3-Super-120B-A12B). Without it the wizard asks doctor-style questions on a terminal and exits 3 without one |
+| `--params`, `--active-params`, `--layers`, `--kv-heads`, `--head-dim` | | Describe a model by hand (parameters in billions; `--hidden` / `--heads` may replace `--head-dim`) |
 | `--hf-config` | | Size a model from a local Hugging Face `config.json`, offline |
-| `--quant` | | `bf16`, `fp8`, `q8_0`, `nvfp4`, `mxfp4`, `q4_k_m` |
-| `--context` | | Context length in tokens |
-| `--concurrency` | | Parallel streams; with `--profile agent` this is 1 + subagents |
-| `--profile` | | `chat`, `agent`, `batch`, `rag` |
+| `--report` | | Plan from a saved `report.json` instead of running the collectors (offline; what CI does) |
+| `--quant` | model default | `bf16`, `fp8`, `q8_0`, `nvfp4`, `mxfp4`, `q4_k_m` (`fp16`, `int8`, `fp4`, `q4` are aliases; `nf4` / `int4` are rejected: the spec has no bytes-per-parameter factor for them) |
+| `--context`, `--ctx` | from profile | Context length in tokens (`32K` accepted) |
+| `--concurrency` | from profile | Parallel streams; with `--profile agent` this is 1 + subagents |
+| `--profile` | | `chat`, `agent` (1 + 3 subagent streams x 32K), `batch`, `rag`; sets the context and concurrency defaults |
 | `--runtime` | `auto` | `vllm`, `trtllm`, `sglang`, `llamacpp`, `ollama`, `auto` |
 | `--kv-dtype` | `auto` | `auto`, `f16`, `fp8`, `q8_0`. vLLM `--kv-cache-dtype fp8` is only ever emitted when you pass `fp8` here |
+| `--nodes` | `1` | `2` adds the spec 9 NCCL environment for two Sparks; the two-node launch is labelled unconfirmed |
 | `--headroom-gib` | | Extra headroom to keep free |
 | `--memory-gib` | measured | Override the pool for what-if planning; by default the measured `MemTotal` / `TotalVisibleMemorySize` is used and never a tier table |
-| `--json` | off | Also write `plan.json` |
-| `--out` | `.` | Output directory; the only place `llm-plan` writes |
+| `--json`, `--md` | off | Also write `plan.json` / `plan.md` next to `plan.txt` |
+| `--out` | (none) | Output directory; files are written only when it is given, and it is the only place `llm-plan` writes |
+| `--timeout` | | Collector timeout when the report is collected live (not used with `--report`) |
 
-Exit codes: `0` fits, `1` fits with warnings, `2` does not fit, `3` error.
+Exit codes: `0` fits, `1` fits with warnings, `2` does not fit, `3` error. `plan.json` carries `fit.total_gib` (W + KV + R + F) and `fit.gpu_memory_utilization` among the spec 7.8 keys; for the 8B agent example on a 119.7 GiB pool they are `51.0` and `0.40`.
 
 ### `nvcheckup self-test`
 
