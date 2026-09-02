@@ -261,27 +261,32 @@ nvcheckup llm-plan --model llama-3.3-70b-instruct --quant nvfp4 --context 131072
 nvcheckup llm-plan --report report.json --model llama-3.1-8b-instruct --profile agent   # offline, from a saved report
 ```
 
-The first worked example (Llama 3.1 8B in its default BF16 weights, `agent` profile = 1 + 3 subagent streams x 32K tokens, f16 KV, vLLM) prints:
+The first worked example (Llama 3.1 8B in its default BF16 weights, `agent` profile = 1 + 3 subagent streams x 32K tokens, f16 KV, vLLM) prints (exit code 0; `plan.txt` and `plan.json` are written under `--out`):
 
 ```
-== VERDICT: FITS WITH WARNINGS (exit code 1) ==
+VERDICT
+  FITS: Llama 3.1 8B Instruct BF16, 32K context x 4 streams, f16 KV, vLLM needs 51.0 GiB on this machine (pool 119.7 GiB, margin 68.7 GiB).
 
-  Component                                 GiB     How it was computed
-  W   weights                                15.0   8.03e9 params x 2.00 B/param (bf16)
-  KV  cache                                  16.0   131,072 B/token x 32768 tokens x 4 streams
-  R   runtime reserve (vLLM)                 12.0   ~3 GiB runtime + torch.compile / CUDA graphs
-  F   OS floor                                8.0   headless DGX OS
-  Design total   W + KV + R + F               51.0   <= 119.7 GiB pool          fits (68.7 GiB headroom)
-  Now            W + KV + R                   43.0   <= 115.9 GiB MemAvailable  fits
+SIZING (spec 7.4)
+  Model            Llama 3.1 8B Instruct: 8.03B params, 32 layers, 8 KV heads, d_head 128
+  Profile          agent: 32K context x 4 streams, vLLM
+  Weights W        15.0 GiB  (8.03B x 2.00 B/param)
+  Quant            BF16, KV cache f16
+  KV cache         16.0 GiB  (131072 B/token x 32768 tokens x 4 streams)
+  Runtime R        12.0 GiB  (vLLM)
+  OS floor F       8.0 GiB
+  Total            51.0 GiB  vs pool 119.7 GiB  ->  margin 68.7 GiB  (fits: yes)
+  Now (W+KV+R)     43.0 GiB  vs MemAvailable 115.9 GiB  (fits now: yes)
+  Utilization u    0.40  (vLLM --gpu-memory-utilization; TRT-LLM free_gpu_memory_fraction; SGLang --mem-fraction-static)
 
-  vLLM --gpu-memory-utilization = ceil05(43.0 / 119.7) = 0.40
-
-== ESTIMATES (ceilings, not measurements) ==
-  Decode ceiling, one stream, weights-only:   17.0 tok/s
-  Decode ceiling, one stream, at 32K context: 13.4 tok/s   (realistic band 6.7 - 10.7)
+ESTIMATES (formula ceilings; not measured on this machine)
+  Decode ceiling, one stream:  17.0 tok/s weights-only; 13.4 tok/s at 32K context
+  Realism band (50-80% of at-context):  6.7 - 10.7 tok/s
+  Prefill reference:  2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)
+  Measured by others:  8B FP8: 20.5 tok/s measured (S89), vs 34 weights-only / 22 at 32K
 ```
 
-The full plan (prerequisite table, the `docker run` line, environment, warnings) is in [`examples/sample-llm-plan.txt`](examples/sample-llm-plan.txt). Model ids are the `--list-models` spellings (`llama-3.1-8b-instruct`, `llama-3.3-70b-instruct`, ...); `--profile chat|agent|batch|rag` sets the context and concurrency defaults, `--context` / `--concurrency` override them. Without `--model` the wizard asks doctor-style questions on a terminal (and exits 3 when there is none); `--hf-config config.json` sizes a model from a local Hugging Face config; `--report report.json` plans from a saved report without running any collector; `--json` writes `plan.json` next to `plan.txt` under `--out`. Exit codes: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. The three worked examples from the spec, on a 128 GB unit whose measured pool is 119.7 GiB:
+The full plan (prerequisite table, the `docker run` line, environment, warnings) is in [`examples/sample-llm-plan.txt`](examples/sample-llm-plan.txt). Model ids are the `--list-models` spellings (`llama-3.1-8b-instruct`, `llama-3.3-70b-instruct`, ...); `--profile chat|agent|batch|rag` sets the context and concurrency defaults, `--context` / `--concurrency` override them. Without `--model` the wizard asks doctor-style questions on a terminal (and exits 3 when there is none); `--hf-config config.json` sizes a model from a local Hugging Face config; `--report report.json` plans from a saved report without running any collector; `--json` writes `plan.json` next to `plan.txt` under `--out` (default `.`; nothing is written unless `--out`, `--json` or `--md` is given). Exit codes: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. The three worked examples from the spec, on a 128 GB unit whose measured pool is 119.7 GiB:
 
 | Model | Footprint (W + KV + R) | Verdict |
 |-------|------------------------|---------|
@@ -386,7 +391,7 @@ NVCheckup is built on a simple principle: **your data stays on your machine.** I
 |-----------|--------|
 | No telemetry | Zero analytics, zero tracking, zero phone-home. There is no server to phone. |
 | Network | None, unless you pass `--network` to `run`, answer yes to the network question in `doctor`, or use `network-test`. Then NVCheckup runs an ICMP ping and a traceroute to `1.1.1.1` and a DNS lookup of `google.com`, locally, and says so in the report footer. Nothing is uploaded anywhere. |
-| Read-only | `run`, `snapshot`, `compare`, `doctor` and `llm-plan` never modify anything (`llm-plan` writes only its `plan.*` files under `--out`). `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in: it asks for confirmation, journals every change, and can be reversed with `undo`. |
+| Read-only | `run`, `snapshot`, `compare`, `doctor` and `llm-plan` never modify anything (`llm-plan` writes only its `plan.*` files, into `--out` or the current directory, and only when `--out`, `--json` or `--md` is given). `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in: it asks for confirmation, journals every change, and can be reversed with `undo`. |
 | No background services | No daemons, no scheduled tasks, no auto-updates, no tray icon, nothing in your startup apps. |
 | PII redaction ON by default | For both `run` and `snapshot`. Usernames, hostnames, home paths, IPs, and email addresses are scrubbed before anything is written. |
 
@@ -565,14 +570,14 @@ nvcheckup llm-plan --model llama-3.3-70b-instruct --quant nvfp4 --context 131072
 | `--quant` | model default | `bf16`, `fp8`, `q8_0`, `nvfp4`, `mxfp4`, `q4_k_m` (`fp16`, `int8`, `fp4`, `q4` are aliases; `nf4` / `int4` are rejected: the spec has no bytes-per-parameter factor for them) |
 | `--context`, `--ctx` | from profile | Context length in tokens (`32K` accepted) |
 | `--concurrency` | from profile | Parallel streams; with `--profile agent` this is 1 + subagents |
-| `--profile` | | `chat`, `agent` (1 + 3 subagent streams x 32K), `batch`, `rag`; sets the context and concurrency defaults |
+| `--profile` | `chat` | `chat`, `agent` (1 + 3 subagent streams x 32K), `batch`, `rag`; sets the context and concurrency defaults |
 | `--runtime` | `auto` | `vllm`, `trtllm`, `sglang`, `llamacpp`, `ollama`, `auto` |
 | `--kv-dtype` | `auto` | `auto`, `f16`, `fp8`, `q8_0`. vLLM `--kv-cache-dtype fp8` is only ever emitted when you pass `fp8` here |
 | `--nodes` | `1` | `2` adds the spec 9 NCCL environment for two Sparks; the two-node launch is labelled unconfirmed |
 | `--headroom-gib` | | Extra headroom to keep free |
 | `--memory-gib` | measured | Override the pool for what-if planning; by default the measured `MemTotal` / `TotalVisibleMemorySize` is used and never a tier table |
 | `--json`, `--md` | off | Also write `plan.json` / `plan.md` next to `plan.txt` |
-| `--out` | (none) | Output directory; files are written only when it is given, and it is the only place `llm-plan` writes |
+| `--out` | `.` | Output directory; `plan.txt` (and `plan.json` / `plan.md` with `--json` / `--md`) are written only when `--out`, `--json` or `--md` is given, and it is the only place `llm-plan` writes |
 | `--timeout` | | Collector timeout when the report is collected live (not used with `--report`) |
 
 Exit codes: `0` fits, `1` fits with warnings, `2` does not fit, `3` error. `plan.json` carries `fit.total_gib` (W + KV + R + F) and `fit.gpu_memory_utilization` among the spec 7.8 keys; for the 8B agent example on a 119.7 GiB pool they are `51.0` and `0.40`.
