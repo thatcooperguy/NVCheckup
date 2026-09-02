@@ -81,6 +81,92 @@ They must degrade gracefully: a missing tool or a rejected query is a
 8. **Add the data to the report** (text, JSON, markdown) and to the JSON schema
    block in `PRODUCT.md`.
 
+## Testing against GPUs you do not own
+
+NVCheckup has no model-specific code, but its parsers only stay honest if they
+are exercised against real `nvidia-smi` output from more than one card. The
+development machine is a single RTX 3090; every other GPU class in the fixtures
+came from a captured row. You can add one without writing any Go beyond a test
+case.
+
+### Capture the rows
+
+On any machine with an NVIDIA driver, run the exact queries the collectors run.
+The field lists are the exported constants `GPUQueryFields`,
+`ThermalQueryFields`, `ThermalEventQueryFields` (or
+`ThermalEventQueryFieldsLegacy` on drivers before R535) and `PCIeQueryFields` in
+`internal/collector/common`; copy them from the source so the fixture matches
+the query. As of 0.2.1 that is:
+
+```bash
+# GPU inventory (gpu.go)
+nvidia-smi --query-gpu=index,driver_version,pci.bus_id,memory.total,memory.free,memory.used,temperature.gpu,power.draw --format=csv,noheader,nounits
+
+# Thermal (thermal.go)
+nvidia-smi --query-gpu=index,temperature.gpu,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,power.draw,fan.speed,utilization.gpu --format=csv,noheader,nounits
+nvidia-smi --query-gpu=index,clocks_event_reasons.active --format=csv,noheader
+# pre-R535 drivers reject the line above; capture this one instead
+nvidia-smi --query-gpu=index,clocks_throttle_reasons.active --format=csv,noheader
+
+# PCIe (pcie.go)
+nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,pstate,utilization.gpu --format=csv,noheader,nounits
+
+# The plain table, for gpu_test.go (delete the Processes: section before pasting)
+nvidia-smi
+```
+
+If you can, capture once at idle and once under load (a game, a training step,
+a render, anything). Note the GPU model, driver version, OS, and anything
+unusual about the machine: laptop, MIG enabled, passive cooling, riser cable,
+x8 slot. `nvcheckup self-test` prints which of these queries the installed
+driver rejects, which is itself useful information.
+
+Nothing in these rows identifies you. The PCI bus id and driver version are the
+only machine-specific values; there are no hostnames, usernames or serials.
+
+### Drop them into the fixtures
+
+Fixtures are string constants next to the tests, named by package:
+
+| Output | Test file | Parse function under test |
+|--------|-----------|---------------------------|
+| Thermal rows and event/throttle masks | `internal/collector/common/thermal_test.go` | `parseThermalCSV`, `parseThrottleMask` |
+| PCIe rows | `internal/collector/common/pcie_test.go` | `parsePCIeCSV` |
+| Inventory rows and the plain table | `internal/collector/common/gpu_test.go` | `stripProcessSection`, `parseGPUList`, `applyGPUQueryRows` |
+
+If `applyGPUQueryRows` is not present on your checkout, the `--query-gpu` row
+parsing is still inline in `collectFromNvidiaSmi`; extracting it into a pure
+function that takes the CSV text is a good first PR, and the fixture goes in
+with it.
+
+Add a constant with a comment that names the GPU, driver and condition
+(`// Tesla T4, driver 535.104, passive cooling, idle`), then a test that asserts
+the fields that make the card interesting: `FanSupported == false` for a passive
+card, `MaxWidth == "x8"` for a laptop, `UtilizationPct` unavailable for a MIG
+slice, `MaxSpeed == "Gen5"` for an RTX 50 card. For a multi-GPU capture assert
+that every row is parsed and that `GPUIndex` matches the `index` column, not
+the line number.
+
+### What already has a fixture
+
+RTX 3090 and RTX 4090 (development hardware), RTX 5090 (Gen5 link), RTX 4060
+Laptop (native x8 link), GTX 1060 on a pre-R535 driver (legacy
+`clocks_throttle_reasons` field), A100-SXM4 (no fan), H100 in MIG mode
+(`[N/A]` utilization), Tesla T4, Quadro RTX 8000, and a 3-GPU rig.
+
+### What we would like
+
+Rows from anything not in that list are welcome, in an issue or a pull
+request. Especially useful right now:
+
+- Jetson / Tegra boards: the output of `tegrastats` (a few seconds of it) and
+  the contents of `/etc/nv_tegra_release`, so the Jetson path can grow beyond
+  detection.
+- RTX 50 series laptops (Gen5 plus a native x8 link in one row).
+- vGPU / GRID profiles and cloud GPU instances, where several fields come back
+  as `[N/A]`.
+- Any driver older than R470.
+
 ## Adding an analyzer rule
 
 Rules live in `internal/analyzer/analyzer.go` and produce `types.Finding`.
@@ -143,6 +229,8 @@ the project that changes the user's system, so they get the most scrutiny.
 - [ ] `gofmt -l .` prints nothing; `go vet ./...` is clean for both GOOS values.
 - [ ] `go build ./...` and `go test ./...` pass.
 - [ ] New parse logic is a pure function with a fixture test.
+- [ ] New `nvidia-smi` parsing handles every row, carries the `index`, and is
+      tested against at least one GPU class other than the one you own.
 - [ ] New findings have a stable id, a severity you can defend, and a test.
 - [ ] Nothing new runs a network probe unless `--network` or `network-test` asked for it.
 - [ ] Nothing new writes to the system outside `internal/remediate`.

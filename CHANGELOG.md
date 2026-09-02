@@ -84,6 +84,18 @@ the documentation was checked against what the binary actually does.
   `/etc/alternatives/cuda` indirection, e.g. `/usr/local/cuda-12.4` -> `12.4`)
   when `nvcc` is not on `PATH` or reports no release.
 - WSL2 detection works on distributions booted with systemd.
+- The thermal and PCIe collectors read only the first `nvidia-smi` row, so on a
+  multi-GPU system GPUs 1..n were never collected or analyzed and a hot or
+  downshifted second card went unreported. Every row is now parsed and attributed
+  to its GPU by the `index` field.
+- `nvidia-smi` failing with `No devices were found`, `Unable to determine the
+  device handle` or `Failed to initialize NVML` was reported as a generic query
+  failure. Each now produces a specific collector error that names the likely
+  cause (no GPU bound to the driver, a GPU that dropped off the bus, or a
+  driver/NVML library mismatch after an update).
+- Jetson/Tegra boards, which have no `nvidia-smi` by design, were told they had
+  no NVIDIA GPU and no driver. They are now detected and those findings are
+  suppressed there.
 
 ### Changed
 
@@ -132,6 +144,24 @@ the documentation was checked against what the binary actually does.
 - `self-test` runs the collector queries the tool depends on (for example the
   `nvidia-smi` field list) and reports which ones the installed driver rejects.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, and `.gitattributes` (LF line endings).
+- Per-GPU thermal and PCIe collection. The `nvidia-smi` queries carry the `index`
+  field; `report.json` gains `gpu_thermal` and `gpu_pcie` arrays with one object
+  per NVIDIA GPU (`gpu_index`), while the top-level `thermal` and `pcie` objects
+  remain GPU 0 for compatibility. When two or more NVIDIA GPUs are present the
+  GPU INVENTORY section prints one `Thermal:` and one `PCIe:` line per GPU and the
+  summary block gains `GPUs: N NVIDIA (worst temp XX°C on GPU i)`. Single-GPU
+  output is unchanged.
+- Jetson/Tegra detection: `system.is_jetson` and `system.jetson_release` in
+  `report.json`, an INFO finding `jetson-detected` that points at `tegrastats`,
+  and suppression of the no-GPU / no-driver / `nvidia-smi` missing findings on
+  Tegra.
+- Parser fixtures captured from GPU classes other than the development machine:
+  RTX 5090 (Gen5 link), RTX 4060 Laptop (native x8 link), GTX 1060 on a pre-R535
+  driver (legacy `clocks_throttle_reasons` field), A100-SXM4 (no fan), H100 in
+  MIG mode (`[N/A]` utilization), Tesla T4, Quadro RTX 8000, and a 3-GPU rig.
+- `PRODUCT.md` gains a "Supported GPUs" section, and `CONTRIBUTING.md` explains how
+  to capture `nvidia-smi` rows from hardware you do not own and turn them into
+  fixtures.
 
 ### Security
 
