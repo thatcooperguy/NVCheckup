@@ -47,6 +47,8 @@ func main() {
 		undoCmd(os.Args[2:])
 	case "network-test":
 		networkTestCmd(os.Args[2:])
+	case "llm-plan":
+		llmPlanCmd(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Printf("NVCheckup v%s\n", types.Version)
 		fmt.Println(types.Disclaimer)
@@ -686,6 +688,7 @@ Commands:
   fix           List and apply safe, reversible fixes (asks for confirmation)
   undo          Reverse a previously applied fix using the change journal
   network-test  Run standalone network probes (ping/traceroute to 1.1.1.1, DNS)
+  llm-plan      Read-only LLM deployment sizing wizard (DGX Spark / RTX Spark / unified memory)
   self-test     Verify environment, dependencies, and permissions
   version       Show version information
   help          Show this help
@@ -730,6 +733,29 @@ undo [flags]
 
 network-test [--timeout N]
 
+llm-plan [flags]
+  Sizes an LLM deployment against the measured memory pool (W + KV + R + F)
+  and prints runtime flag templates and prerequisite checks. Read-only: it
+  never downloads models or images, never runs docker/pip, never starts or
+  stops anything. Without --model it asks doctor-style questions (TTY only).
+  --model NAME       Model shape from knowledge/models.json (id or alias)
+  --list-models      List the shipped shapes and exit
+  --hf-config FILE   Size a local config.json instead (offline; needs --params B)
+  --params B --layers N --kv-heads N --head-dim N   Custom shape (--active-params, --hidden/--heads optional)
+  --quant Q          bf16|fp16|fp8|q8_0|nvfp4|mxfp4|q4_k_m (default: native format)
+  --context N        Tokens per stream (alias --ctx; default from --profile)
+  --concurrency N    Streams; agent = 1 + subagents (default from --profile)
+  --profile P        chat|agent|batch|rag (default: chat)
+  --runtime R        vllm|trtllm|sglang|llamacpp|ollama|auto (default: auto)
+  --kv-dtype K       auto|f16|fp8|q8_0 (vLLM gets fp8 KV only when given explicitly)
+  --nodes 1|2        Single node (default) or a cluster of two Sparks
+  --headroom-gib N   OS floor F (default: 8 headless Linux, 10 desktop/Windows)
+  --memory-gib N     Override the pool total (MemAvailable then unknown)
+  --report FILE      Plan from an existing report.json instead of collecting
+  --json / --md      Also write plan.json / plan.md into --out
+  --out DIR          Output directory (plan.txt is written when --out, --json or --md is given)
+  Exit codes: 0 fits, 1 fits with warnings, 2 does not fit, 3 error.
+
 Exit codes: 0 no issues, 1 warnings, 2 critical findings, 3 tool error.
 
 Examples:
@@ -743,5 +769,8 @@ Examples:
   nvcheckup undo --id set-high-performance
   nvcheckup doctor
   nvcheckup self-test
+  nvcheckup llm-plan --model llama-3.1-8b-instruct --profile agent --runtime vllm --json
+  nvcheckup llm-plan --model llama-3.3-70b-instruct --quant nvfp4 --context 131072
+  nvcheckup llm-plan --list-models
 `, types.Version, types.Disclaimer)
 }

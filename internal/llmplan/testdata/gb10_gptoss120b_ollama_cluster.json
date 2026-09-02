@@ -1,0 +1,178 @@
+{
+  "verdict": "FITS: gpt-oss-120b (MXFP4), 32K context x 4 streams, q8_0 KV, Ollama needs 41.7 GiB per node across 2 nodes (pool 119.7 GiB, margin 78.0 GiB).",
+  "exit_code": 1,
+  "platform": {
+    "label": "DGX Spark (GB10)",
+    "class": "dgx-spark",
+    "soc": "GB10",
+    "os": "linux",
+    "gpu": "NVIDIA GB10",
+    "unified_memory": true,
+    "bandwidth_gbps": 273,
+    "bandwidth_note": "273 GB/s (GB10 LPDDR5X, spec 2.1)"
+  },
+  "memory": {
+    "total_gib": 119.7,
+    "available_gib": 109.7,
+    "headroom_gib": 8,
+    "headroom_reason": "8 GiB: headless Linux (spec 7.4)",
+    "allocatable_gib": 109.7,
+    "swap_used_gib": 0,
+    "source": "report.unified_memory (/proc/meminfo MemTotal, measured)",
+    "nodes": 2,
+    "discrete_vram": false
+  },
+  "model": {
+    "id": "gpt-oss-120b",
+    "name": "gpt-oss-120b (MXFP4)",
+    "hf_repo": "openai/gpt-oss-120b",
+    "params_b": 117,
+    "active_params_b": 5.1,
+    "layers": 36,
+    "attention_layers": 36,
+    "kv_heads": 8,
+    "head_dim": 64,
+    "quant": "mxfp4",
+    "kv_dtype": "q8_0",
+    "kv_bytes_per_token": 36864,
+    "context": 32768,
+    "concurrency": 4,
+    "profile": "agent",
+    "license": "Apache-2.0",
+    "notes": "KV B/token is an upper bound: half the layers use a 128-token sliding window (spec 7.3). Checkpoint ~61 GB = 56.8 GiB (spec 7.4/7.5)."
+  },
+  "fit": {
+    "weights_gib": 56.8,
+    "weights_measured": true,
+    "kv_gib": 4.5,
+    "runtime_gib": 3,
+    "floor_gib": 8,
+    "total_gib": 41.7,
+    "now_gib": 33.7,
+    "pool_gib": 119.7,
+    "margin_gib": 78,
+    "fits_total": true,
+    "fits_now": true,
+    "gpu_memory_utilization": 0.3,
+    "max_context_tokens": 1169445,
+    "per_node": true
+  },
+  "estimates": {
+    "decode_ceiling_tps": 0,
+    "decode_ceiling_weights_only_tps": 0,
+    "decode_band_tps": [
+      0,
+      0
+    ],
+    "prefill_ref_tps": "2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)",
+    "note": "no formula ceiling: the active-weight bytes of a mixed bf16/MXFP4 MoE checkpoint are not known to +/-10% (spec 7.5); 42-61 tok/s measured (S90)",
+    "measured_by_others": "42-61 tok/s measured (S90)"
+  },
+  "runtime": {
+    "name": "ollama",
+    "image": "",
+    "command": "systemctl edit ollama.service",
+    "extra": [
+      "[Service]",
+      "Environment=\"OLLAMA_FLASH_ATTENTION=1\" \"OLLAMA_KV_CACHE_TYPE=q8_0\" \"OLLAMA_NUM_PARALLEL=4\" \"OLLAMA_MAX_LOADED_MODELS=1\" \"OLLAMA_CONTEXT_LENGTH=32768\""
+    ],
+    "env": [
+      "OLLAMA_FLASH_ATTENTION=1",
+      "OLLAMA_KV_CACHE_TYPE=q8_0",
+      "OLLAMA_NUM_PARALLEL=4",
+      "OLLAMA_MAX_LOADED_MODELS=1",
+      "OLLAMA_CONTEXT_LENGTH=32768"
+    ],
+    "notes": [
+      "q8_0 KV only for FA-capable architectures (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl); otherwise Ollama silently falls back to f16 (spec 7.6).",
+      "Verify 'ollama ps' shows 100% GPU; the default context 4096 is too small for agents (spec 7.6).",
+      "Ollama does not batch: aggregate throughput equals a single stream (spec 7.4)."
+    ],
+    "unconfirmed": [
+      "Two-node target: the spec has no verified multi-node launch template; the command above is the single-node form. NVIDIA lists Qwen3-235B-A22B as multi-node only via the TRT-LLM playbook (S91) and documents the fabric in the connect-two-sparks playbook (S18). Add your runtime's tensor/pipeline-parallel flags after verifying them against those sources.",
+      "Healthy fabric (spec 9): both twins of the cabled cage ACTIVE/LinkUp at 200000 Mb/s, distinct /24s, MTU 9000, NCCL_NET_PLUGIN=none, NCCL log shows NET/IB, ~22-24 GB/s busbw.",
+      "Ollama has no two-node mode in the spec (spec 7.6 lists none for Ollama/llama.cpp); the NCCL settings of spec 9 do not apply to it. Use vLLM, TensorRT-LLM or SGLang for a cluster of two."
+    ]
+  },
+  "advice": {
+    "recommended_quant": "mxfp4",
+    "reason": "MXFP4 is the least lossy format that fits with the 8.0 GiB headroom (margin 78.0 GiB)",
+    "quants": [
+      {
+        "quant": "mxfp4",
+        "weights_gib": 56.8,
+        "total_gib": 41.7,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 78
+      }
+    ],
+    "lines": [
+      "Keep MXFP4: MXFP4 is the least lossy format that fits with the 8.0 GiB headroom (margin 78.0 GiB).",
+      "Headroom: more than 1M tokens per stream would still fit at MXFP4 with 4 streams; the KV cache is not the limit here.",
+      "Ollama does not batch: aggregate throughput equals one stream; vLLM aggregate reaches hundreds of tok/s at c=8..256 (spec 7.4)."
+    ]
+  },
+  "prerequisites": [
+    {
+      "id": "driver-present",
+      "status": "PASS",
+      "detail": "driver 580.95.05"
+    },
+    {
+      "id": "cuda-13",
+      "status": "PASS",
+      "detail": "CUDA 13.0"
+    },
+    {
+      "id": "ota-not-torn",
+      "status": "PASS",
+      "detail": "OTA torn score 0"
+    },
+    {
+      "id": "torch-cu130-sm120",
+      "status": "PASS",
+      "detail": "torch 2.9.0+cu130, arch list includes sm_120/sm_121"
+    },
+    {
+      "id": "triton-ptxas-path",
+      "status": "SKIP",
+      "detail": "Triton not installed in the probed python"
+    },
+    {
+      "id": "swap-in-use",
+      "status": "PASS",
+      "detail": "swap in use 0.0 GiB"
+    },
+    {
+      "id": "page-cache",
+      "status": "PASS",
+      "detail": "page cache 19.1 GiB is reclaimable and already counted in MemAvailable 109.7 GiB (MemFree 85.8 GiB)"
+    },
+    {
+      "id": "model-server-ports",
+      "status": "PASS",
+      "detail": "ports 8000/30000/11434/8355 are free"
+    },
+    {
+      "id": "memavailable-fits",
+      "status": "PASS",
+      "detail": "MemAvailable 109.7 GiB \u003e= W + KV + R = 33.7 GiB"
+    },
+    {
+      "id": "ollama-kv-q8-arch",
+      "status": "PASS",
+      "detail": "architecture gptoss honours OLLAMA_KV_CACHE_TYPE=q8_0"
+    },
+    {
+      "id": "cx7-link",
+      "status": "PASS",
+      "detail": "roceP2p1s0f0,rocep1s0f0 ACTIVE/LinkUp at 200000 Mb/s, MTU 9000"
+    }
+  ],
+  "warnings": [
+    "Two-node target: the spec has no verified multi-node launch template; the command above is the single-node form. NVIDIA lists Qwen3-235B-A22B as multi-node only via the TRT-LLM playbook (S91) and documents the fabric in the connect-two-sparks playbook (S18). Add your runtime's tensor/pipeline-parallel flags after verifying them against those sources.",
+    "Healthy fabric (spec 9): both twins of the cabled cage ACTIVE/LinkUp at 200000 Mb/s, distinct /24s, MTU 9000, NCCL_NET_PLUGIN=none, NCCL log shows NET/IB, ~22-24 GB/s busbw.",
+    "Ollama has no two-node mode in the spec (spec 7.6 lists none for Ollama/llama.cpp); the NCCL settings of spec 9 do not apply to it. Use vLLM, TensorRT-LLM or SGLang for a cluster of two."
+  ]
+}
