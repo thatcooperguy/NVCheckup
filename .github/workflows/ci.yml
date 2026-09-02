@@ -6,12 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only token: this workflow never pushes, comments, or publishes.
+permissions:
+  contents: read
+
 jobs:
   test:
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        go-version: ['1.21', '1.22']
+        go-version: ['1.22', 'stable']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -20,18 +26,31 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          # Stdlib-only module: there is no go.sum, and the cache step warns on every run without one.
+          cache: false
 
       - name: Run tests
-        run: go test ./... -v -race -timeout 120s
+        shell: bash
+        run: |
+          # -race needs cgo and a C toolchain, which the Windows runners do not have configured.
+          RACE=""
+          if [ "$RUNNER_OS" = "Linux" ]; then RACE="-race"; fi
+          go test ./... -v $RACE -timeout 120s
 
       - name: Build
         run: go build -v ./cmd/nvcheckup
 
       - name: Run self-test
-        run: go run ./cmd/nvcheckup self-test
-        continue-on-error: true
+        shell: bash
+        run: |
+          # self-test exits 1 for warnings (no GPU on a CI runner is expected), which is fine.
+          # Any other non-zero code is a real failure. Capture rc with || because bash runs with -e here.
+          rc=0
+          go run ./cmd/nvcheckup self-test || rc=$?
+          if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then exit $rc; fi
 
   lint:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +59,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: false
 
       - name: Check formatting
         run: |
@@ -48,3 +68,12 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Cross-vet build-tagged files
+        # Windows-only and Linux-only files are skipped by the host vet; check both explicitly.
+        run: GOOS=linux go vet ./... && GOOS=windows go vet ./...
+
+      - name: govulncheck
+        # Advisory only: this needs network access to the vuln DB and should not block a PR.
+        continue-on-error: true
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

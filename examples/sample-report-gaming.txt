@@ -1,27 +1,27 @@
 ────────────────────────────────────────────────────────────────────────
-  NVCheckup v0.1.0 — NVIDIA Diagnostic Report
+  NVCheckup v0.2.1 — NVIDIA Diagnostic Report
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
-  Generated: 2025-01-15 14:32:10 UTC
+  Generated: 2026-09-01 14:32:10 UTC
   Mode:      gaming
   Platform:  windows
-  Runtime:   8.3s
+  Runtime:   24.6s
   Redaction: ENABLED (PII removed)
 ────────────────────────────────────────────────────────────────────────
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.1.0 | 2025-01-15 14:32:10 UTC
-OS: Windows 11 23H2 (Build 22631) | Arch: amd64
-GPU: NVIDIA GeForce RTX 4070 | Driver: 566.36 | VRAM: 12288 MB
-CUDA (driver): 12.7
-Findings: 1 CRITICAL, 2 WARNING, 3 total
+NVCheckup v0.2.1 | 2026-09-01 14:32:10 UTC
+OS: Windows 11 24H2 (Build 26100) | Arch: amd64
+GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12288 MB
+CUDA (driver): 13.1
+Findings: 1 CRITICAL, 1 WARNING, 7 total
 
 ────────────────────────────────────────────────────────────────────────
 
 == SYSTEM INFO ==
 
-  OS:           Windows 11 Pro 23H2 (Build 22631)
+  OS:           Windows 11 Pro 24H2 (Build 26100)
   Architecture: amd64
   CPU:          AMD Ryzen 9 7950X 16-Core Processor
   RAM:          32768 MB
@@ -35,18 +35,20 @@ Findings: 1 CRITICAL, 2 WARNING, 3 total
 
   [GPU 0] NVIDIA GeForce RTX 4070
     Vendor:    NVIDIA
-    Driver:    566.36
+    Driver:    591.86
     PCI Bus:   00000000:01:00.0
     VRAM:      12288 MB total, 2048 MB used, 10240 MB free
     Temp:      42°C
-    WDDM:      3.1
+    WDDM:      3.2
+    Thermal:   P8, 210 / 2475 MHz, 18 W of 200 W, fan 0% (idle), no slowdown active
+    PCIe:      Gen1 x16 now (max Gen4 x16), 0% utilization — idle power-saving
 
   [GPU 1] Intel UHD Graphics 770
     Vendor:    Intel
-    Driver:    31.0.101.5186
+    Driver:    32.0.101.6078
 
-  NVIDIA Driver: 566.36
-  CUDA (driver): 12.7
+  NVIDIA Driver: 591.86
+  CUDA (driver): 13.1
 ────────────────────────────────────────────────────────────────────────
 
 == WINDOWS DETAILS ==
@@ -58,65 +60,78 @@ Findings: 1 CRITICAL, 2 WARNING, 3 total
   Monitors:
     - Display: 2560x1440 @ 165Hz
 
-  NVIDIA App:     v10.0.1.0
+  NVIDIA App:     v11.0.4.0
 
   Overlay Software Detected:
-    - Xbox Game Bar (v6.24.10013.0)
+    - Xbox Game Bar (v7.325.7021.0)
     - Discord (may have overlay)
     - RivaTuner Statistics Server (RTSS)
 
   Event Log Summary (last 30 days):
     Driver Resets (4101):  7 event(s)
-    nvlddmkm Errors:      3 event(s)
-    WHEA Errors:           0 event(s)
+    nvlddmkm Errors:       3 event(s)
+    WHEA Errors:           2 event(s) (2 corrected, 0 uncorrected)
 
   Recent Windows Updates (last 60 days):
-    - KB5034123: Security Update (2025-01-09)
-    - KB5033375: Update (2024-12-12)
+    - KB5063878: Security Update (2026-08-12)
+    - KB5062553: Update (2026-07-08)
 ────────────────────────────────────────────────────────────────────────
 
 == FINDINGS ==
 
-  Total: 1 CRITICAL, 2 WARNING, 3 INFO
+  Total: 1 CRITICAL, 1 WARNING, 5 INFO
 
   [CRIT] #1: Display Driver Resets Detected (Event ID 4101)
-    Evidence:     7 driver reset event(s) in the last 30 days. Most recent: 2025-01-14 22:15.
+    ID:           driver-resets-4101
+    Evidence:     7 driver reset event(s) in the last 30 days. Most recent: 2026-08-30 22:15.
     Why:          Event ID 4101 indicates the display driver stopped responding and was recovered by Windows. Frequent occurrences cause black screens, freezes, and application crashes.
     Next Steps:
       • Update to the latest NVIDIA driver (clean install recommended).
       • Check GPU temperatures — overheating can trigger driver resets.
       • If overclocked, revert GPU clocks to stock settings.
       • Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.
-      • If recent Windows Update coincides with issues, consider testing a rollback (understand security implications first).
+      • If a recent Windows Update coincides with the issues, consider testing a rollback (understand the security implications first).
 
-  [WARN] #2: Hardware-Accelerated GPU Scheduling (HAGS) is Enabled
+  [WARN] #2: nvlddmkm Driver Errors Detected
+    ID:           nvlddmkm-errors
+    Evidence:     3 nvlddmkm error event(s) in the last 30 days.
+    Why:          nvlddmkm is the NVIDIA kernel-mode display driver. Errors from it usually accompany driver resets and point at driver, overclock, or power delivery problems.
+    Next Steps:
+      • Perform a clean driver install.
+      • Check PSU capacity and GPU power connectors.
+
+  [INFO] #3: Hardware-Accelerated GPU Scheduling (HAGS) is Enabled
+    ID:           hags-enabled
     Evidence:     HAGS is currently enabled.
     Why:          HAGS can improve performance in some scenarios but has been reported to cause stuttering or instability in certain games or driver versions.
     Next Steps:
       • If experiencing stutter or instability, try disabling HAGS in Settings > System > Display > Graphics > Change default graphics settings.
-      • This is a reversible change.
+      • Or: nvcheckup fix --id disable-hags (asks for confirmation; reversible with nvcheckup undo).
 
-  [WARN] #3: Power Plan Not Set to High Performance
+  [INFO] #4: Power Plan Not Set to High Performance
+    ID:           power-plan-suboptimal
     Evidence:     Active power plan: Balanced.
     Why:          Balanced or Power Saver plans may throttle CPU/GPU performance. For gaming or CUDA workloads, High Performance is generally recommended.
     Next Steps:
       • Open Power Options and switch to 'High Performance' for testing.
-      • This is a reversible change with no risk.
+      • Or: nvcheckup fix --id set-high-performance (asks for confirmation; reversible with nvcheckup undo).
 
-  [INFO] #4: Hybrid GPU Configuration Detected
-    Evidence:     Found 2 GPUs including NVIDIA + integrated graphics.
-    Why:          Hybrid GPU setups can sometimes route display output through the iGPU, causing confusion about which GPU is active.
+  [INFO] #5: PCIe Link Power-Saving at Idle (expected)
+    ID:           pcie-downshift
+    Evidence:     Link is Gen1 x16 at 0% utilization (max Gen4 x16). Power state P8.
+    Why:          NVIDIA GPUs drop the PCIe link to Gen1 when idle to save power. This is normal and the link returns to full speed under load. A downshift is only a concern if it persists while the GPU is busy.
     Next Steps:
-      • Verify your application is using the NVIDIA GPU.
-      • Check NVIDIA Control Panel > Manage 3D Settings > Preferred Graphics Processor.
+      • No action needed. Re-run under load if you suspect a real link problem.
 
-  [INFO] #5: NVIDIA App Detected (v10.0.1.0)
-    Evidence:     NVIDIA App version 10.0.1.0 is installed.
-    Why:          The in-game overlay, Game Filters, and Photo Mode features can occasionally impact performance or cause alt-tab issues in some games.
+  [INFO] #6: Corrected Hardware Errors Logged (WHEA)
+    ID:           whea-errors
+    Evidence:     2 corrected WHEA event(s) in the last 30 days, reported by PCI Express Root Port (PCI\VEN_1022&DEV_14DB). 0 uncorrected.
+    Why:          Corrected errors were fixed by the hardware and did not affect the system. Logging them is by design. Only uncorrected errors indicate a fault.
     Next Steps:
-      • If experiencing performance drops or alt-tab bugs, try disabling the in-game overlay temporarily.
+      • No action needed unless the count grows quickly or uncorrected errors appear.
 
-  [INFO] #6: Overlay/Recording Software Detected
+  [INFO] #7: Overlay/Recording Software Detected
+    ID:           overlay-software
     Evidence:     Detected: Xbox Game Bar, Discord (may have overlay), RivaTuner Statistics Server (RTSS).
     Why:          Multiple active overlays can compete for resources and cause frame pacing issues. This is informational.
     Next Steps:
@@ -127,24 +142,23 @@ Findings: 1 CRITICAL, 2 WARNING, 3 total
 == TOP ISSUES ==
 
   1. [CRIT] Display Driver Resets Detected (Event ID 4101)
-  2. [WARN] Hardware-Accelerated GPU Scheduling (HAGS) is Enabled
-  3. [WARN] Power Plan Not Set to High Performance
+  2. [WARN] nvlddmkm Driver Errors Detected
 
 == RECOMMENDED NEXT STEPS ==
 
   1. Update to the latest NVIDIA driver (clean install recommended).
   2. Check GPU temperatures — overheating can trigger driver resets.
   3. If overclocked, revert GPU clocks to stock settings.
-  4. Try disabling HAGS in Settings > Display > Graphics.
-  5. Switch power plan to High Performance for testing.
+  4. Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.
+  5. Check PSU capacity and GPU power connectors.
 
 ────────────────────────────────────────────────────────────────────────
 
 == PRIVACY & DATA ==
 
-  This report was generated locally. No data was sent anywhere.
+  This report was generated locally. No diagnostic data was transmitted.
   Redaction was applied to remove usernames, hostnames, and IP addresses.
-  NVCheckup does not modify your system, drivers, or settings.
+  The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation.
 
 ────────────────────────────────────────────────────────────────────────
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.

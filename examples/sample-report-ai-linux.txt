@@ -1,28 +1,28 @@
 ────────────────────────────────────────────────────────────────────────
-  NVCheckup v0.1.0 — NVIDIA Diagnostic Report
+  NVCheckup v0.2.1 — NVIDIA Diagnostic Report
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
-  Generated: 2025-01-15 10:15:22 UTC
+  Generated: 2026-09-01 10:15:22 UTC
   Mode:      ai
   Platform:  linux
-  Runtime:   12.1s
+  Runtime:   31.4s
   Redaction: ENABLED (PII removed)
 ────────────────────────────────────────────────────────────────────────
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.1.0 | 2025-01-15 10:15:22 UTC
-OS: Ubuntu 24.04 | Kernel: 6.8.0-41-generic | Arch: amd64
-GPU: NVIDIA A100-SXM4-80GB | Driver: 550.54.15 | VRAM: 81920 MB
-CUDA (driver): 12.4 | CUDA Toolkit: 12.2
-Findings: 1 CRITICAL, 1 WARNING, 2 total
+NVCheckup v0.2.1 | 2026-09-01 10:15:22 UTC
+OS: Ubuntu 24.04 | Kernel: 6.8.0-71-generic | Arch: amd64
+GPU: NVIDIA A100-SXM4-80GB | Driver: 570.172.08 | VRAM: 81920 MB
+CUDA (driver): 12.8 | CUDA Toolkit: 13.0
+Findings: 0 CRITICAL, 2 WARNING, 4 total
 
 ────────────────────────────────────────────────────────────────────────
 
 == SYSTEM INFO ==
 
-  OS:           Ubuntu 24.04.1 LTS
-  Kernel:       6.8.0-41-generic
+  OS:           Ubuntu 24.04.3 LTS
+  Kernel:       6.8.0-71-generic
   Architecture: amd64
   CPU:          AMD EPYC 7742 64-Core Processor
   RAM:          524288 MB
@@ -36,13 +36,15 @@ Findings: 1 CRITICAL, 1 WARNING, 2 total
 
   [GPU 0] NVIDIA A100-SXM4-80GB
     Vendor:    NVIDIA
-    Driver:    550.54.15
+    Driver:    570.172.08
     PCI Bus:   00000000:3B:00.0
     VRAM:      81920 MB total, 12288 MB used, 69632 MB free
     Temp:      38°C
+    Thermal:   P0, 1410 / 1410 MHz, 68 W of 400 W, fan not supported (passive), no slowdown active
+    PCIe:      Gen4 x16 now (max Gen4 x16), 3% utilization
 
-  NVIDIA Driver: 550.54.15
-  CUDA (driver): 12.4
+  NVIDIA Driver: 570.172.08
+  CUDA (driver): 12.8
 ────────────────────────────────────────────────────────────────────────
 
 == LINUX DETAILS ==
@@ -54,79 +56,84 @@ Findings: 1 CRITICAL, 1 WARNING, 2 total
 
   Kernel Modules:
     - nvidia               loaded
-    - nvidia_drm            loaded
-    - nvidia_modeset        loaded
-    - nvidia_uvm            loaded
+    - nvidia_drm           loaded
+    - nvidia_modeset       loaded
+    - nvidia_uvm           loaded
 
   /dev/nvidia* nodes: /dev/nvidia0, /dev/nvidiactl, /dev/nvidia-uvm, /dev/nvidia-uvm-tools
-  libcuda.so:     /usr/lib/x86_64-linux-gnu/libcuda.so.550.54.15
-  DKMS Status:    nvidia/550.54.15, 6.8.0-41-generic, x86_64: installed
+  libcuda.so:     /usr/lib/x86_64-linux-gnu/libcuda.so.570.172.08
+  DKMS Status:    nvidia/570.172.08, 6.8.0-71-generic, x86_64: installed
   PRIME:          not available
+  Xid Errors:     none in current boot
   Container:      docker
-  NV Container:   1.14.3
+  NV Container:   1.17.8
 
   NVIDIA Packages Installed:
-    - nvidia-driver-550 550.54.15-0ubuntu1
-    - nvidia-utils-550 550.54.15-0ubuntu1
-    - libnvidia-compute-550 550.54.15-0ubuntu1
-    - nvidia-container-toolkit 1.14.3-1
+    - nvidia-driver-570-server 570.172.08-0ubuntu0.24.04.1
+    - nvidia-utils-570-server 570.172.08-0ubuntu0.24.04.1
+    - libnvidia-compute-570-server 570.172.08-0ubuntu0.24.04.1
+    - nvidia-container-toolkit 1.17.8-1
 ────────────────────────────────────────────────────────────────────────
 
 == AI / CUDA ENVIRONMENT ==
 
-  CUDA Toolkit:   12.2
-  nvcc Path:      /usr/local/cuda-12.2/bin/nvcc
-  cuDNN:          8.9.7
+  CUDA Toolkit:   13.0
+  nvcc Path:      /usr/local/cuda-13.0/bin/nvcc
+  cuDNN:          9.12.0
   Conda:          true
 
   Python Environments:
-    - 3.11.9 (/home/<user>/miniconda3/envs/ml/bin/python3)
-    - 3.10.12 (/usr/bin/python3)
+    - 3.12.3 (<home>/miniconda3/envs/ml/bin/python3)
+    - 3.12.3 (/usr/bin/python3)
 
   PyTorch:
-    Version:        2.2.0
+    Version:        2.8.0+cpu
     CUDA Version:   N/A
     CUDA Available: false
     Device:         N/A
 
   TensorFlow:
-    Version: 2.15.0
+    Version: 2.20.0
     GPUs:    /physical_device:GPU:0
 
   Key Packages:
-    - torch                2.2.0
-    - tensorflow           2.15.0
-    - numpy                1.26.4
-    - transformers         4.37.2
+    - torch                2.8.0+cpu
+    - tensorflow           2.20.0
+    - numpy                2.3.2
+    - transformers         4.56.0
 ────────────────────────────────────────────────────────────────────────
 
 == FINDINGS ==
 
-  Total: 1 CRITICAL, 1 WARNING, 2 INFO
+  Total: 0 CRITICAL, 2 WARNING, 2 INFO
 
   [WARN] #1: PyTorch Installed Without CUDA Support
-    Evidence:     PyTorch 2.2.0 is installed but torch.version.cuda is empty — this is a CPU-only build.
+    ID:           pytorch-cpu-only
+    Evidence:     PyTorch 2.8.0+cpu is installed but torch.version.cuda is empty — this is a CPU-only build.
     Why:          A CPU-only PyTorch wheel was installed. torch.cuda.is_available() returns False because the CUDA runtime is not compiled in.
     Next Steps:
       • Uninstall the current PyTorch: pip uninstall torch torchvision torchaudio
       • Reinstall with CUDA support from https://pytorch.org/get-started/locally/
-      • Example: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-      • Make sure to select the correct CUDA version matching your driver.
+      • Example: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+      • Make sure the wheel's CUDA version is not newer than the driver supports (12.8 here).
 
-  [WARN] #2: CUDA Toolkit / Driver Version Mismatch
-    Evidence:     CUDA Toolkit: 12.2, Driver CUDA runtime: 12.4.
-    Why:          Minor version differences are usually compatible, but check the CUDA compatibility matrix if you encounter issues.
+  [WARN] #2: CUDA Toolkit Newer Than Driver Supports
+    ID:           cuda-mismatch
+    Evidence:     CUDA Toolkit: 13.0, driver supports up to CUDA 12.8.
+    Why:          Programs built with a toolkit newer than the driver's CUDA version fail at runtime with "CUDA driver version is insufficient". An older toolkit than the driver is fine.
     Next Steps:
-      • Verify compatibility at https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/
-      • Consider updating the CUDA toolkit to match the driver.
+      • Update the NVIDIA driver to one that supports CUDA 13.0, or
+      • Install a CUDA 12.x toolkit alongside and point CUDA_HOME at it.
 
   [INFO] #3: TensorFlow GPU is Working
-    Evidence:     TensorFlow 2.15.0 detected 1 GPU(s): /physical_device:GPU:0.
+    ID:           tensorflow-gpu-ok
+    Evidence:     TensorFlow 2.20.0 detected 1 GPU(s): /physical_device:GPU:0.
     Why:          GPU acceleration is available for TensorFlow workloads.
     Next Steps:
       • No action needed.
 
   [INFO] #4: Secure Boot Disabled
+    ID:           secureboot-ok
     Evidence:     Secure Boot is disabled. NVIDIA modules load without signing.
     Why:          This is a common and functional configuration. Module signing is not required.
     Next Steps:
@@ -137,21 +144,21 @@ Findings: 1 CRITICAL, 1 WARNING, 2 total
 == TOP ISSUES ==
 
   1. [WARN] PyTorch Installed Without CUDA Support
-  2. [WARN] CUDA Toolkit / Driver Version Mismatch
+  2. [WARN] CUDA Toolkit Newer Than Driver Supports
 
 == RECOMMENDED NEXT STEPS ==
 
-  1. Reinstall PyTorch with CUDA support: pip install torch --index-url https://download.pytorch.org/whl/cu121
-  2. Verify CUDA toolkit/driver compatibility matrix.
+  1. Reinstall PyTorch with CUDA support: pip install torch --index-url https://download.pytorch.org/whl/cu128
+  2. Update the NVIDIA driver or install a CUDA 12.x toolkit to match it.
   3. Ensure you are using the correct conda environment.
 
 ────────────────────────────────────────────────────────────────────────
 
 == PRIVACY & DATA ==
 
-  This report was generated locally. No data was sent anywhere.
+  This report was generated locally. No diagnostic data was transmitted.
   Redaction was applied to remove usernames, hostnames, and IP addresses.
-  NVCheckup does not modify your system, drivers, or settings.
+  The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation.
 
 ────────────────────────────────────────────────────────────────────────
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.

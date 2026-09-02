@@ -25,18 +25,36 @@ What actually happened.
 
 ## Environment
 
-- OS: (e.g., Windows 11 23H2, Ubuntu 24.04)
+- OS: (e.g., Windows 11 24H2, Ubuntu 24.04)
 - Architecture: (x86_64, ARM64)
-- NVCheckup version: (e.g., v0.1.0)
+- NVCheckup version: (output of `nvcheckup version`, e.g., v0.2.1)
 - GPU: (e.g., RTX 4070)
-- Driver version: (e.g., 566.36)
+- Driver version: (e.g., 591.86)
 
-## NVCheckup Report
+## Self-Test Output
 
-If possible, attach or paste the relevant section of your NVCheckup report (redacted).
+Paste the output of `nvcheckup self-test`. It shows which tools were found and which
+collector queries your driver accepts, and modifies nothing.
 
 ```
-<paste report summary here>
+<paste self-test output here>
+```
+
+## Report
+
+If possible, attach `report.json` from:
+
+```
+nvcheckup run --mode full --json
+```
+
+The report is redacted by default (usernames, hostnames, home paths, IPs, and emails are
+replaced with placeholders, and the nvidia-smi process list is not stored). Please skim it
+before attaching anyway. If the bug is about a specific finding, include its `id` from
+`findings[].id`.
+
+```
+<paste report summary or relevant finding here>
 ```
 
 ## Additional Context
