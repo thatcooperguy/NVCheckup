@@ -1,6 +1,6 @@
 # NVCheckup — Complete Product Description
 
-> **Version 0.2.2** | MIT License | Written in Go 1.22 (standard library only)
+> **Version 0.2.3** | MIT License | Written in Go 1.22 (standard library only)
 > Unofficial community tool. Not affiliated with or endorsed by NVIDIA Corporation.
 
 ---
@@ -524,7 +524,7 @@ collector failed. The example below is abridged from a real Windows `--mode full
 ```json
 {
   "metadata": {
-    "tool_version": "0.2.2",
+    "tool_version": "0.2.3",
     "timestamp": "2026-09-01T20:41:40.512458-05:00",
     "mode": "full",
     "runtime_seconds": 59.1,
@@ -714,7 +714,7 @@ collector failed. The example below is abridged from a real Windows `--mode full
   ],
   "top_issues": [ "No significant issues detected." ],
   "next_steps": [ "Identify the device named in the event and update its driver and firmware." ],
-  "summary_block": "NVCheckup v0.2.2 | 2026-09-01 20:41:40\nOS: Microsoft Windows 11 Enterprise 10.0.26200 | Arch: amd64\n..."
+  "summary_block": "NVCheckup v0.2.3 | 2026-09-01 20:41:40\nOS: Microsoft Windows 11 Enterprise 10.0.26200 | Arch: amd64\n..."
 }
 ```
 
@@ -943,7 +943,7 @@ Run `go test ./...`. Packages with tests:
 go build -o nvcheckup ./cmd/nvcheckup
 
 # Inject the version (releases do this from the git tag)
-go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=0.2.2" -o nvcheckup ./cmd/nvcheckup
+go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=0.2.3" -o nvcheckup ./cmd/nvcheckup
 
 # Cross-compile all targets (static, stripped)
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/nvcheckup-windows-amd64.exe ./cmd/nvcheckup

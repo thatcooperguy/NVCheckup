@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.3] - 2026-09-02
+
 DGX Spark, RTX Spark and unified-memory support, specified in `docs/roadmap/spark-support.md` (v2.1) and
 implemented from NVIDIA's public documentation and community field reports. Everything in this block is
 exercised against a simulated GB10 in CI and is **unverified on hardware**; a real capture is tracked in

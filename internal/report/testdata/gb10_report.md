@@ -7,7 +7,7 @@
 ## Summary
 
 ```
-NVCheckup v0.2.2 | 2026-09-02 10:00:00
+NVCheckup v0.2.3 | 2026-09-02 10:00:00
 OS: Ubuntu 24.04 | Kernel: 6.17.0-1031-nvidia | Arch: arm64
 Platform: DGX Spark (Founders Edition) | DGX OS 7.2.3 / OTA 7.5.0
 GPU: NVIDIA GB10 | Driver: 580.159.03

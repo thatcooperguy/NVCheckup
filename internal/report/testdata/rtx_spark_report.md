@@ -7,7 +7,7 @@
 ## Summary
 
 ```
-NVCheckup v0.2.2 | 2026-09-02 10:00:00
+NVCheckup v0.2.3 | 2026-09-02 10:00:00
 OS: Microsoft Windows 11 Pro 24H2 | Arch: arm64
 Platform: RTX Spark (Microsoft Surface RTX Spark Dev Box)
 GPU: NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU) | Driver: 616.00

@@ -1,5 +1,5 @@
 ────────────────────────────────────────────────────────────────────────
-  NVCheckup v0.2.2 — NVIDIA Diagnostic Report
+  NVCheckup v0.2.3 — NVIDIA Diagnostic Report
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
   Generated: 2026-09-01 10:15:22 UTC
@@ -11,7 +11,7 @@
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.2.2 | 2026-09-01 10:15:22
+NVCheckup v0.2.3 | 2026-09-01 10:15:22
 OS: Ubuntu 24.04 | Kernel: 6.8.0-71-generic | Arch: amd64
 GPU: NVIDIA GeForce RTX 4090 | Driver: 580.82.07 | VRAM: 24564 MB
 CUDA (driver): 13.0 | CUDA Toolkit: 12.8

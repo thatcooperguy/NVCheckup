@@ -72,7 +72,7 @@ Ceilings and bands are formula bounds from the spec, not measurements of this ma
 About this example
 ------------------
 This file is the plan.txt the shipped wizard (cmd/nvcheckup/llmplan.go, internal/llmplan, NVCheckup
-v0.2.2 development build of this commit) wrote for the first worked example of
+v0.2.3 development build of this commit) wrote for the first worked example of
 docs/roadmap/spark-support.md section 7.5: Llama 3.1 8B Instruct in its default BF16 weights, --profile
 agent (1 + 3 subagent streams x 32768 tokens), f16 KV cache, vLLM. It was produced offline with --report
 from a report.json serialised from the healthy GB10 fixture (internal/analyzer/fixtures, the same

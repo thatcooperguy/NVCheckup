@@ -94,7 +94,7 @@ The top of `report.txt` is a summary block designed to be pasted into a support 
 
 ```
 ────────────────────────────────────────────────────────────────────────
-  NVCheckup v0.2.2 — NVIDIA Diagnostic Report
+  NVCheckup v0.2.3 — NVIDIA Diagnostic Report
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
   Generated: 2026-09-01 14:32:10 UTC
@@ -106,7 +106,7 @@ The top of `report.txt` is a summary block designed to be pasted into a support 
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.2.2 | 2026-09-01 14:32:10
+NVCheckup v0.2.3 | 2026-09-01 14:32:10
 OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64
 GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12282 MB
 CUDA (driver): 13.1 | CUDA Toolkit: 12.8
@@ -679,7 +679,7 @@ cd NVCheckup
 go build -o nvcheckup ./cmd/nvcheckup
 
 # Build with a specific version string baked in
-go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=0.2.2" -o nvcheckup ./cmd/nvcheckup
+go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=0.2.3" -o nvcheckup ./cmd/nvcheckup
 
 # Cross-compile all targets
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/nvcheckup-windows-amd64.exe ./cmd/nvcheckup
