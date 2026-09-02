@@ -451,14 +451,16 @@ func parsePCIeWidth(s string) int {
 // when the link was sampled. A reduced generation is only a fault under
 // load; at idle the link drops to Gen1 by design, so without evidence of
 // load we deliberately do NOT warn. The collector's IdleLikely flag is
-// authoritative; otherwise a P0-P2 power state counts as loaded, and when no
-// P-state was captured at all (older collectors) utilization is the only clue.
+// authoritative when set. Otherwise an active P-state (P0-P4; some mobile
+// parts and video-decode workloads sit in P3/P4 under load) or clear
+// utilization counts as loaded. A deep idle state such as P8 with no
+// utilization does not, even if the collector left IdleLikely unset.
 func pcieUnderLoad(p *types.PCIeInfo) bool {
 	if p.IdleLikely {
 		return false
 	}
-	if ps, ok := parsePState(p.PowerState); ok {
-		return ps <= 2
+	if ps, ok := parsePState(p.PowerState); ok && ps <= 4 {
+		return true
 	}
 	return p.UtilizationPct >= 20
 }
@@ -838,17 +840,23 @@ func wheaMentionsNVIDIA(msg string, gpus []types.GPUInfo) bool {
 	if strings.Contains(lower, "ven_10de") {
 		return true
 	}
+	// The shortest meaningful PCI address is "bb:dd.f"; anything shorter
+	// would match unrelated text such as firmware version strings.
+	const minBusLen = len("bb:dd.f")
 	for _, gpu := range gpus {
 		bus := strings.ToLower(strings.TrimSpace(gpu.PCIBusID))
-		if bus == "" {
+		if len(bus) < minBusLen {
 			continue
 		}
 		if strings.Contains(lower, bus) {
 			return true
 		}
-		// nvidia-smi reports "00000000:01:00.0"; event logs often use "01:00.0".
-		if idx := strings.Index(bus, ":"); idx >= 0 && len(bus) > idx+1 {
-			if short := bus[idx+1:]; strings.Contains(lower, short) {
+		// nvidia-smi reports "00000000:01:00.0"; event logs often use
+		// "01:00.0". Only strip the domain when one is actually present
+		// (three colon-separated parts). A domain-less "01:00.0" must not
+		// degrade to "00.0".
+		if parts := strings.Split(bus, ":"); len(parts) == 3 {
+			if short := parts[1] + ":" + parts[2]; len(short) >= minBusLen && strings.Contains(lower, short) {
 				return true
 			}
 		}
@@ -1050,14 +1058,47 @@ func analyzeWindowsGaming(report *types.Report) []types.Finding {
 	return findings
 }
 
+// suboptimalPowerPlanMarkers are substrings that positively identify the
+// Windows "Balanced" and "Power saver" plans, including their well-known
+// GUIDs and the localized ElementNames most commonly seen in the field.
+// Matching is positive on purpose: an unrecognised or localized name for
+// High performance ("Höchstleistung"), an OEM plan, or the literal "N/A"
+// placeholder must never be reported as suboptimal.
+var suboptimalPowerPlanMarkers = []string{
+	// GUIDs (locale independent).
+	"381b4222-f694-41f0-9685-ff5bb260df2e", // Balanced
+	"a1841308-3541-4fab-bc81-f71556f20b4a", // Power saver
+	// English.
+	"balanced", "power saver", "energy saver", "battery saver",
+	// German.
+	"ausbalanciert", "energiesparmodus",
+	// Spanish / Portuguese.
+	"equilibrado", "equilibrada", "economizador", "economia de energia",
+	// French.
+	"utilisation normale", "économie d'énergie", "economie d'energie",
+	// Italian.
+	"bilanciato", "risparmio di energia",
+	// Dutch.
+	"gebalanceerd", "energiebesparing",
+}
+
 // powerPlanSuboptimal reports whether the active plan is one that may hold
-// back performance. Unknown/unreadable plans never trigger a finding.
+// back performance. Only plans positively recognised as Balanced or Power
+// saver trigger; empty, unknown, unreadable ("N/A"), default and unrecognised
+// (including localized High performance) names never do.
 func powerPlanSuboptimal(plan string) bool {
 	p := strings.ToLower(strings.TrimSpace(plan))
-	if p == "" || strings.HasPrefix(p, "unknown") || strings.HasPrefix(p, "default") {
+	switch {
+	case p == "", p == "n/a", p == "not available",
+		strings.HasPrefix(p, "unknown"), strings.HasPrefix(p, "default"):
 		return false
 	}
-	return !strings.Contains(p, "high performance") && !strings.Contains(p, "ultimate")
+	for _, marker := range suboptimalPowerPlanMarkers {
+		if strings.Contains(p, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // analyzeWindowsPerfSettings covers the performance-tuning INFO rules (power
@@ -1452,14 +1493,41 @@ func torchWheelTag(driverCUDA string) string {
 	return fmt.Sprintf("cu%d%d", major, minor)
 }
 
-// torchCUDANewerThanDriver is the actual cause of torch.cuda.is_available()
-// returning False on an otherwise working machine: the wheel's CUDA runtime
-// is newer than what the installed driver supports.
-func torchCUDANewerThanDriver(report *types.Report) bool {
-	if report.AI == nil || report.AI.PyTorchInfo == nil || report.AI.PyTorchInfo.Error != "" {
+// cudaMajorNewerThan reports whether CUDA version a has a strictly newer
+// MAJOR version than b. Within one major (12.x) CUDA minor-version
+// compatibility lets a newer toolkit or runtime run on an older driver, so a
+// newer minor alone is never a hard failure. Unparseable input yields false.
+func cudaMajorNewerThan(a, b string) bool {
+	am, _, ok := parseMajorMinor(a)
+	if !ok {
 		return false
 	}
-	return cudaNewerThan(report.AI.PyTorchInfo.CUDAVersion, report.Driver.CUDAVersion)
+	bm, _, ok := parseMajorMinor(b)
+	if !ok {
+		return false
+	}
+	return am > bm
+}
+
+// torchInfo returns the PyTorch probe result when it is usable, else nil.
+func torchInfo(report *types.Report) *types.PyTorchInfo {
+	if report.AI == nil || report.AI.PyTorchInfo == nil || report.AI.PyTorchInfo.Error != "" {
+		return nil
+	}
+	return report.AI.PyTorchInfo
+}
+
+// torchCUDANewerThanDriver is the actual cause of torch.cuda.is_available()
+// returning False on an otherwise working machine: the wheel's CUDA runtime
+// is newer than what the installed driver supports. It is gated on the
+// symptom: a cu128 wheel on a 12.4 driver that reports CUDA available is a
+// normal working setup (CUDA minor-version compatibility), not a fault.
+func torchCUDANewerThanDriver(report *types.Report) bool {
+	pt := torchInfo(report)
+	if pt == nil || pt.CUDAAvailable {
+		return false
+	}
+	return cudaNewerThan(pt.CUDAVersion, report.Driver.CUDAVersion)
 }
 
 func analyzeCUDA(report *types.Report) []types.Finding {
@@ -1469,24 +1537,42 @@ func analyzeCUDA(report *types.Report) []types.Finding {
 		return findings
 	}
 
+	toolkit, driverCUDA := report.AI.CUDAToolkitVersion, report.Driver.CUDAVersion
+
 	// A driver whose CUDA runtime is NEWER than the toolkit is the normal,
-	// supported case (drivers are backward compatible). Only the reverse
-	// breaks: a toolkit newer than the driver fails at runtime.
-	if cudaNewerThan(report.AI.CUDAToolkitVersion, report.Driver.CUDAVersion) {
+	// supported case (drivers are backward compatible). A toolkit with a
+	// newer MAJOR than the driver fails at runtime. A newer MINOR within the
+	// same major (toolkit 12.6 on a 12.4 driver) generally works thanks to
+	// CUDA minor-version compatibility, so it is INFO only.
+	switch {
+	case cudaMajorNewerThan(toolkit, driverCUDA):
 		findings = append(findings, types.Finding{
-			ID:       "cuda-mismatch",
-			Severity: types.SeverityWarn,
-			Title:    "CUDA Toolkit Newer Than Driver Supports",
-			Evidence: fmt.Sprintf("CUDA Toolkit: %s. Driver CUDA runtime: %s.",
-				report.AI.CUDAToolkitVersion, report.Driver.CUDAVersion),
-			WhyItMatters: "The driver's CUDA runtime must be >= the toolkit version. Programs built with this toolkit will fail with 'CUDA driver version is insufficient for CUDA runtime version'.",
+			ID:           "cuda-mismatch",
+			Severity:     types.SeverityWarn,
+			Title:        "CUDA Toolkit Newer Than Driver Supports",
+			Evidence:     fmt.Sprintf("CUDA Toolkit: %s. Driver CUDA runtime: %s.", toolkit, driverCUDA),
+			WhyItMatters: "The driver's CUDA runtime must be >= the toolkit's major version. Programs built with this toolkit will fail with 'CUDA driver version is insufficient for CUDA runtime version'.",
 			NextSteps: []string{
-				"Update the NVIDIA driver to one that supports CUDA " + report.AI.CUDAToolkitVersion + ".",
-				"Or install a CUDA toolkit version no newer than " + report.Driver.CUDAVersion + ".",
+				"Update the NVIDIA driver to one that supports CUDA " + toolkit + ".",
+				"Or install a CUDA toolkit version no newer than " + driverCUDA + ".",
 				"Check compatibility at: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/",
 			},
 			Category:   "cuda",
 			Confidence: 80,
+		})
+	case cudaNewerThan(toolkit, driverCUDA):
+		findings = append(findings, types.Finding{
+			ID:           "cuda-toolkit-minor-newer",
+			Severity:     types.SeverityInfo,
+			Title:        "CUDA Toolkit Minor Version Newer Than Driver",
+			Evidence:     fmt.Sprintf("CUDA Toolkit: %s. Driver CUDA runtime: %s.", toolkit, driverCUDA),
+			WhyItMatters: "Within the same CUDA major version, minor-version compatibility lets applications built with a newer toolkit run on this driver. Features introduced in the newer minor release, or PTX that must be JIT-compiled for them, may still fail with 'CUDA driver version is insufficient'.",
+			NextSteps: []string{
+				"If an application reports an insufficient-driver error, update the NVIDIA driver to one that supports CUDA " + toolkit + ".",
+				"Read about minor-version compatibility: https://docs.nvidia.com/deploy/cuda-compatibility/",
+			},
+			Category:   "cuda",
+			Confidence: 50,
 		})
 	}
 
@@ -1509,6 +1595,23 @@ func analyzeCUDA(report *types.Report) []types.Finding {
 			},
 			Category:   "ai",
 			Confidence: 80,
+		})
+	} else if pt := torchInfo(report); pt != nil && pt.CUDAAvailable && cudaMajorNewerThan(pt.CUDAVersion, driverCUDA) {
+		// CUDA works today, but the wheel's major is ahead of the driver's.
+		// That only holds via a forward-compatibility package or a driver
+		// newer than nvidia-smi reports, so note it without alarming.
+		findings = append(findings, types.Finding{
+			ID:           "pytorch-cuda-newer-but-working",
+			Severity:     types.SeverityInfo,
+			Title:        "PyTorch CUDA Build Newer Than Driver (working)",
+			Evidence:     fmt.Sprintf("PyTorch %s is built for CUDA %s; the driver reports CUDA %s. torch.cuda.is_available(): true.", pt.Version, pt.CUDAVersion, driverCUDA),
+			WhyItMatters: "PyTorch currently sees the GPU, most likely through a CUDA forward-compatibility package or a driver newer than nvidia-smi reports. If a driver or environment change removes that path, torch.cuda.is_available() will start returning False.",
+			NextSteps: []string{
+				"No action needed while GPU workloads run.",
+				"If PyTorch stops seeing the GPU, install a wheel built for CUDA " + driverCUDA + " or update the driver.",
+			},
+			Category:   "ai",
+			Confidence: 40,
 		})
 	}
 

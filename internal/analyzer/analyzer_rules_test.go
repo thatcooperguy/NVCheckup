@@ -86,6 +86,26 @@ func TestAnalyzePCIe_Table(t *testing.T) {
 			wantSev: types.SeverityWarn,
 		},
 		{
+			// Some mobile parts and video-decode workloads sit in P3/P4 while
+			// busy; a reduced generation there is a real downshift.
+			name:    "P3 at 70% utilization with IdleLikely=false is a downshift",
+			pcie:    types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P3", UtilizationPct: 70, IdleLikely: false},
+			wantID:  "pcie-downshift",
+			wantSev: types.SeverityWarn,
+		},
+		{
+			name:    "P4 with modest utilization and IdleLikely=false is a downshift",
+			pcie:    types.PCIeInfo{CurrentSpeed: "Gen2", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P4", UtilizationPct: 10, IdleLikely: false},
+			wantID:  "pcie-downshift",
+			wantSev: types.SeverityWarn,
+		},
+		{
+			name:    "P8 with clear utilization is still a downshift",
+			pcie:    types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P8", UtilizationPct: 45, IdleLikely: false},
+			wantID:  "pcie-downshift",
+			wantSev: types.SeverityWarn,
+		},
+		{
 			name:    "IdleLikely overrides a P0 reading",
 			pcie:    types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P0", UtilizationPct: 1, IdleLikely: true},
 			wantID:  "pcie-idle-power-saving",
@@ -205,6 +225,29 @@ func TestAnalyzeWHEA_Table(t *testing.T) {
 			events:  wheaEvents(50, 19, "Warning", nicWHEAMessage),
 			wantID:  "whea-corrected",
 			wantSev: types.SeverityWarn,
+		},
+		{
+			name:    "domain-less GPU bus id matches the same address",
+			events:  wheaEvents(1, 17, "Warning", "Corrected error on 01:00.0"),
+			gpus:    []types.GPUInfo{{IsNVIDIA: true, PCIBusID: "01:00.0"}},
+			wantID:  "whea-corrected",
+			wantSev: types.SeverityWarn,
+		},
+		{
+			// A domain-less "01:00.0" must not be shortened to "00.0", which
+			// would match unrelated text such as firmware version strings.
+			name:    "domain-less GPU bus id does not match firmware version text",
+			events:  wheaEvents(1, 17, "Warning", "Corrected error. Firmware version 1.00.0 updated."),
+			gpus:    []types.GPUInfo{{IsNVIDIA: true, PCIBusID: "01:00.0"}},
+			wantID:  "whea-corrected",
+			wantSev: types.SeverityInfo,
+		},
+		{
+			name:    "degenerate GPU bus id never escalates",
+			events:  wheaEvents(1, 17, "Warning", "Corrected error 0 on some device"),
+			gpus:    []types.GPUInfo{{IsNVIDIA: true, PCIBusID: "0"}},
+			wantID:  "whea-corrected",
+			wantSev: types.SeverityInfo,
 		},
 		{
 			name:    "unknown id with Error level is uncorrected",
@@ -398,34 +441,54 @@ func TestParseThrottleMask(t *testing.T) {
 
 func TestAnalyzeCUDA_Table(t *testing.T) {
 	tests := []struct {
-		name     string
-		toolkit  string
-		driver   string
-		torch    *types.PyTorchInfo
-		wantIDs  []string
-		wantNone bool
+		name    string
+		toolkit string
+		driver  string
+		torch   *types.PyTorchInfo
+		// want maps every expected finding id to its severity; an empty map
+		// means no findings at all.
+		want map[string]types.Severity
 	}{
 		{
-			name: "toolkit 12.4 with driver 13.1 is the normal supported case", toolkit: "12.4", driver: "13.1", wantNone: true,
+			name: "toolkit 12.4 with driver 13.1 is the normal supported case", toolkit: "12.4", driver: "13.1",
 		},
 		{
-			name: "toolkit 13.0 with driver 12.4 is a mismatch", toolkit: "13.0", driver: "12.4", wantIDs: []string{"cuda-mismatch"},
+			name: "toolkit 13.0 with driver 12.4 is a mismatch", toolkit: "13.0", driver: "12.4",
+			want: map[string]types.Severity{"cuda-mismatch": types.SeverityWarn},
 		},
 		{
-			name: "toolkit 12.6 with driver 12.4 is also a mismatch (minor)", toolkit: "12.6", driver: "12.4", wantIDs: []string{"cuda-mismatch"},
+			// CUDA minor-version compatibility: a 12.6 toolkit runs on any
+			// 12.x driver, so this is informational rather than a WARN.
+			name: "toolkit 12.6 with driver 12.4 is minor-version compatible (INFO)", toolkit: "12.6", driver: "12.4",
+			want: map[string]types.Severity{"cuda-toolkit-minor-newer": types.SeverityInfo},
 		},
 		{
-			name: "equal versions produce nothing", toolkit: "12.4", driver: "12.4", wantNone: true,
+			name: "equal versions produce nothing", toolkit: "12.4", driver: "12.4",
 		},
 		{
-			name: "torch cu128 with driver 12.4 is newer than driver", driver: "12.4",
-			torch:   &types.PyTorchInfo{Version: "2.7.0+cu128", CUDAVersion: "12.8", CUDAAvailable: false},
-			wantIDs: []string{"pytorch-cuda-newer-than-driver"},
+			name: "torch cu128 with driver 12.4 and CUDA unavailable is newer than driver", driver: "12.4",
+			torch: &types.PyTorchInfo{Version: "2.7.0+cu128", CUDAVersion: "12.8", CUDAAvailable: false},
+			want:  map[string]types.Severity{"pytorch-cuda-newer-than-driver": types.SeverityWarn},
+		},
+		{
+			// The WARN is gated on the symptom: a cu128 wheel that reports
+			// CUDA available on a 12.4 driver is a normal working setup.
+			name: "torch 12.8 on driver 12.4 with CUDA available produces nothing", driver: "12.4",
+			torch: &types.PyTorchInfo{Version: "2.7.0+cu128", CUDAVersion: "12.8", CUDAAvailable: true},
+		},
+		{
+			name: "torch cu130 on driver 12.4 with CUDA available is a low-confidence INFO", driver: "12.4",
+			torch: &types.PyTorchInfo{Version: "2.9.0+cu130", CUDAVersion: "13.0", CUDAAvailable: true},
+			want:  map[string]types.Severity{"pytorch-cuda-newer-but-working": types.SeverityInfo},
+		},
+		{
+			name: "torch cu130 on driver 12.4 with CUDA unavailable is a WARN", driver: "12.4",
+			torch: &types.PyTorchInfo{Version: "2.9.0+cu130", CUDAVersion: "13.0", CUDAAvailable: false},
+			want:  map[string]types.Severity{"pytorch-cuda-newer-than-driver": types.SeverityWarn},
 		},
 		{
 			name: "torch cu118 on a 13.x driver is fine", driver: "13.1",
-			torch:    &types.PyTorchInfo{Version: "2.5.1+cu118", CUDAVersion: "11.8", CUDAAvailable: true},
-			wantNone: true,
+			torch: &types.PyTorchInfo{Version: "2.5.1+cu118", CUDAVersion: "11.8", CUDAAvailable: true},
 		},
 	}
 
@@ -436,26 +499,56 @@ func TestAnalyzeCUDA_Table(t *testing.T) {
 				AI:     &types.AIInfo{CUDAToolkitVersion: tt.toolkit, PyTorchInfo: tt.torch},
 			}
 			findings := analyzeCUDA(report)
-			if tt.wantNone {
-				if len(findings) != 0 {
-					t.Fatalf("expected no findings, got %v", ids(findings))
-				}
-				return
-			}
-			for _, id := range tt.wantIDs {
+			for id, sev := range tt.want {
 				f := findByID(findings, id)
 				if f == nil {
 					t.Errorf("expected %s, got %v", id, ids(findings))
 					continue
 				}
-				if f.Severity != types.SeverityWarn {
-					t.Errorf("%s: expected WARN, got %s", id, f.Severity)
+				if f.Severity != sev {
+					t.Errorf("%s: expected %s, got %s", id, sev, f.Severity)
 				}
 			}
-			if len(findings) != len(tt.wantIDs) {
-				t.Errorf("unexpected extra findings: %v", ids(findings))
+			if len(findings) != len(tt.want) {
+				t.Errorf("unexpected findings: got %v, want %d finding(s)", ids(findings), len(tt.want))
 			}
 		})
+	}
+}
+
+func TestAnalyzeCUDA_TorchAvailableNeverContradictsItself(t *testing.T) {
+	report := &types.Report{
+		Driver: types.DriverInfo{CUDAVersion: "12.4"},
+		AI:     &types.AIInfo{PyTorchInfo: &types.PyTorchInfo{Version: "2.7.0+cu128", CUDAVersion: "12.8", CUDAAvailable: true, DeviceName: "RTX 3090"}},
+	}
+	all := append(analyzeCUDA(report), analyzePyTorch(report)...)
+	if findByID(all, "pytorch-cuda-ok") == nil {
+		t.Errorf("expected pytorch-cuda-ok, got %v", ids(all))
+	}
+	if findByID(all, "pytorch-cuda-newer-than-driver") != nil {
+		t.Errorf("a working torch install must not also be reported as broken: %v", ids(all))
+	}
+	for _, f := range all {
+		if f.Severity != types.SeverityInfo {
+			t.Errorf("healthy torch setup produced non-INFO finding %s (%s)", f.ID, f.Severity)
+		}
+	}
+}
+
+func TestAnalyzeCUDA_MinorNewerToolkitIsInfoWithConfidence50(t *testing.T) {
+	report := &types.Report{
+		Driver: types.DriverInfo{CUDAVersion: "12.4"},
+		AI:     &types.AIInfo{CUDAToolkitVersion: "12.6"},
+	}
+	f := findByID(analyzeCUDA(report), "cuda-toolkit-minor-newer")
+	if f == nil {
+		t.Fatal("expected cuda-toolkit-minor-newer")
+	}
+	if f.Confidence != 50 {
+		t.Errorf("confidence = %d, want 50", f.Confidence)
+	}
+	if !strings.Contains(strings.ToLower(f.WhyItMatters), "minor-version compatibility") {
+		t.Errorf("WhyItMatters should explain minor-version compatibility, got %q", f.WhyItMatters)
 	}
 }
 
@@ -877,5 +970,47 @@ func TestSummaryBlock_TopListsTwoActionableTitles(t *testing.T) {
 	Analyze(healthy, types.ModeFull)
 	if strings.Contains(healthy.SummaryBlock, "Top:") {
 		t.Errorf("no Top line expected when nothing is actionable:\n%s", healthy.SummaryBlock)
+	}
+}
+
+// ── C8: power plan name classification ────────────────────────────────
+
+func TestPowerPlanSuboptimal_Table(t *testing.T) {
+	tests := []struct {
+		plan string
+		want bool
+	}{
+		{"Balanced", true},
+		{"Power saver", true},
+		{"Balanced (recommended)", true},
+		{"381b4222-f694-41f0-9685-ff5bb260df2e", true}, // Balanced GUID
+		{"a1841308-3541-4fab-bc81-f71556f20b4a", true}, // Power saver GUID
+		{"Equilibrado", true},                          // es/pt Balanced
+		{"Ausbalanciert", true},                        // de Balanced
+		{"High performance", false},
+		{"Ultimate Performance", false},
+		{"Höchstleistung", false},   // de High performance
+		{"Alto rendimiento", false}, // es High performance
+		{"N/A", false},
+		{"n/a", false},
+		{"Not available", false},
+		{"", false},
+		{"Unknown", false},
+		{"Default (not configured)", false},
+		{"ASUS Turbo Mode", false}, // unrecognised OEM plan
+	}
+	for _, tt := range tests {
+		t.Run(tt.plan, func(t *testing.T) {
+			if got := powerPlanSuboptimal(tt.plan); got != tt.want {
+				t.Errorf("powerPlanSuboptimal(%q) = %v, want %v", tt.plan, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPowerPlanNA_NoFinding(t *testing.T) {
+	report := &types.Report{Windows: &types.WindowsInfo{PowerPlan: "N/A", HAGSEnabled: "Disabled"}}
+	if f := findByID(analyzeWindowsPerfSettings(report), "power-plan-suboptimal"); f != nil {
+		t.Errorf("an unreadable power plan must not be reported as suboptimal: %+v", f)
 	}
 }
