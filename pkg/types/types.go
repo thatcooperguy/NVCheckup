@@ -573,6 +573,10 @@ type DGXOSInfo struct {
 
 	FwupdError       string `json:"fwupd_error,omitempty"`        // last fwupd error line, if any
 	AptSourceCorrupt string `json:"apt_source_corrupt,omitempty"` // apt source that fails to parse (e.g. nvidia-container-toolkit.list)
+	// UnitsQueried is true when systemctl answered for the DGX OS units, so the
+	// *Active booleans are measurements; when false they are unknown and the
+	// analyzer must not report the dashboard/fwupd units as unhealthy (integration contract).
+	UnitsQueried bool `json:"units_queried"`
 }
 
 // UnifiedMemoryInfo is the system-memory picture on unified-memory platforms
