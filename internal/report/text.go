@@ -26,7 +26,7 @@ func footerLines(meta types.ReportMetadata) []string {
 		lines = append(lines, footerProbes)
 	}
 	if meta.RedactionEnabled {
-		lines = append(lines, "Redaction was applied to remove usernames, hostnames, home paths and IP addresses.")
+		lines = append(lines, "Redaction was applied to remove usernames, hostnames, home paths, IP addresses and serial numbers.")
 	} else {
 		lines = append(lines, "Redaction was DISABLED. This report may contain identifying information.")
 	}
@@ -427,10 +427,14 @@ func GenerateText(report *types.Report) string {
 	}
 	w("\n")
 
-	// Next Steps
+	// Next Steps: Advisory steps keep their marker here too (spec 5).
 	w("== RECOMMENDED NEXT STEPS ==\n\n")
 	for i, step := range report.NextSteps {
-		w("  %d. %s\n", i+1, step)
+		if isAdvisory(step) {
+			w("  %d. ! %s\n", i+1, step)
+		} else {
+			w("  %d. %s\n", i+1, step)
+		}
 	}
 	w("\n")
 	line()
@@ -449,6 +453,9 @@ func GenerateText(report *types.Report) string {
 	w("\n== PRIVACY & DATA ==\n\n")
 	for _, l := range footerLines(report.Metadata) {
 		w("  %s\n", l)
+	}
+	if hasAdvisorySteps(report) {
+		w("  %s\n", footerAdvisory)
 	}
 	w("\n")
 	line()
