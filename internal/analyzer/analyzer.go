@@ -211,7 +211,7 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 	// driver-not-detected is not emitted when dgx-spark-gsp-init-failure
 	// explains the missing driver version (spec 5.1).
 	if report.Driver.Version == "" && !gspInitFailure(report) {
-		findings = append(findings, types.Finding{
+		f := types.Finding{
 			ID:           "driver-not-detected",
 			Severity:     types.SeverityCrit,
 			Title:        "NVIDIA Driver Version Not Detected",
@@ -224,7 +224,29 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 			},
 			Category:   "driver",
 			Confidence: 95,
-		})
+		}
+		// Spec 5.1 / 8 (WP2 brief item 3): on rtx-spark without nvidia-smi.exe
+		// the WDDM DriverVersion from WMI is the only driver source, so a
+		// missing nvidia-smi version is INFO, not CRIT, while the N1X GPU is
+		// in the inventory. Whether the 616.00 Arm64 package ships
+		// nvidia-smi.exe is unconfirmed (spec 2.2).
+		if g := firstNVIDIAGPU(report); isRTXSpark(report) && report.Driver.NvidiaSmiPath == "" && g != nil {
+			wddm := strings.TrimSpace(g.DriverVersion)
+			if wddm == "" {
+				wddm = "n/a"
+			}
+			f.Severity = types.SeverityInfo
+			f.Title = "NVIDIA Driver Version Not Reported by nvidia-smi (RTX Spark)"
+			f.Evidence = fmt.Sprintf("nvidia-smi is absent, so no driver version came from it; the WDDM DriverVersion from WMI for GPU %d (%s) is %s. Whether the RTX Spark Arm64 driver package ships nvidia-smi.exe is unconfirmed (spec 2.2), so this is informational.", g.Index, g.Name, wddm)
+			f.WhyItMatters = "Until nvidia-smi.exe presence on RTX Spark is confirmed, the WDDM version reported by Windows (Win32_VideoController.DriverVersion) is the only driver-version source; the GPU is present and the driver may be healthy."
+			f.NextSteps = []string{
+				"Compare the WDDM DriverVersion above with the 616.00 Developer Preview package (WDDM suffix 16.1600, spec 2.2) via 'Get-CimInstance Win32_VideoController | fl Name,DriverVersion,InfFilename' (read-only).",
+				"If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.",
+			}
+			f.Confidence = 60
+			f.GPUIndexes = []int{g.Index}
+		}
+		findings = append(findings, f)
 	}
 
 	if report.Driver.NvidiaSmiPath == "" {

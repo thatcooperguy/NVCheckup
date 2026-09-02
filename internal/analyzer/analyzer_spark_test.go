@@ -494,6 +494,44 @@ func TestSuppression_NvidiaSmiMissingIsInfoOnRTXSpark(t *testing.T) {
 	}
 }
 
+func TestSuppression_DriverNotDetectedIsInfoOnRTXSpark(t *testing.T) {
+	// Spec 5.1 / brief item 3: rtx-spark without nvidia-smi.exe downgrades
+	// driver-not-detected to INFO; the WDDM version from WMI is the source.
+	r := rtxSpark(func(r *types.Report) { r.Driver = types.DriverInfo{}; r.GPUs[0].DriverVersion = "32.0.16.1600" })
+	Analyze(r, types.ModeFull)
+	f := findByID(r.Findings, "driver-not-detected")
+	if f == nil {
+		t.Fatalf("expected driver-not-detected INFO, got %v", ids(r.Findings))
+	}
+	if f.Severity != types.SeverityInfo || !strings.Contains(f.Evidence, "WDDM DriverVersion from WMI for GPU 0") || !strings.Contains(f.Evidence, "32.0.16.1600") || !strings.Contains(f.Evidence, "unconfirmed") {
+		t.Errorf("rtx-spark should downgrade driver-not-detected to INFO with the WDDM wording: %+v", f)
+	}
+	if len(f.GPUIndexes) != 1 || f.GPUIndexes[0] != 0 || f.Impact == "" {
+		t.Errorf("driver-not-detected INFO should implicate GPU 0 and carry an impact: %+v", f)
+	}
+	if n := findByID(r.Findings, "nvidia-smi-missing"); n == nil || n.Severity != types.SeverityInfo {
+		t.Errorf("nvidia-smi-missing should stay INFO next to it: %+v", n)
+	}
+	for _, f := range r.Findings {
+		if f.Severity == types.SeverityCrit {
+			t.Errorf("no CRIT expected on an RTX Spark without nvidia-smi.exe: %s", f.ID)
+		}
+	}
+	// With nvidia-smi.exe present but silent, the CRIT stays: nvidia-smi is
+	// there and should have answered.
+	r = rtxSpark(func(r *types.Report) {
+		r.Driver = types.DriverInfo{NvidiaSmiPath: "C:\\Windows\\System32\\nvidia-smi.exe"}
+	})
+	if f := findByID(analyzeDriverBasics(r), "driver-not-detected"); f == nil || f.Severity != types.SeverityCrit {
+		t.Errorf("driver-not-detected should remain CRIT when nvidia-smi.exe exists: %+v", f)
+	}
+	// Off RTX Spark the CRIT is unchanged.
+	plain := analyzeDriverBasics(&types.Report{GPUs: []types.GPUInfo{{Index: 0, Name: "NVIDIA GeForce RTX 4090", IsNVIDIA: true}}})
+	if f := findByID(plain, "driver-not-detected"); f == nil || f.Severity != types.SeverityCrit {
+		t.Errorf("driver-not-detected should remain CRIT off RTX Spark: %+v", f)
+	}
+}
+
 func TestSuppression_NvidiaAppNotExpectedOnWindowsArm(t *testing.T) {
 	// The rule only fires on collected data; a WoA report without an NVIDIA
 	// App version (nothing ships for Arm64 yet, spec 5.1) yields nothing.
@@ -773,6 +811,35 @@ func TestOTAOutdated_Clauses(t *testing.T) {
 	}
 }
 
+func TestDashboardUnhealthy_NeedsProbedServices(t *testing.T) {
+	// A DGXOSInfo with only the release fields (systemctl never queried) or a
+	// zero value must not yield the WARN in any mode.
+	for _, dgx := range []*types.DGXOSInfo{{}, {Name: "DGX OS", SWBuildVersion: "7.5.0", OTAVersion: "7.5.0"}} {
+		for _, mode := range []types.RunMode{types.ModeGaming, types.ModeAI, types.ModeCreator, types.ModeFull, types.ModeStreaming} {
+			r := gb10(func(r *types.Report) { r.DGXOS = dgx })
+			Analyze(r, mode)
+			if f := findByID(r.Findings, "dgx-spark-dashboard-unhealthy"); f != nil {
+				t.Errorf("mode %s, dgx %+v: dashboard clause fired without probed services: %+v", mode, dgx, f)
+			}
+		}
+	}
+	// One positive observation (persistenced active) is enough to trust the
+	// inactive dashboard bools.
+	r := gb10(func(r *types.Report) {
+		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", PersistencedActive: true}
+	})
+	if f := findByID(analyzeDGXOS(r), "dgx-spark-dashboard-unhealthy"); f == nil || !strings.Contains(f.Evidence, "dgx-dashboard inactive, dgx-dashboard-admin inactive, port 11000 closed, fwupd inactive") {
+		t.Errorf("probed services with the dashboard down should fire: %+v", f)
+	}
+	// A fwupd error alone also counts as a probe.
+	r = gb10(func(r *types.Report) {
+		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", DashboardActive: true, DashboardAdminActive: true, DashboardPortOpen: true, FwupdError: "libfwupd version 1.9.34 does not match daemon 1.9.30"}
+	})
+	if f := findByID(analyzeDGXOS(r), "dgx-spark-dashboard-unhealthy"); f == nil || !strings.Contains(f.Evidence, "fwupd failed") {
+		t.Errorf("fwupd error should fire: %+v", f)
+	}
+}
+
 func TestFirmwareBehind_FEThresholdsAndOEMPending(t *testing.T) {
 	if f := findByID(analyzeFirmware(fixtures.GB10()), "dgx-spark-firmware-behind"); f != nil {
 		t.Fatalf("current FE firmware must not fire: %+v", f)
@@ -834,6 +901,31 @@ func TestClusterRules_Variants(t *testing.T) {
 	if f := findByID(analyzeCluster(r), "cx7-twins-same-subnet"); f == nil || !strings.Contains(f.Evidence, "bond0") {
 		t.Errorf("bond: %+v", f)
 	}
+	// MTU mismatch between twins is reported exactly once, even though the
+	// 1500 twin is addressed and netplan says 9000 (both clauses match).
+	r = gb10(withCluster(func(c *types.ClusterInfo) { c.Ports[1].MTU = 1500 }))
+	got := analyzeCluster(r)
+	var mtu []types.Finding
+	for _, f := range got {
+		if f.ID == "cx7-mtu-mismatch" {
+			mtu = append(mtu, f)
+		}
+	}
+	if len(mtu) != 1 || !strings.Contains(mtu[0].Evidence, "enp1s0f0np0 (rocep1s0f0)=9000, enP2p1s0f0np0 (roceP2p1s0f0)=1500; netplan mtu 9000") {
+		t.Errorf("cx7-mtu-mismatch should fire exactly once per cage: %+v", mtu)
+	}
+	// Both twins 1500 while netplan says 9000: the netplan clause reports
+	// each addressed twin once (no cage disagreement).
+	r = gb10(withCluster(func(c *types.ClusterInfo) { c.Ports[0].MTU = 1500; c.Ports[1].MTU = 1500 }))
+	mtu = nil
+	for _, f := range analyzeCluster(r) {
+		if f.ID == "cx7-mtu-mismatch" {
+			mtu = append(mtu, f)
+		}
+	}
+	if len(mtu) != 2 || !strings.Contains(mtu[0].Evidence, "=1500 while netplan mtu 9000") {
+		t.Errorf("netplan clause: %+v", mtu)
+	}
 	// Speed degraded names the interface and the expected speed.
 	r = gb10(withCluster(func(c *types.ClusterInfo) { c.Ports[0].SpeedMbps = 100000 }))
 	if f := findByID(analyzeCluster(r), "cx7-link-speed-degraded"); f == nil || !strings.Contains(f.Evidence, "enp1s0f0np0 (rocep1s0f0) negotiated 100000 Mb/s; expected 200000") {
@@ -841,7 +933,7 @@ func TestClusterRules_Variants(t *testing.T) {
 	}
 	// Up without IP is WARN; not persisted is INFO.
 	r = gb10(withCluster(func(c *types.ClusterInfo) { c.Ports[0].IPv4 = nil; c.Ports[1].Persistent = false }))
-	got := analyzeCluster(r)
+	got = analyzeCluster(r)
 	var warn, info int
 	for _, f := range got {
 		if f.ID == "cx7-up-no-ip" {
@@ -908,6 +1000,41 @@ func TestEcosystemRules_ModeGating(t *testing.T) {
 			t.Errorf("mode %s: expected docker-snap-gpu-blocked, got %v", mode, ids(r.Findings))
 		}
 	}
+	// arm64-flash-attn-no-wheel and arm64-container-amd64-image are
+	// [dgx-spark, arm64-dgpu] rules: an aarch64 Jetson or Grace Hopper host
+	// with the same evidence stays silent; arm64-dgpu fires.
+	for _, class := range []string{classJetson, classGraceHopper, ""} {
+		r := &types.Report{
+			Metadata:  types.ReportMetadata{Platform: "linux", Mode: types.ModeFull},
+			System:    types.SystemInfo{OSName: "Ubuntu 22.04", Architecture: "aarch64", IsJetson: class == classJetson},
+			GPUs:      []types.GPUInfo{{Index: 0, Name: "NVIDIA GH200 480GB", IsNVIDIA: true, VRAMTotalMB: 97871}},
+			Driver:    types.DriverInfo{Version: "580.65.06", NvidiaSmiPath: "nvidia-smi"},
+			Platform:  types.PlatformInfo{Class: class},
+			Linux:     &types.LinuxInfo{DmesgSnippets: "exec format error\n"},
+			Ecosystem: &types.EcosystemInfo{FlashAttnVersion: "2.7.4", Images: []types.ContainerImage{{Ref: "nvcr.io/nvidia/pytorch:25.06-py3", Arch: "amd64"}}},
+		}
+		Analyze(r, types.ModeFull)
+		for _, id := range []string{"arm64-flash-attn-no-wheel", "arm64-container-amd64-image"} {
+			if findByID(r.Findings, id) != nil {
+				t.Errorf("class %q: %s must not fire outside dgx-spark/arm64-dgpu, got %v", class, id, ids(r.Findings))
+			}
+		}
+	}
+	r = &types.Report{
+		Metadata:  types.ReportMetadata{Platform: "linux", Mode: types.ModeFull},
+		System:    types.SystemInfo{OSName: "Ubuntu 24.04", Architecture: "aarch64"},
+		GPUs:      []types.GPUInfo{{Index: 0, Name: "NVIDIA RTX PRO 6000", IsNVIDIA: true, VRAMTotalMB: 98304}},
+		Driver:    types.DriverInfo{Version: "580.65.06", NvidiaSmiPath: "nvidia-smi"},
+		Platform:  types.PlatformInfo{Class: classArm64DGPU},
+		Ecosystem: &types.EcosystemInfo{FlashAttnVersion: "2.7.4", Images: []types.ContainerImage{{Ref: "nvcr.io/nvidia/pytorch:25.06-py3", Arch: "amd64"}}},
+	}
+	Analyze(r, types.ModeFull)
+	for _, id := range []string{"arm64-flash-attn-no-wheel", "arm64-container-amd64-image"} {
+		if findByID(r.Findings, id) == nil {
+			t.Errorf("arm64-dgpu: expected %s, got %v", id, ids(r.Findings))
+		}
+	}
+
 	// Cluster rules: ai and full only.
 	r = gb10(withCluster(func(c *types.ClusterInfo) { c.UfwEnabled = true }))
 	Analyze(r, types.ModeCreator)
@@ -976,6 +1103,21 @@ func TestWoARules(t *testing.T) {
 	}
 	if f := findByID(r.Findings, "woa-windows-build-too-old"); f != nil && !strings.Contains(f.Evidence, "Windows build 22631 predates 24H2 (26100)") {
 		t.Errorf("build evidence: %s", f.Evidence)
+	}
+	// Windows on Arm without an N1X (Snapdragon X laptop): the woa-* rules are
+	// [rtx-spark] rules and stay silent.
+	r = rtxSpark(func(r *types.Report) {
+		r.Platform.Class = ""
+		r.Platform.GPUSoC = ""
+		r.Platform.UnifiedMemory = false
+		r.Platform.ProcessEmulated = true
+		r.System.OSBuild = "10.0.22631"
+		r.GPUs = []types.GPUInfo{{Index: 0, Name: "Qualcomm Adreno X1-85 GPU", IsNVIDIA: false}}
+	})
+	for _, id := range []string{"woa-nvcheckup-emulated", "woa-windows-build-too-old"} {
+		if f := findByID(analyzeWoA(r), id); f != nil {
+			t.Errorf("%s must not fire on Windows on Arm without an N1X: %+v", id, f)
+		}
 	}
 	// Native 13.4 toolkit: quiet.
 	r = rtxSpark(func(r *types.Report) { r.AI = &types.AIInfo{CUDAToolkitVersion: "13.4"} })

@@ -154,7 +154,7 @@ Top: RTX Spark Developer Preview Driver
 ## Recommended Next Steps
 
 1. Check the RTX Spark Developer Preview thread (S24) and OEM/Windows Update for a production Arm64 driver (read-only).
-2. Advisory: installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).
+2. **Advisory:** installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).
 
 ---
 

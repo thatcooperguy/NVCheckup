@@ -190,16 +190,24 @@ func analyzeCluster(r *types.Report) []types.Finding {
 	}
 
 	// Rule row cx7-mtu-mismatch (spec 5): MTU differs between twins of a cage,
-	// or an addressed twin is 1500 while netplan/peer uses 9000.
+	// or an addressed twin is 1500 while netplan/peer uses 9000. One finding
+	// per condition: a twin already reported by the cage comparison is not
+	// reported again by the netplan clause.
+	mtuReported := map[string]bool{}
 	for _, cage := range order {
 		twins := byCage[cage]
 		for i := 1; i < len(twins); i++ {
 			if twins[0].MTU > 0 && twins[i].MTU > 0 && twins[0].MTU != twins[i].MTU {
 				findings = append(findings, sparkFinding("cx7-mtu-mismatch", fmt.Sprintf("MTU %s=%d, %s=%d; netplan mtu %s.", portName(twins[0]), twins[0].MTU, portName(twins[i]), twins[i].MTU, mtuOrUnset(c.NetplanMTU))))
+				mtuReported[portName(twins[0])] = true
+				mtuReported[portName(twins[i])] = true
 			}
 		}
 	}
 	for _, p := range ports {
+		if mtuReported[portName(p)] {
+			continue
+		}
 		if len(p.IPv4) > 0 && p.MTU > 0 && p.MTU < cx7HealthyMTU && c.NetplanMTU == cx7HealthyMTU {
 			findings = append(findings, sparkFinding("cx7-mtu-mismatch", fmt.Sprintf("MTU %s=%d while netplan mtu %d.", portName(p), p.MTU, c.NetplanMTU)))
 		}
