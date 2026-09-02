@@ -338,6 +338,17 @@ func TestParseFwupdUpgradesAndApplyPending(t *testing.T) {
 	if got := parseFwupdUpgrades("No updates available\n"); len(got) != 0 {
 		t.Errorf("no-upgrades output must yield nothing, got %v", got)
 	}
+	// The CI shim's compact shape (.github/fieldtest/shims/fwupdmgr get-upgrades
+	// with fwupd_updates set) and its exit-2 "nothing to do" listing.
+	shim := "Embedded Controller has firmware updates:\n  New version: 0x03000600\n" +
+		"UEFI Device Firmware has firmware updates:\n  New version: 2.160.1\n"
+	if want := map[string]string{"Embedded Controller": "3.6.0", "UEFI Device Firmware": "2.160.1"}; !reflect.DeepEqual(parseFwupdUpgrades(shim), want) {
+		t.Errorf("parseFwupdUpgrades(shim) = %v, want %v", parseFwupdUpgrades(shim), want)
+	}
+	none := "Devices with no available firmware updates: \n \u2022 Embedded Controller\n \u2022 UEFI Device Firmware\nNo updates available\n"
+	if got := parseFwupdUpgrades(none); len(got) != 0 {
+		t.Errorf("shim no-updates listing must yield nothing, got %v", got)
+	}
 	comps := []types.FirmwareComponent{
 		{Name: "Embedded Controller", Version: "3.5.8"},
 		{Name: "System Firmware", Version: "2.155.11"},
