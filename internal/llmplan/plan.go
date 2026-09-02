@@ -322,9 +322,9 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 			PerNode: in.Nodes > 1,
 		},
 		Estimates: PlanEstimates{
-			DecodeCeilingTPS:            round1(s.CeilingAtContextTPS),
-			DecodeCeilingWeightsOnlyTPS: round1(s.CeilingWeightsOnlyTPS),
-			DecodeBandTPS:               [2]float64{round1(s.BandLowTPS), round1(s.BandHighTPS)},
+			DecodeCeilingTPS:            roundTPS(s.CeilingAtContextTPS),
+			DecodeCeilingWeightsOnlyTPS: roundTPS(s.CeilingWeightsOnlyTPS),
+			DecodeBandTPS:               [2]float64{roundTPS(s.BandLowTPS), roundTPS(s.BandHighTPS)},
 			PrefillRefTPS:               PrefillReferenceTPS,
 			Note:                        s.CeilingNote,
 			MeasuredByOthers:            m.MeasuredDecodeTPS,
@@ -347,7 +347,7 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 		p.Fit.FitsNow = &v
 	}
 	p.Advice = advise(in, s, m, pool)
-	p.Warnings = append(p.Warnings, planWarnings(in, s, pool, prereqs, cmd, o.GOOS)...)
+	p.Warnings = append(p.Warnings, planWarnings(in, s, pool, prereqs, cmd, o.GOOS, windowsOnArm(report, o.GOOS))...)
 	if p.Warnings == nil {
 		p.Warnings = []string{} // spec 7.8: warnings[] is always present
 	}
@@ -402,8 +402,24 @@ func exitCode(s Sizing, prereqs []Prereq, warnings []string) int {
 	return types.ExitOK
 }
 
+// windowsOnArm reports whether the plan targets Windows on Arm (spec 2.2 /
+// 3.1 row 1): the detector's IsWindowsOnArm flag, the rtx-spark class or N1X
+// SoC, or an arm64 architecture string on a Windows report. An x86-64 Windows
+// desktop is not WoA and gets none of the spec 7.5/7.6 WoA caveats.
+func windowsOnArm(r *types.Report, goos string) bool {
+	if goos != "windows" || r == nil {
+		return false
+	}
+	return r.Platform.IsWindowsOnArm || r.Platform.Class == "rtx-spark" || SparkSoC(r) == "N1X" || isArm(r)
+}
+
+// woaLlamaCppUnconfirmed is the spec 7.5/7.6 caveat for llama.cpp and Ollama
+// plans on Windows on Arm; it is a warning so the plan exits 1 (brief item 5:
+// everything the spec marks unconfirmed is labelled).
+const woaLlamaCppUnconfirmed = "Unconfirmed - Windows on Arm: build llama.cpp with clang-cl (spec 7.6); the cmake/llama-server lines above are the Linux template and llama.cpp CUDA on Windows Arm64 (CUDA 13.4 DP) is itself unverified (spec 7.5); Arm64 Ollama/LM Studio only when released (spec 7.6)."
+
 // planWarnings collects the plan-level warnings (spec 7.8 warnings[]).
-func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Command, goos string) []string {
+func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Command, goos string, woa bool) []string {
 	var w []string
 	for _, p := range prereqs {
 		if p.Status == StatusFail || p.Status == StatusWarn {
@@ -419,6 +435,9 @@ func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Co
 	}
 	if goos == "windows" && in.Runtime.IsContainer() {
 		w = append(w, "Windows on Arm: only llama.cpp (clang-cl) and, when released, Arm64 Ollama/LM Studio are covered (spec 7.6).")
+	}
+	if woa && (in.Runtime == RuntimeLlamaCpp || in.Runtime == RuntimeOllama) {
+		w = append(w, woaLlamaCppUnconfirmed)
 	}
 	return w
 }

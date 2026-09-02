@@ -95,6 +95,32 @@ func TestEvaluate_Failures(t *testing.T) {
 	}
 }
 
+// Grace Hopper (GPUSoC "GH200", Class grace-hopper) is not a Spark: the 580 /
+// CUDA 13 sm_121 expectations of spec 7.7 do not apply, so a 570 driver with
+// CUDA 12.8 passes and the OTA check is absent.
+func TestEvaluate_GraceHopper(t *testing.T) {
+	r := gh200Report()
+	pool, _ := DerivePool(r, "linux", 5, 0, true)
+	in := Inputs{Model: mustModel(t, "llama-3.3-70b-instruct"), Quant: QuantBF16, KV: KVF16, Context: 32768, Concurrency: 1, Runtime: RuntimeVLLM, Nodes: 1,
+		PoolBytes: pool.TotalBytes, AvailableBytes: pool.AvailableBytes}
+	s := Compute(in)
+	cmd := RenderCommand(in, s, "chat", ClusterFacts{})
+	ps := Evaluate(Facts{Report: r, Pool: pool, GOOS: "linux"}, in, s, cmd)
+	p := expect(t, ps, "driver-present", StatusPass)
+	if strings.Contains(p.Detail, "sm_121") {
+		t.Errorf("GH200 must not get the sm_121 note: %s", p.Detail)
+	}
+	expect(t, ps, "cuda-13", StatusPass)
+	if _, ok := statusOf(ps, "ota-not-torn"); ok {
+		t.Error("ota-not-torn is dgx-spark only")
+	}
+	// 70B BF16 (131.5 GiB) does not fit 95.6 GiB of HBM: the sizing sees the
+	// discrete pool, not the 480 GB of system RAM.
+	if s.FitsTotal {
+		t.Errorf("70B BF16 must not fit a 97871 MiB GH200, total %s pool %s", fmtGiB(s.TotalBytes), fmtGiB(s.PoolBytes))
+	}
+}
+
 func TestEvaluate_MissingDriverAndUnknowns(t *testing.T) {
 	r := gb10Report()
 	r.Driver = types.DriverInfo{}

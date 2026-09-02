@@ -92,9 +92,9 @@ func RenderText(p *Plan) string {
 
 	e := p.Estimates
 	w("ESTIMATES (formula ceilings; not measured on this machine)")
-	if e.DecodeCeilingTPS > 0 {
-		w("  Decode ceiling, one stream:  %.1f tok/s weights-only; %.1f tok/s at %s context", e.DecodeCeilingWeightsOnlyTPS, e.DecodeCeilingTPS, fmtTokens(m.Context))
-		w("  Realism band (50-80%% of at-context):  %.1f - %.1f tok/s", e.DecodeBandTPS[0], e.DecodeBandTPS[1])
+	if e.Note == "" {
+		w("  Decode ceiling, one stream:  %s tok/s weights-only; %s tok/s at %s context", fmtTPS(e.DecodeCeilingWeightsOnlyTPS), fmtTPS(e.DecodeCeilingTPS), fmtTokens(m.Context))
+		w("  Realism band (50-80%% of at-context):  %s - %s tok/s", fmtTPS(e.DecodeBandTPS[0]), fmtTPS(e.DecodeBandTPS[1]))
 	} else {
 		w("  Decode ceiling:  not printed (%s)", e.Note)
 	}
@@ -269,8 +269,8 @@ func RenderMarkdown(p *Plan) string {
 	w("")
 	w("## Estimates")
 	w("")
-	if e.DecodeCeilingTPS > 0 {
-		w("- Decode ceiling, one stream: %.1f tok/s weights-only; %.1f tok/s at %s context; realism band %.1f-%.1f tok/s (50-80%%).", e.DecodeCeilingWeightsOnlyTPS, e.DecodeCeilingTPS, fmtTokens(m.Context), e.DecodeBandTPS[0], e.DecodeBandTPS[1])
+	if e.Note == "" {
+		w("- Decode ceiling, one stream: %s tok/s weights-only; %s tok/s at %s context; realism band %s-%s tok/s (50-80%%).", fmtTPS(e.DecodeCeilingWeightsOnlyTPS), fmtTPS(e.DecodeCeilingTPS), fmtTokens(m.Context), fmtTPS(e.DecodeBandTPS[0]), fmtTPS(e.DecodeBandTPS[1]))
 	} else {
 		w("- Decode ceiling: not printed (%s).", e.Note)
 	}

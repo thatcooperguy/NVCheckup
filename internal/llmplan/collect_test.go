@@ -145,6 +145,35 @@ func TestDerivePool_Sources(t *testing.T) {
 		t.Error("unified pools keep the spec 7.4 F")
 	}
 
+	// 2b. Grace Hopper: Class grace-hopper with GPUSoC "GH200" is a discrete
+	// HBM GPU (spec 3.1 flag rule C forces UnifiedMemory=false), so the pool is
+	// the 97871 MiB VRAM, never system RAM, and nothing Spark-specific applies.
+	gh := gh200Report()
+	if IsUnified(gh) {
+		t.Error("grace-hopper must not be unified (spec 3.1 flag rule C)")
+	}
+	if soc := SparkSoC(gh); soc != "" {
+		t.Errorf("SparkSoC(GH200) = %q, want empty (GPUSoC GH200 is not a Spark SoC)", soc)
+	}
+	if bw, _ := Bandwidth(gh); bw != 0 {
+		t.Errorf("GH200 bandwidth = %v, want 0 (no figure in the spec)", bw)
+	}
+	pool, _ = DerivePool(gh, "linux", 5, 0, true)
+	if !pool.Discrete || pool.Unified || pool.TotalBytes != float64(gh200MiB)*1024*1024 || !strings.Contains(pool.Source, "GH200") {
+		t.Errorf("grace-hopper pool = %+v, want discrete %d MiB from VRAMTotalMB", pool, gh200MiB)
+	}
+	near(t, "GH200 pool", GiBf(pool.TotalBytes), 95.6, 0.05)
+	// The same with the row-9 fallback SoC string: not a Spark SoC either.
+	unk := gb10Report()
+	unk.Platform.Class, unk.Platform.GPUSoC = "", "unknown-cc12.1"
+	unk.GPUs[0].Name = "NVIDIA Graphics Device"
+	if soc := SparkSoC(unk); soc != "" {
+		t.Errorf("SparkSoC(unknown-cc12.1) = %q, want empty", soc)
+	}
+	if !IsUnified(unk) {
+		t.Error("row-9 fallback keeps unified memory (flag rule B / memory [N/A])")
+	}
+
 	// 3. Unified platform without the struct and without /proc/meminfo (Windows N1X, no CIM here): system RAM fallback.
 	w := &types.Report{
 		System: types.SystemInfo{RAMTotalMB: 130000},

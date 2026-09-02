@@ -192,13 +192,20 @@ var sparkGPUNames = []struct{ substr, soc string }{
 	{"RTX Spark", "N1X"},     // spec 2.2 marketing name
 }
 
-// SparkSoC returns "GB10", "N1X" or "" for the report.
+// SparkSoC returns "GB10", "N1X" or "" for the report. Platform.GPUSoC is
+// trusted only for those two values: the detector also writes "GH200" (spec
+// 3.1 row 7, a discrete-HBM Grace Hopper part) and "unknown-cc12.1" (row 9),
+// neither of which is a Spark SoC the wizard knows a bandwidth for.
 func SparkSoC(r *types.Report) string {
 	if r == nil {
 		return ""
 	}
-	if r.Platform.GPUSoC != "" {
+	switch r.Platform.GPUSoC {
+	case "GB10", "N1X":
 		return r.Platform.GPUSoC
+	}
+	if r.Platform.Class == "grace-hopper" {
+		return "" // spec 3.1 row 7: GH200/GB200/GB300 are never a Spark
 	}
 	switch r.Platform.Class {
 	case "dgx-spark":
@@ -220,6 +227,11 @@ func SparkSoC(r *types.Report) string {
 // and GPU (spec 2.1: nvidia-smi memory fields are [N/A] on GB10).
 func IsUnified(r *types.Report) bool {
 	if r == nil {
+		return false
+	}
+	if r.Platform.Class == "grace-hopper" {
+		// spec 3.1 flag rule C: Class=grace-hopper (numeric nvidia-smi memory)
+		// forces UnifiedMemory=false; the GPU is discrete HBM (spec 2.3 / S29).
 		return false
 	}
 	if r.Platform.UnifiedMemory || r.UnifiedMemory != nil {

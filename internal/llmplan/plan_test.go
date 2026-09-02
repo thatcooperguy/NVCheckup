@@ -154,6 +154,129 @@ func TestBuild_CustomAndMemoryOverride(t *testing.T) {
 	}
 }
 
+// buildOffline builds a plan for a saved report: the pool comes from the
+// report only (never this host's /proc/meminfo or CIM).
+func buildOffline(t *testing.T, r *types.Report, goos string, mutate func(o *Options)) *Plan {
+	t.Helper()
+	t.Setenv("TRITON_PTXAS_PATH", "")
+	t.Setenv("NVC_SIM_ROOT", "")
+	o := DefaultOptions()
+	o.GOOS = goos
+	mutate(&o)
+	pool, _ := DerivePool(r, goos, o.Timeout, o.MemoryGiB, true)
+	p, err := Build(r, pool, nil, r.UnifiedMemory != nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func hasWarning(p *Plan, substr string) bool {
+	for _, w := range p.Warnings {
+		if strings.Contains(w, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// Spec 7.5/7.6: llama.cpp (clang-cl) and Ollama on Windows on Arm are
+// unconfirmed, so an N1X plan for them is labelled and exits 1; an x86-64
+// Windows desktop and a container runtime on WoA do not get that line.
+func TestBuild_WindowsOnArmUnconfirmed(t *testing.T) {
+	for _, rt := range []string{"llamacpp", "ollama"} {
+		p := buildOffline(t, n1xWindowsReport(), "windows", func(o *Options) { o.Model, o.Profile, o.Runtime = "llama-3.1-8b-instruct", "chat", rt })
+		if !p.Platform.UnifiedMemory || p.Platform.SoC != "N1X" {
+			t.Errorf("%s: N1X plan platform = %+v", rt, p.Platform)
+		}
+		if !hasWarning(p, "clang-cl") || !hasWarning(p, "CUDA 13.4 DP) is itself unverified") || !hasWarning(p, "Unconfirmed") {
+			t.Errorf("%s on WoA: unconfirmed label missing, warnings %v", rt, p.Warnings)
+		}
+		if p.ExitCode != types.ExitWarnings {
+			t.Errorf("%s on WoA: exit %d, want 1 (fits with warnings)", rt, p.ExitCode)
+		}
+		if !strings.Contains(RenderText(p), "clang-cl") || !strings.Contains(RenderMarkdown(p), "clang-cl") {
+			t.Errorf("%s on WoA: the label must be rendered", rt)
+		}
+	}
+	// A container runtime on WoA gets the coverage caveat, not the llama.cpp one.
+	p := buildOffline(t, n1xWindowsReport(), "windows", func(o *Options) { o.Model, o.Profile, o.Runtime = "llama-3.1-8b-instruct", "chat", "vllm" })
+	if hasWarning(p, "clang-cl (spec 7.6); the cmake") || !hasWarning(p, "only llama.cpp (clang-cl)") {
+		t.Errorf("vLLM on WoA warnings = %v", p.Warnings)
+	}
+	// x86-64 Windows (the win_rtx3090 golden) is exempt: the note is WoA-specific.
+	p = buildOffline(t, rtx3090Report(), "windows", func(o *Options) { o.Model, o.Profile, o.Runtime = "llama-3.1-8b-instruct", "chat", "llamacpp" })
+	if hasWarning(p, "clang-cl") {
+		t.Errorf("x86-64 Windows must not carry the WoA note: %v", p.Warnings)
+	}
+	if windowsOnArm(rtx3090Report(), "windows") || windowsOnArm(n1xWindowsReport(), "linux") || windowsOnArm(nil, "windows") || !windowsOnArm(n1xWindowsReport(), "windows") {
+		t.Error("windowsOnArm predicate")
+	}
+}
+
+// Grace Hopper end to end: discrete HBM pool (spec 3.1 flag rule C), no Spark
+// bandwidth, no sm_121 prerequisites, 70B BF16 does not fit 95.6 GiB.
+func TestBuild_GraceHopperDiscrete(t *testing.T) {
+	p := buildOffline(t, gh200Report(), "linux", func(o *Options) {
+		o.Model, o.Quant, o.Context, o.Runtime = "llama-3.3-70b-instruct", "bf16", 32768, "vllm"
+	})
+	if p.Platform.UnifiedMemory || p.Platform.SoC != "" || !p.Memory.Discrete || p.Memory.TotalGiB != 95.6 {
+		t.Errorf("GH200 platform/memory = %+v / %+v", p.Platform, p.Memory)
+	}
+	if p.Fit.FitsTotal || p.ExitCode != types.ExitCritical {
+		t.Errorf("70B BF16 on GH200: fits %v exit %d, want does-not-fit / 2", p.Fit.FitsTotal, p.ExitCode)
+	}
+	if p.Estimates.DecodeCeilingTPS != 0 || p.Estimates.Note == "" {
+		t.Error("GH200 has no spec bandwidth: no ceiling, with a note")
+	}
+	if hasWarning(p, "sm_121") || hasWarning(p, "580 branch") {
+		t.Errorf("GH200 must not get Spark driver/CUDA warnings: %v", p.Warnings)
+	}
+	for _, pr := range p.Prerequisites {
+		if pr.ID == "driver-present" && pr.Status != StatusPass {
+			t.Errorf("driver-present on GH200 with 570 = %s (%s), want PASS", pr.Status, pr.Detail)
+		}
+	}
+}
+
+// A context so long that the at-context ceiling rounds below 0.05 tok/s must
+// still print both ceilings (three significant digits) instead of "not
+// printed ()" with an empty reason, and plan.json keeps the same value.
+func TestBuild_TinyCeilingStillPrinted(t *testing.T) {
+	p, err := buildGB10(t, func(o *Options) {
+		o.Model, o.Quant, o.Context, o.Concurrency, o.Runtime = "llama-3.1-8b-instruct", "bf16", 99999999999, 1, "vllm"
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := p.Estimates
+	if e.Note != "" || e.DecodeCeilingWeightsOnlyTPS != 17.0 || e.DecodeCeilingTPS <= 0 || e.DecodeCeilingTPS >= 0.05 {
+		t.Fatalf("estimates = %+v", e)
+	}
+	txt := RenderText(p)
+	if strings.Contains(txt, "not printed") || strings.Contains(txt, " 0.0 tok/s") {
+		t.Errorf("text hides a valid ceiling:\n%s", txt)
+	}
+	want := fmtTPS(e.DecodeCeilingTPS)
+	if !strings.Contains(txt, "17.0 tok/s weights-only; "+want+" tok/s at") {
+		t.Errorf("text ceiling line missing %q:\n%s", want, txt)
+	}
+	if md := RenderMarkdown(p); !strings.Contains(md, "17.0 tok/s weights-only; "+want+" tok/s at") {
+		t.Errorf("markdown ceiling line missing %q", want)
+	}
+	js, err := RenderJSON(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(js, `"decode_ceiling_tps": `+want) {
+		t.Errorf("plan.json must carry the same at-context value %s", want)
+	}
+	// Ordinary values keep the one-decimal rounding of every other figure.
+	if roundTPS(13.44) != 13.4 || fmtTPS(13.4) != "13.4" || roundTPS(0) != 0 || fmtTPS(0.0027312) != "0.00273" || roundTPS(0.0027312) != 0.00273 {
+		t.Error("roundTPS/fmtTPS precision")
+	}
+}
+
 func TestPrompt_DefaultsAndAnswers(t *testing.T) {
 	var out bytes.Buffer
 	o := DefaultOptions()

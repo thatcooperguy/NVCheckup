@@ -3,6 +3,7 @@ package llmplan
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -320,6 +321,38 @@ func GiBf(b float64) float64 { return b / GiB }
 // fmtGiB prints a byte count as "12.3 GiB", rounded exactly like the JSON
 // figures (round1) so text and plan.json never disagree in the last digit.
 func fmtGiB(b float64) string { return fmt.Sprintf("%.1f GiB", round1(GiBf(b))) }
+
+// smallTPS is the value below which a tok/s ceiling would round to 0.0 at one
+// decimal; such ceilings (very long --context) keep three significant digits
+// instead so a valid figure is never printed or stored as 0.
+const smallTPS = 0.05
+
+// smallTPSString prints 0 < x < smallTPS in plain decimal notation with three
+// significant digits (0.00273, 0.0000208), never in exponent form.
+func smallTPSString(x float64) string {
+	digits := 2 - int(math.Floor(math.Log10(x)))
+	return strconv.FormatFloat(x, 'f', digits, 64)
+}
+
+// roundTPS rounds a tok/s ceiling for plan.json: round1 like every other
+// figure, except that positive values below smallTPS keep three significant
+// digits (parsed back from the decimal string, so no float noise).
+func roundTPS(x float64) float64 {
+	if x <= 0 || x >= smallTPS {
+		return round1(x)
+	}
+	v, _ := strconv.ParseFloat(smallTPSString(x), 64)
+	return v
+}
+
+// fmtTPS prints a tok/s ceiling with exactly the precision roundTPS keeps, so
+// text, markdown and plan.json agree.
+func fmtTPS(x float64) string {
+	if x <= 0 || x >= smallTPS {
+		return fmt.Sprintf("%.1f", x)
+	}
+	return smallTPSString(x)
+}
 
 // fmtTokens prints a token count as 32K / 131072 style.
 func fmtTokens(n int) string {
