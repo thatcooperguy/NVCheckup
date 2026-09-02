@@ -92,6 +92,9 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 	platform, platformErrs := common.DetectPlatform(cfg.Timeout)
 	r.Platform = platform
 	ph.addErrors(platformErrs)
+	// Windows only: IsWow64Process2 and the RTX Spark adapter refine rows 1-2
+	// (runner_windows.go); a no-op elsewhere.
+	ph.addErrors(refinePlatformPhase1(r, cfg))
 	ph.end()
 
 	// Phase 2: GPUs and driver
@@ -141,6 +144,9 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 		aiInfo, aiErrs := ai.CollectAIInfo(cfg.Timeout)
 		r.AI = &aiInfo
 		ph.addErrors(aiErrs)
+		// Spark ecosystem facts (torch arch list, Triton ptxas, libcudart,
+		// ORT, docker/CDI, inference ports) on dgx-spark / rtx-spark.
+		ph.addErrors(collectEcosystemExtras(r, cfg))
 		ph.end()
 	} else {
 		ph.skip("Skipping AI checks (not selected)...")
