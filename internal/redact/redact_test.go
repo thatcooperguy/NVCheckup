@@ -238,3 +238,69 @@ func TestSummary(t *testing.T) {
 		t.Error("summary should not be empty when disabled")
 	}
 }
+
+func TestRedact_FourPartVersionsAreNotIPs(t *testing.T) {
+	// Regression: "NVIDIA App version 11.0.7.247 is installed." was rendered
+	// as "NVIDIA App version <public-ip-redacted> is installed." because a
+	// four-part version number looks exactly like a dotted quad.
+	r := NewWithIdentity(true, "", "", "")
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"version word", "NVIDIA App version 11.0.7.247 is installed", "NVIDIA App version 11.0.7.247 is installed"},
+		{"glued v", "GeForce v11.0.7.247", "GeForce v11.0.7.247"},
+		{"upper V", "Xbox Game Bar (V7.326.8061.0)", "Xbox Game Bar (V7.326.8061.0)"},
+		{"driver word", "Intel driver 32.0.101.6078", "Intel driver 32.0.101.6078"},
+		{"build word", "Windows build 10.0.26200.1234", "Windows build 10.0.26200.1234"},
+		{"release word", "release 2.0.1.5", "release 2.0.1.5"},
+		{"ver dot", "ver. 1.2.3.4", "ver. 1.2.3.4"},
+		{"five part", "package 1.2.3.4.5 installed", "package 1.2.3.4.5 installed"},
+		{"ping", "ping 8.8.8.8", "ping <public-ip-redacted>"},
+		{"gateway", "gateway 192.168.1.1", "gateway <lan-ip>"},
+		{"hop", "hop 1.1.1.1 12ms", "hop <public-ip-redacted> 12ms"},
+		{"sentence end", "resolver is 8.8.4.4.", "resolver is <public-ip-redacted>."},
+		{"two ips", "10.0.0.5 -> 1.1.1.1", "<lan-ip> -> <public-ip-redacted>"},
+		{"version then ip", "version 1.2.3.4 at 8.8.8.8", "version 1.2.3.4 at <public-ip-redacted>"},
+	}
+	for _, tt := range tests {
+		if got := r.Redact(tt.in); got != tt.want {
+			t.Errorf("%s: Redact(%q)\n got  %q\n want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestRedact_HomeDirDoesNotMatchSiblingProfile(t *testing.T) {
+	// C:\Users\alice must not turn C:\Users\alice2\... into <home>2\...
+	r := NewWithIdentity(true, "alice", "", `C:\Users\alice`)
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{`C:\Users\alice2\AppData\python.exe`, `C:\Users\alice2\AppData\python.exe`},
+		{`C:/Users/alice2/miniconda3`, `C:/Users/alice2/miniconda3`},
+		{`C:\Users\alice\AppData\python.exe`, `<home>\AppData\python.exe`},
+		{`C:/Users/alice/miniconda3`, `<home>/miniconda3`},
+		{`C:\Users\alice`, `<home>`},
+		{`path "C:\Users\alice" quoted`, `path "<home>" quoted`},
+		{`home is C:\Users\alice, ok`, `home is <home>, ok`},
+	}
+	for _, tt := range tests {
+		if got := r.Redact(tt.in); got != tt.want {
+			t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+		if got := r.RedactPath(tt.in); got != tt.want {
+			t.Errorf("RedactPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+
+	// Unix home directories behave the same way.
+	u := NewWithIdentity(true, "bob", "", "/home/bob")
+	if got := u.RedactPath("/home/bobby/.bashrc"); got != "/home/bobby/.bashrc" {
+		t.Errorf("sibling unix profile altered: %q", got)
+	}
+	if got := u.RedactPath("/home/bob/.bashrc"); got != "<home>/.bashrc" {
+		t.Errorf("unix home not redacted: %q", got)
+	}
+}

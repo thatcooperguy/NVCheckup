@@ -71,34 +71,34 @@ go build -o nvcheckup ./cmd/nvcheckup
 
 ### What You Get
 
+The top of `report.txt` is a summary block you can paste into a support thread as-is:
+
 ```
 ────────────────────────────────────────────────────────────────────────
   NVCheckup v0.2.1 — NVIDIA Diagnostic Report
-  Unofficial community tool, not affiliated with NVIDIA Corporation.
+  NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
   Generated: 2026-09-01 14:32:10 UTC
   Mode:      full
   Platform:  windows
+  Runtime:   48.9s
+  Redaction: ENABLED (PII removed)
 ────────────────────────────────────────────────────────────────────────
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.2.1 | 2026-09-01 14:32:10 UTC
-OS: Windows 11 24H2 | Arch: amd64
-GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12288 MB
-CUDA (driver): 13.1
-Findings: 1 CRITICAL, 2 WARNING, 3 total
-
-Top Issues:
-  1. [CRIT] Display Driver Resets Detected (Event ID 4101)
-  2. [WARN] nvlddmkm Driver Errors Detected
-  3. [WARN] GPU Thermal Throttling Active
-
-Recommended Next Steps:
-  1. Update to the latest NVIDIA driver (clean install recommended).
-  2. Check GPU temperatures — overheating can trigger driver resets.
-  3. Improve case airflow or reapply the GPU fan curve.
+NVCheckup v0.2.1 | 2026-09-01 14:32:10
+OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64
+GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12282 MB
+CUDA (driver): 13.1 | CUDA Toolkit: 12.8
+PyTorch: 2.5.1+cu118 (CUDA available)
+Temp: 42°C | P-State: P8 | Util: 0%
+PCIe: Gen1 x16 (idle, max Gen4)
+Findings: 1 CRITICAL, 1 WARNING, 6 total | 2 auto-fixable
+Top: Display Driver Resets Detected (Event ID 4101); nvlddmkm Driver ...
 ```
+
+The rest of the report holds the system, GPU, platform and AI/CUDA sections, then every finding with its evidence, why it matters, next steps and (when one exists) the `nvcheckup fix --id ...` command that addresses it. Complete examples: [`examples/sample-report-gaming.txt`](examples/sample-report-gaming.txt) and [`examples/sample-report-ai-linux.txt`](examples/sample-report-ai-linux.txt).
 
 ---
 
@@ -171,42 +171,52 @@ nvcheckup run --mode gaming --network        # ...plus opt-in ping/traceroute/DN
 ### CRIT — Repeated Display Driver Resets Detected (Event ID 4101)
 
 ```
-  [CRIT] #1: Display Driver Resets Detected (Event ID 4101)
+  [CRIT] #1: Display Driver Resets Detected (Event ID 4101) (driver-resets-4101)
     Evidence:     7 driver reset event(s) in the last 30 days. Most recent: 2026-08-30 22:15.
-    Why:          Event ID 4101 indicates the display driver stopped responding and was
-                  recovered by Windows. Frequent occurrences cause black screens, freezes,
-                  and application crashes.
+    Why:          Event ID 4101 indicates the display driver stopped responding and was recovered by Windows. Frequent occurrences cause black screens, freezes, and application crashes.
     Next Steps:
       • Update to the latest NVIDIA driver (clean install recommended).
       • Check GPU temperatures — overheating can trigger driver resets.
       • If overclocked, revert GPU clocks to stock settings.
       • Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.
+      • If recent Windows Update coincides with issues, consider testing a rollback (understand security implications first).
 ```
 
 ### WARN — PyTorch Installed Without CUDA Support
 
 ```
-  [WARN] #2: PyTorch Installed Without CUDA Support
-    Evidence:     PyTorch 2.2.0 is installed but torch.version.cuda is empty — CPU-only build.
-    Why:          A CPU-only PyTorch wheel was installed. torch.cuda.is_available() returns
-                  False because the CUDA runtime is not compiled in.
+  [WARN] #2: PyTorch Installed Without CUDA Support (pytorch-cpu-only)
+    Evidence:     PyTorch 2.8.0+cpu is installed but torch.version.cuda is empty — this is a CPU-only build.
+    Why:          A CPU-only PyTorch wheel was installed. torch.cuda.is_available() returns False because the CUDA runtime is not compiled in.
     Next Steps:
-      • Uninstall: pip uninstall torch torchvision torchaudio
-      • Reinstall with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu121
-      • Select the correct CUDA version matching your driver.
+      • Uninstall the current PyTorch: pip uninstall torch torchvision torchaudio
+      • Reinstall with CUDA support from https://pytorch.org/get-started/locally/
+      • Make sure to select a CUDA version no newer than your driver's (13.1).
 ```
 
 ### INFO — PCIe Link Power-Saving at Idle (expected)
 
 ```
-  [INFO] #3: PCIe Link Power-Saving at Idle (expected)
-    Evidence:     Link is Gen1 x16 at 0% utilization (max Gen4 x16). Power state P8.
-    Why:          NVIDIA GPUs drop the PCIe link to Gen1 when idle to save power. This is
-                  normal and the link returns to full speed under load. A downshift is only
-                  a concern if it persists while the GPU is busy.
+  [INFO] #3: PCIe Link Power-Saving at Idle (expected) (pcie-idle-power-saving)
+    Evidence:     Current: Gen1 x16. Maximum: Gen4 x16. P-state: P8. GPU utilization: 0%.
+    Why:          Modern GPUs drop the PCIe link to Gen1 when idle to save power and raise it again under load. This reading was taken at idle, so it does not indicate a problem.
     Next Steps:
-      • No action needed. Re-run under load if you suspect a real link problem.
+      • Re-run under GPU load to verify the link reaches Gen4.
 ```
+
+### INFO with a fix attached — Power Plan Not Set to High Performance
+
+```
+  [INFO] #4: Power Plan Not Set to High Performance (power-plan-suboptimal)
+    Evidence:     Active power plan: Balanced.
+    Why:          Balanced or Power Saver plans may throttle CPU/GPU performance. For gaming or CUDA workloads, High Performance is generally recommended.
+    Next Steps:
+      • Open Power Options and switch to 'High Performance' for testing.
+      • This is a reversible change with no risk.
+    Fix:          nvcheckup fix --id set-high-performance
+```
+
+Every finding header ends with its stable id in parentheses (the same value as `findings[].id` in `report.json`), so a forum helper can refer to `pcie-idle-power-saving` without quoting the whole block.
 
 ---
 
@@ -246,12 +256,15 @@ Passwords, tokens, API keys, browser data, SSH keys, clipboard contents, process
 ### Redaction
 
 Redaction is on by default for `run` and `snapshot`:
-- `C:\Users\yourname\...` becomes `C:\Users\<user>\...`
-- Your home directory becomes `<home>`
+- Your home directory becomes `<home>` (`C:\Users\yourname\AppData\...` becomes `<home>\AppData\...`)
+- Other profile paths become `C:\Users\<user>\...`; your username as a bare word becomes `<user>`
 - Machine hostname becomes `<host>`
 - Public IPs become `<public-ip-redacted>`
 - LAN IPs become `<lan-ip>`
 - Email addresses become `<email-redacted>`
+- Wi-Fi network names become `SSID: <redacted>`
+
+Version numbers that look like IP addresses (`NVIDIA App version 11.0.7.247`) are left intact.
 
 Use `--no-redact` only when you specifically need raw output and do not intend to share it.
 
@@ -308,7 +321,7 @@ How it behaves:
 - Elevation is checked **before** you are prompted. If an action needs admin/root and you are not elevated, `fix` tells you and exits without asking.
 - You are shown a preview and must type `yes` to proceed. Anything else aborts.
 - Every applied change is written to a journal at `<user config dir>/nvcheckup/nvcheckup-changes.json` (Windows: `%APPDATA%\nvcheckup\nvcheckup-changes.json`; Linux: `~/.config/nvcheckup/nvcheckup-changes.json`). Use `--journal DIR` to override. `--out DIR` is accepted as a deprecated alias.
-- `--dry-run` prints exactly what would be executed and changes nothing.
+- `--dry-run` prints exactly what would be executed and changes nothing. Listing fixes, `--dry-run` and `undo` without `--id` do not even create the journal directory; it is created only when a change is applied or undone.
 
 ### `nvcheckup undo`
 

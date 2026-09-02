@@ -145,20 +145,26 @@ func TestCompare_BadFile(t *testing.T) {
 	}
 }
 
-// TestCreate_RedactedSnapshotHasNoIdentity runs the real collectors, so it
-// is the slowest test in this package, but it is the one that guarantees the
-// default snapshot is safe to share.
+// TestCreate_RedactedSnapshotHasNoIdentity runs the real collectors (about
+// half a minute), so it is opt-in: set NVCHECKUP_LIVE_TESTS=1 to run it. It is
+// the test that guarantees the default snapshot is safe to share, so CI on a
+// GPU runner should enable it. The fast, synthetic coverage of the same
+// redaction lives in internal/redact (TestApplyToSnapshot).
 func TestCreate_RedactedSnapshotHasNoIdentity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs real collectors")
 	}
+	if os.Getenv("NVCHECKUP_LIVE_TESTS") != "1" {
+		t.Skip("set NVCHECKUP_LIVE_TESTS=1 to run the live collectors")
+	}
 	hostname, _ := os.Hostname()
-	username := ""
+	username, homeDir := "", ""
 	if u, err := user.Current(); err == nil {
 		username = u.Username
 		if i := strings.LastIndex(username, `\`); i >= 0 {
 			username = username[i+1:]
 		}
+		homeDir = strings.TrimRight(u.HomeDir, `\/`)
 	}
 
 	dir := t.TempDir()
@@ -169,16 +175,6 @@ func TestCreate_RedactedSnapshotHasNoIdentity(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	s := strings.ToLower(string(data))
-
-	if hostname != "" && strings.Contains(s, strings.ToLower(hostname)) {
-		t.Errorf("snapshot contains hostname %q", hostname)
-	}
-	// Short usernames are intentionally not replaced as bare words, so only
-	// assert on names long enough for the redactor to act on.
-	if len(username) >= 3 && strings.Contains(s, strings.ToLower(username)) {
-		t.Errorf("snapshot contains username %q", username)
 	}
 
 	var snap types.Snapshot
@@ -193,6 +189,35 @@ func TestCreate_RedactedSnapshotHasNoIdentity(t *testing.T) {
 	}
 	if snap.Metadata.Platform == "" || snap.Metadata.ToolVersion != types.Version {
 		t.Errorf("metadata incomplete: %+v", snap.Metadata)
+	}
+
+	// The hostname is always collected, so the redacted token must be there.
+	if hostname != "" && snap.System.Hostname != "<host>" {
+		t.Errorf("System.Hostname = %q, want %q", snap.System.Hostname, "<host>")
+	}
+
+	// Python interpreter paths are the field most likely to embed the profile
+	// directory. Anything that lived under the home directory must now start
+	// with <home>, and no path may still carry the username.
+	if snap.AI != nil {
+		for _, py := range snap.AI.PythonVersions {
+			p := py.Path
+			if username != "" && strings.Contains(strings.ToLower(p), strings.ToLower(username)) {
+				t.Errorf("PythonVersions path %q still contains username %q", p, username)
+			}
+			if homeDir != "" && strings.HasPrefix(strings.ToLower(p), strings.ToLower(homeDir)) {
+				t.Errorf("PythonVersions path %q still starts with the home directory", p)
+			}
+			if strings.Contains(p, "<home>") && !strings.HasPrefix(p, "<home>") {
+				t.Errorf("PythonVersions path %q has <home> in the middle; expected it as the prefix", p)
+			}
+		}
+		if snap.AI.NvccPath != "" && homeDir != "" && strings.HasPrefix(strings.ToLower(snap.AI.NvccPath), strings.ToLower(homeDir)) {
+			t.Errorf("NvccPath %q still starts with the home directory", snap.AI.NvccPath)
+		}
+	}
+	if snap.Driver.NvidiaSmiPath != "" && homeDir != "" && strings.HasPrefix(strings.ToLower(snap.Driver.NvidiaSmiPath), strings.ToLower(homeDir)) {
+		t.Errorf("NvidiaSmiPath %q still starts with the home directory", snap.Driver.NvidiaSmiPath)
 	}
 }
 
