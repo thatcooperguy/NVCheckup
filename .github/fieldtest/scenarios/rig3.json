@@ -1,5 +1,5 @@
 {
-  "description": "Three-GPU Linux workstation: GPU 0 RTX 3090 idle at Gen1 (expected), GPU 1 RTX 4090 at its power cap under load (expected), GPU 2 RTX 4090 busy but stuck at Gen1 and running hot (faults). dmesg carries an Xid 79 for GPU 2.",
+  "description": "Three-GPU Linux workstation: GPU 0 RTX 3090 idle at Gen1 (expected), GPU 1 RTX 4090 at its power cap under load (expected), GPU 2 RTX 4090 busy but stuck at Gen1 and running hot (faults). dmesg carries an Xid 79 for GPU 2. other_netdevs feeds the ip shim (added with the GB10 scenarios) a plain wired uplink with a default route so NetworkInfo.InterfaceName stays populated, as it was when the runner's real ip answered; eth0 is the GitHub runner's interface name, so the collector's follow-up sysfs reads behave as before (no NVC_SIM_ROOT in this scenario). Addresses are RFC1918 placeholders.",
   "driver": "580.65.06",
   "cuda": "13.0",
   "gpus": [
@@ -30,5 +30,9 @@
       "pcie.link.gen.current": 1, "pcie.link.gen.max": 4, "pcie.link.width.current": 16, "pcie.link.width.max": 16,
       "clocks_event_reasons.active": "0x0000000000000000", "clocks_throttle_reasons.active": "0x0000000000000000"
     }
+  ],
+  "other_netdevs": [
+    { "netdev": "lo", "operstate": "unknown", "carrier": 1, "speed": -1, "mtu": 65536, "ipv4": ["127.0.0.1/8"] },
+    { "netdev": "eth0", "operstate": "up", "carrier": 1, "speed": 1000, "mtu": 1500, "ipv4": ["10.1.0.4/24"], "gateway": "10.1.0.1" }
   ]
 }
