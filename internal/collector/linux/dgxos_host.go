@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -191,9 +192,12 @@ func parseFwupdDevices(out string) []types.FirmwareComponent {
 // Current version / GUIDs) is followed by one or more release blocks ("UEFI
 // Firmware Update:" ... "New version: 2.160.1"); the first, newest, New
 // version per device is kept. The "Devices with the latest available
-// firmware version:" bullet list has no key/value rows and is skipped. Rule
-// dgx-spark-firmware-behind (OEM path). ASSUMPTION: layout taken from
-// fwupdmgr's documented tree output pending a GB10 capture (spec section 12).
+// firmware version:" bullet list has no key/value rows and is skipped. The
+// compact "<device> has firmware updates:" / "New version: X" shape printed
+// by older fwupd builds and by the CI shim (.github/fieldtest/shims/fwupdmgr)
+// is accepted too. Rule dgx-spark-firmware-behind (OEM path). ASSUMPTION:
+// layout taken from fwupdmgr's documented tree output pending a GB10 capture
+// (spec section 12).
 func parseFwupdUpgrades(out string) map[string]string {
 	pending := map[string]string{}
 	var device, header string
@@ -204,6 +208,10 @@ func parseFwupdUpgrades(out string) map[string]string {
 		}
 		if strings.HasSuffix(line, ":") && strings.Count(line, ":") == 1 {
 			header = strings.TrimSuffix(line, ":")
+			if name := strings.TrimSuffix(header, fwupdHasUpdatesSuffix); name != header && name != "" {
+				// Compact shape: the header itself names the device.
+				device, header = name, ""
+			}
 			continue
 		}
 		m := fwupdKV.FindStringSubmatch(line)
@@ -227,6 +235,10 @@ func parseFwupdUpgrades(out string) map[string]string {
 	}
 	return pending
 }
+
+// fwupdHasUpdatesSuffix ends the device header of the compact get-upgrades
+// shape ("Embedded Controller has firmware updates:").
+const fwupdHasUpdatesSuffix = " has firmware updates"
 
 // applyPendingFirmware fills FirmwareComponent.Pending from the get-upgrades
 // map (a pending capsule version replaces the bare "Update State" word that
@@ -267,7 +279,7 @@ func clockCapUnitState(timeout int) string {
 	if state == "active" {
 		return clockCapUnit
 	}
-	if !simFileExists(clockCapUnitFile) && !unitLoaded(timeout, clockCapUnit) {
+	if !common.SimFileExists(clockCapUnitFile) && !unitLoaded(timeout, clockCapUnit) {
 		return ""
 	}
 	if state == "" {
@@ -431,7 +443,7 @@ func collectBootHistory(p *types.PlatformInfo, timeout int, now time.Time) {
 // dirEmpty reports whether a directory (through simPath) has no entries; nil
 // when it cannot be read.
 func dirEmpty(dir string) *bool {
-	entries, err := os.ReadDir(simPath(dir))
+	entries, err := os.ReadDir(common.SimPath(dir))
 	if err != nil {
 		return nil
 	}
@@ -442,7 +454,7 @@ func dirEmpty(dir string) *bool {
 // readACPIThermalZones returns thermal_zoneN -> millidegrees for every
 // acpitz zone under /sys/class/thermal (through simPath).
 func readACPIThermalZones() map[string]int {
-	matches, _ := filepath.Glob(filepath.Join(simPath(thermalDir), "thermal_zone*"))
+	matches, _ := filepath.Glob(filepath.Join(common.SimPath(thermalDir), "thermal_zone*"))
 	zones := map[string]int{}
 	for _, zone := range matches {
 		typ, err := os.ReadFile(filepath.Join(zone, "type"))

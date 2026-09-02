@@ -4,26 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/core"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
-
-// simPath implements the simulation contract of spec section 10: when
-// NVC_SIM_ROOT is set every absolute file path a collector reads is prefixed
-// with it. Commands are still resolved via PATH so shims can answer.
-func simPath(p string) string {
-	root := os.Getenv("NVC_SIM_ROOT")
-	if root == "" {
-		return p
-	}
-	return filepath.Join(root, filepath.FromSlash(p))
-}
 
 // MemoryPool is the memory picture the plan is sized against. Zero
 // AvailableBytes means "unknown".
@@ -116,7 +105,7 @@ func parseMeminfo(text string) MemoryPool {
 
 // readMeminfo reads /proc/meminfo (under NVC_SIM_ROOT when set).
 func readMeminfo() (MemoryPool, error) {
-	path := simPath("/proc/meminfo")
+	path := common.SimPath("/proc/meminfo")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return MemoryPool{}, err
@@ -338,7 +327,7 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, of
 			}
 		}
 	}
-	if !found && !offline && (goos == "linux" || os.Getenv("NVC_SIM_ROOT") != "") {
+	if !found && !offline && (goos == "linux" || common.SimRoot() != "") {
 		if p, err := readMeminfo(); err == nil {
 			pool = p
 			found = true
@@ -418,12 +407,12 @@ func ListeningPorts(r *types.Report, goos string) (ports []int, known bool) {
 	if r != nil && r.Ecosystem != nil && len(r.Ecosystem.ListeningPorts) > 0 {
 		return append([]int(nil), r.Ecosystem.ListeningPorts...), true
 	}
-	if goos != "linux" && os.Getenv("NVC_SIM_ROOT") == "" {
+	if goos != "linux" && common.SimRoot() == "" {
 		return nil, false
 	}
 	set := map[int]bool{}
 	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		data, err := os.ReadFile(simPath(f))
+		data, err := os.ReadFile(common.SimPath(f))
 		if err != nil {
 			continue
 		}

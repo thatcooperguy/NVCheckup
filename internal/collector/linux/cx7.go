@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -61,7 +62,7 @@ func CollectCluster(timeout int) (types.ClusterInfo, []types.CollectorError) {
 	var errs []types.CollectorError
 
 	info.Ports = discoverFabricPorts(timeout)
-	info.HotplugFileEnabled = simFileExists(cx7HotplugFile)
+	info.HotplugFileEnabled = common.SimFileExists(cx7HotplugFile)
 	applyNetplan(&info)
 	info.NCCLEnv = ncclEnvironment(os.Environ())
 	collectNCCLLibs(&info, timeout)
@@ -178,7 +179,7 @@ func discoverFabricPorts(timeout int) []types.FabricPort {
 	}
 
 	// 1. Netdevs backed by a Mellanox function.
-	netRoot := simPath(sysNet)
+	netRoot := common.SimPath(sysNet)
 	if entries, err := os.ReadDir(netRoot); err == nil {
 		for _, e := range entries {
 			dev := filepath.Join(netRoot, e.Name(), "device")
@@ -190,7 +191,7 @@ func discoverFabricPorts(timeout int) []types.FabricPort {
 	}
 
 	// 2. RDMA devices: state/phys_state/rate and the device/net mapping.
-	ibRoot := simPath(sysInfiniband)
+	ibRoot := common.SimPath(sysInfiniband)
 	if entries, err := os.ReadDir(ibRoot); err == nil {
 		for _, e := range entries {
 			devDir := filepath.Join(ibRoot, e.Name())
@@ -417,8 +418,8 @@ func parseNetplan(content string) map[string]netplanIface {
 // loadNetplan merges every /etc/netplan/*.yaml (through simPath).
 func loadNetplan() map[string]netplanIface {
 	merged := map[string]netplanIface{}
-	files, _ := filepath.Glob(filepath.Join(simPath(netplanDir), "*.yaml"))
-	more, _ := filepath.Glob(filepath.Join(simPath(netplanDir), "*.yml"))
+	files, _ := filepath.Glob(filepath.Join(common.SimPath(netplanDir), "*.yaml"))
+	more, _ := filepath.Glob(filepath.Join(common.SimPath(netplanDir), "*.yml"))
 	files = append(files, more...)
 	sort.Strings(files)
 	for _, f := range files {
@@ -443,7 +444,7 @@ func loadNetplan() map[string]netplanIface {
 // keyfiles (through simPath), the other place an address can be persisted.
 func nmInterfaceNames() map[string]bool {
 	names := map[string]bool{}
-	files, _ := filepath.Glob(filepath.Join(simPath(nmConnectionsDir), "*"))
+	files, _ := filepath.Glob(filepath.Join(common.SimPath(nmConnectionsDir), "*"))
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -551,11 +552,11 @@ func collectNCCLLibs(info *types.ClusterInfo, timeout int) {
 	if len(ncclPaths) == 0 || len(pluginPaths) == 0 {
 		for _, dir := range libDirs {
 			if len(ncclPaths) == 0 {
-				m, _ := filepath.Glob(filepath.Join(simPath(dir), "libnccl.so.2*"))
+				m, _ := filepath.Glob(filepath.Join(common.SimPath(dir), "libnccl.so.2*"))
 				ncclPaths = append(ncclPaths, m...)
 			}
 			if len(pluginPaths) == 0 {
-				m, _ := filepath.Glob(filepath.Join(simPath(dir), "libnccl-net*.so*"))
+				m, _ := filepath.Glob(filepath.Join(common.SimPath(dir), "libnccl-net*.so*"))
 				pluginPaths = append(pluginPaths, m...)
 			}
 		}
@@ -575,7 +576,7 @@ func collectNCCLLibs(info *types.ClusterInfo, timeout int) {
 // peermemAttempted reports whether nvidia_peermem was loaded or its load was
 // attempted (sysfs module dir, or a dmesg line naming it; S69).
 func peermemAttempted(timeout int) bool {
-	if simFileExists("/sys/module/" + peermemModule) {
+	if common.SimFileExists("/sys/module/" + peermemModule) {
 		return true
 	}
 	if !util.CommandExists("dmesg") {

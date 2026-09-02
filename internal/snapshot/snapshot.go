@@ -12,6 +12,7 @@ import (
 
 	"github.com/thatcooperguy/nvcheckup/internal/collector/ai"
 	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
+	linuxCollector "github.com/thatcooperguy/nvcheckup/internal/collector/linux"
 	"github.com/thatcooperguy/nvcheckup/internal/redact"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -83,12 +84,7 @@ func collect(timeout int, redactEnabled bool) types.Snapshot {
 		snap.UnifiedMemory = &um
 	}
 	if tmp.Platform.Class == common.ClassDGXSpark {
-		// /etc/dgx-release and /etc/fastos-release, read-only. The fwupdmgr
-		// firmware table (Platform.Firmware) is filled by linux.CollectDGXOS
-		// once the integrator wires it here as well.
-		if dgx, _ := common.CollectDGXRelease(); dgx != nil {
-			snap.DGXOS = dgx
-		}
+		collectDGXSpark(timeout, &snap, &tmp.Platform)
 	}
 
 	aiInfo, _ := ai.CollectAIInfo(timeout)
@@ -98,6 +94,21 @@ func collect(timeout int, redactEnabled bool) types.Snapshot {
 
 	redact.ApplyToSnapshot(&snap, redact.New(redactEnabled))
 	return snap
+}
+
+// collectDGXSpark fills the DGX OS facts of a dgx-spark snapshot so Diff can
+// compare them (spark-work-packages.md WP1 item 13): the release files
+// (/etc/dgx-release, /etc/fastos-release) merged with the OTA, package and
+// unit state of linux.CollectDGXOS, and the host facts of
+// linux.CollectDGXHostState (fwupdmgr firmware table -> Platform.Firmware,
+// boot classification, pstore, acpitz, GDM sleep policy, suspend markers).
+// Read-only; p is the PlatformInfo the snapshot points at. Collector errors
+// are dropped like everywhere else in a snapshot.
+func collectDGXSpark(timeout int, snap *types.Snapshot, p *types.PlatformInfo) {
+	base, _ := common.CollectDGXRelease()
+	extra, _ := linuxCollector.CollectDGXOS(timeout)
+	snap.DGXOS = linuxCollector.MergeDGXOS(base, extra)
+	linuxCollector.CollectDGXHostState(timeout, p)
 }
 
 // Compare reads two snapshot files, prints their differences and optionally

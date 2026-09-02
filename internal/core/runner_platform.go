@@ -1,33 +1,27 @@
 package core
 
 import (
+	"github.com/thatcooperguy/nvcheckup/internal/collector/ai"
 	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
+	linuxCollector "github.com/thatcooperguy/nvcheckup/internal/collector/linux"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // collectPlatformExtras runs at the end of phase 4, after the OS-specific
 // collectors and after common.ApplyPlatformFlags has settled r.Platform. It
 // gathers the Spark / unified-memory data of docs/roadmap/spark-support.md
-// section 4 that lives in the common package, and is the single hook where
-// the work-package-1b collectors are to be wired by the integrator:
+// section 4 that lives in the common package, then hands over to the
+// build-tagged collectPlatformOSExtras (runner_linux.go: DGX OS, host state,
+// ConnectX-7 fabric, NVRM kernel-log scan; runner_windows.go and
+// runner_other.go: no-op). Everything here is read-only.
 //
-//   - linux.CollectDGXOS(timeout) on Class == dgx-spark: dpkg pairing,
-//     nvidia-spark-ota-check, systemd units, fwupdmgr get-devices, journal
-//     boot classification, pstore, acpitz, GDM sleep policy. It should merge
-//     into the *types.DGXOSInfo that CollectDGXRelease already stored in
-//     r.DGXOS (release-file fields) and fill r.Platform.Firmware,
-//     ACPIThermalMC, PrevBootClean, PrevBootLastLine, PstoreEmpty,
-//     ClockCapUnit, GDMSleepPolicy, SuspendAttempts, SuspendFailed.
-//   - linux.CollectCluster(timeout) on dgx-spark (modes ai/full): ConnectX-7
-//     fabric, r.Cluster.
-//   - linux.CollectEcosystem / ai equivalents on dgx-spark and rtx-spark
-//     (modes ai/creator/full): r.Ecosystem.
-//   - windows.CollectWoA(timeout) on Windows: IsWow64Process2, dxdiag
-//     dedicated/shared memory, nvcc.exe machine type; refines r.Platform.
-//
-// Those calls are platform-specific (build tags) and belong in
-// runner_linux.go / runner_windows.go or a tagged sibling of this file.
-// Everything here is read-only.
+// gb10-pd-power-wedge (spec 5) grades one thermal sample as WARN and needs
+// >= 2 matching samples per GPU for CRIT. The runner deliberately keeps one
+// ThermalInfo per GPU: a second nvidia-smi read appended to GPUThermal would
+// make analyzeThermal's multiGPU labelling treat the GB10 as a two-GPU rig
+// and duplicate every thermal finding. The single-sample WARN is therefore
+// the shipped behaviour and CRIT is left for hardware confirmation (spec
+// section 12 open questions).
 func collectPlatformExtras(r *types.Report, cfg types.RunConfig) []types.CollectorError {
 	var errs []types.CollectorError
 	if r == nil {
@@ -43,7 +37,8 @@ func collectPlatformExtras(r *types.Report, cfg types.RunConfig) []types.Collect
 		errs = append(errs, umErrs...)
 	}
 
-	// DGX OS release files (spec 3.1 row 4). linux.CollectDGXOS extends this.
+	// DGX OS release files (spec 3.1 row 4). linux.CollectDGXOS extends this
+	// in collectPlatformOSExtras and is merged with mergeDGXOS.
 	if r.Platform.Class == common.ClassDGXSpark {
 		dgx, dgxErrs := common.CollectDGXRelease()
 		if dgx != nil {
@@ -52,5 +47,125 @@ func collectPlatformExtras(r *types.Report, cfg types.RunConfig) []types.Collect
 		errs = append(errs, dgxErrs...)
 	}
 
+	errs = append(errs, collectPlatformOSExtras(r, cfg)...)
 	return errs
+}
+
+// collectEcosystemExtras runs in phase 5 (modes ai/creator/full) on dgx-spark
+// and rtx-spark: the AI software-ecosystem facts of spec section 4
+// (EcosystemInfo). ai.CollectEcosystem is portable; on Windows the /proc and
+// /etc reads simply yield nothing. Torch facts are shared with the PyTorch
+// probe of CollectAIInfo in both directions so neither consumer misses them.
+func collectEcosystemExtras(r *types.Report, cfg types.RunConfig) []types.CollectorError {
+	var errs []types.CollectorError
+	if r == nil {
+		return errs
+	}
+	if r.Platform.Class != common.ClassDGXSpark && r.Platform.Class != common.ClassRTXSpark {
+		return errs
+	}
+	eco, ecoErrs := ai.CollectEcosystem(cfg.Timeout)
+	r.Ecosystem = &eco
+	errs = append(errs, ecoErrs...)
+	syncTorchFacts(r)
+	return errs
+}
+
+// syncTorchFacts copies TorchArchList / TorchWarnings between
+// Report.Ecosystem and Report.AI.PyTorchInfo, filling whichever side is
+// empty. Nothing is overwritten and a nil PyTorchInfo is never allocated
+// (a missing torch probe must stay visible as such).
+func syncTorchFacts(r *types.Report) {
+	if r == nil || r.Ecosystem == nil || r.AI == nil || r.AI.PyTorchInfo == nil {
+		return
+	}
+	eco, pt := r.Ecosystem, r.AI.PyTorchInfo
+	if len(eco.TorchArchList) == 0 && len(pt.ArchList) > 0 {
+		eco.TorchArchList = append([]string(nil), pt.ArchList...)
+	} else if len(pt.ArchList) == 0 && len(eco.TorchArchList) > 0 {
+		pt.ArchList = append([]string(nil), eco.TorchArchList...)
+	}
+	if len(eco.TorchWarnings) == 0 && len(pt.Warnings) > 0 {
+		eco.TorchWarnings = append([]string(nil), pt.Warnings...)
+	} else if len(pt.Warnings) == 0 && len(eco.TorchWarnings) > 0 {
+		pt.Warnings = append([]string(nil), eco.TorchWarnings...)
+	}
+}
+
+// mergeDGXOS is linux.MergeDGXOS: the release-file half of DGXOSInfo from
+// common.CollectDGXRelease (base, may be nil) combined with the full
+// linux.CollectDGXOS result (extra). Shared with internal/snapshot.
+func mergeDGXOS(base *types.DGXOSInfo, extra types.DGXOSInfo) *types.DGXOSInfo {
+	return linuxCollector.MergeDGXOS(base, extra)
+}
+
+// mergeWoAPlatform folds the result of windows.CollectWoA (woa, run on a copy
+// of the phase-1 PlatformInfo) back into that PlatformInfo (base). Rules:
+// the IsWow64Process2-derived IsWindowsOnArm / ProcessEmulated /
+// NativeMachine win over the WMI / environment answers of DetectPlatform; a
+// non-empty Class (and GPUSoC) is never overwritten by an empty one; Vendor
+// and Model keep the first non-empty value; Platform.WoA is taken when
+// CollectWoA filled it. Every other field is base's, because CollectWoA
+// does not touch it.
+func mergeWoAPlatform(base, woa types.PlatformInfo) types.PlatformInfo {
+	out := base
+	out.IsWindowsOnArm = woa.IsWindowsOnArm
+	out.ProcessEmulated = woa.ProcessEmulated
+	if woa.NativeMachine != "" {
+		out.NativeMachine = woa.NativeMachine
+	}
+	if woa.Class != "" {
+		out.Class = woa.Class
+	}
+	if woa.GPUSoC != "" {
+		out.GPUSoC = woa.GPUSoC
+	}
+	if out.Vendor == "" {
+		out.Vendor = woa.Vendor
+	}
+	if out.Model == "" {
+		out.Model = woa.Model
+	}
+	if woa.WoA != nil {
+		out.WoA = woa.WoA
+	}
+	return out
+}
+
+// applyNVRMMessages distributes one kernel-log scan (linux.CollectNVRMMessages)
+// over the report: GSP/SEC2 failure lines into Linux.GSPFailureLines
+// (allocating LinuxInfo when the Linux collector did not run), the NVRM
+// out-of-memory and OOM-killer counts into UnifiedMemory (the higher of the
+// two independent scans of the same log is kept, never the sum), and the
+// nvidia_peermem load attempt into Cluster. Nil pointers other than Linux are
+// left nil: a count without its section would be meaningless.
+func applyNVRMMessages(r *types.Report, nv linuxCollector.NVRMMessages) {
+	if r == nil {
+		return
+	}
+	if len(nv.GSPFailureLines) > 0 {
+		if r.Linux == nil {
+			r.Linux = &types.LinuxInfo{}
+		}
+		r.Linux.GSPFailureLines = append([]string(nil), nv.GSPFailureLines...)
+	}
+	if r.UnifiedMemory != nil {
+		if nv.NoMemoryCount > r.UnifiedMemory.NVRMNoMemory {
+			r.UnifiedMemory.NVRMNoMemory = nv.NoMemoryCount
+		}
+		if nv.OOMKillCount > r.UnifiedMemory.OOMKills {
+			r.UnifiedMemory.OOMKills = nv.OOMKillCount
+		}
+	}
+	if r.Cluster != nil && nv.PeermemAttempted {
+		r.Cluster.PeermemAttempted = true
+	}
+}
+
+// clusterCollected reports whether a ClusterInfo carries anything worth
+// publishing: enumerated ConnectX-7 functions or the hotplug marker file.
+// Report.Cluster stays nil otherwise (types.Report comment: "only when
+// ConnectX-7 functions are enumerated").
+func clusterCollected(cl types.ClusterInfo) bool {
+	return len(cl.Ports) > 0 || cl.HotplugFileEnabled
 }

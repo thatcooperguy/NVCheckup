@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -337,6 +338,17 @@ func TestParseFwupdUpgradesAndApplyPending(t *testing.T) {
 	if got := parseFwupdUpgrades("No updates available\n"); len(got) != 0 {
 		t.Errorf("no-upgrades output must yield nothing, got %v", got)
 	}
+	// The CI shim's compact shape (.github/fieldtest/shims/fwupdmgr get-upgrades
+	// with fwupd_updates set) and its exit-2 "nothing to do" listing.
+	shim := "Embedded Controller has firmware updates:\n  New version: 0x03000600\n" +
+		"UEFI Device Firmware has firmware updates:\n  New version: 2.160.1\n"
+	if want := map[string]string{"Embedded Controller": "3.6.0", "UEFI Device Firmware": "2.160.1"}; !reflect.DeepEqual(parseFwupdUpgrades(shim), want) {
+		t.Errorf("parseFwupdUpgrades(shim) = %v, want %v", parseFwupdUpgrades(shim), want)
+	}
+	none := "Devices with no available firmware updates: \n \u2022 Embedded Controller\n \u2022 UEFI Device Firmware\nNo updates available\n"
+	if got := parseFwupdUpgrades(none); len(got) != 0 {
+		t.Errorf("shim no-updates listing must yield nothing, got %v", got)
+	}
 	comps := []types.FirmwareComponent{
 		{Name: "Embedded Controller", Version: "3.5.8"},
 		{Name: "System Firmware", Version: "2.155.11"},
@@ -451,7 +463,7 @@ func writeFixture(t *testing.T, root, rel, content string) {
 
 func TestCollectDGXOSFromSimRoot(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(simRootEnv, root)
+	t.Setenv(common.SimRootEnv, root)
 	writeFixture(t, root, "etc/dgx-release", dgxReleaseFixture)
 	writeFixture(t, root, "etc/fastos-release", fastosReleaseFixture)
 	writeFixture(t, root, "proc/net/tcp", procNetTCPFixture)
@@ -492,7 +504,7 @@ func TestCollectDGXOSFromSimRoot(t *testing.T) {
 
 func TestCollectDGXHostStateFromSimRoot(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(simRootEnv, root)
+	t.Setenv(common.SimRootEnv, root)
 	writeFixture(t, root, "sys/class/thermal/thermal_zone0/type", "acpitz\n")
 	writeFixture(t, root, "sys/class/thermal/thermal_zone0/temp", "93000\n")
 	writeFixture(t, root, "sys/class/thermal/thermal_zone1/type", "cpu-thermal\n")
@@ -527,13 +539,23 @@ func TestCollectDGXHostStateFromSimRoot(t *testing.T) {
 	}
 }
 
+// TestSimPath pins the linux collectors to the shared NVC_SIM_ROOT helper
+// (common.SimPath) and the trimmed-string reader built on it.
 func TestSimPath(t *testing.T) {
-	t.Setenv(simRootEnv, "")
-	if got := simPath("/etc/dgx-release"); got != "/etc/dgx-release" {
-		t.Errorf("simPath unset = %q", got)
+	t.Setenv(common.SimRootEnv, "")
+	if got := common.SimPath("/etc/dgx-release"); got != "/etc/dgx-release" {
+		t.Errorf("SimPath unset = %q", got)
 	}
-	t.Setenv(simRootEnv, "/tmp/sim/")
-	if got := simPath("/etc/dgx-release"); got != "/tmp/sim/etc/dgx-release" {
-		t.Errorf("simPath set = %q", got)
+	root := t.TempDir()
+	t.Setenv(common.SimRootEnv, root)
+	if got := common.SimPath("/etc/dgx-release"); got != filepath.Join(root, "etc", "dgx-release") {
+		t.Errorf("SimPath set = %q", got)
+	}
+	writeFixture(t, root, "etc/dgx-release", "  DGX_NAME=\"DGX Spark\"\n")
+	if got := readSimFile("/etc/dgx-release"); got != "DGX_NAME=\"DGX Spark\"" {
+		t.Errorf("readSimFile = %q", got)
+	}
+	if got := readSimFile("/etc/absent"); got != "" {
+		t.Errorf("readSimFile absent = %q", got)
 	}
 }

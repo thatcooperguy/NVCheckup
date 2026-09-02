@@ -7,6 +7,7 @@
 //	<home>                 the user's home directory
 //	<lan-ip>               a private/loopback IPv4 address (RFC 1918, 127/8, 0.0.0.0)
 //	<public-ip-redacted>   any other IPv4 address
+//	<lan-ip>/24            a CIDR keeps its prefix length (fabric-port addresses)
 //	<email-redacted>       an email address
 //	SSID: <redacted>       a WiFi network name
 //	<mac>                  a MAC address (aa:bb:cc:dd:ee:ff or AA-BB-CC-DD-EE-FF)
@@ -22,6 +23,7 @@ import (
 	"os/user"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
@@ -269,20 +271,29 @@ func looksLikeVersion(s string, start, end int) bool {
 }
 
 // RedactIP replaces a single IP address, labelling private/loopback ranges as
-// <lan-ip> so a reader can still tell a home-router hop from an ISP hop.
-// Non-IP input is returned unchanged.
+// <lan-ip> so a reader can still tell a home-router hop from an ISP hop. A
+// CIDR such as 192.168.100.10/24 (FabricPort.IPv4, cx7.go) has its address
+// part replaced and keeps the /nn prefix length, which the cluster rules
+// compare (cx7-twins-same-subnet). Non-IP input, including version strings,
+// is returned unchanged.
 func (r *Redactor) RedactIP(ip string) string {
 	if !r.enabled {
 		return ip
 	}
-	parsed := net.ParseIP(strings.TrimSpace(ip))
+	addr, prefix := strings.TrimSpace(ip), ""
+	if i := strings.IndexByte(addr, '/'); i > 0 {
+		if _, err := strconv.Atoi(addr[i+1:]); err == nil {
+			addr, prefix = addr[:i], addr[i:]
+		}
+	}
+	parsed := net.ParseIP(addr)
 	if parsed == nil {
 		return ip
 	}
 	if isPrivateIP(parsed) {
-		return "<lan-ip>"
+		return "<lan-ip>" + prefix
 	}
-	return "<public-ip-redacted>"
+	return "<public-ip-redacted>" + prefix
 }
 
 // isPrivateIP reports whether ip is in a private, loopback, link-local or
@@ -364,6 +375,11 @@ Use --no-redact to disable redaction (not recommended for public sharing).`
 func redactPlatform(p *types.PlatformInfo, dgx *types.DGXOSInfo, cluster *types.ClusterInfo, eco *types.EcosystemInfo, red *Redactor) {
 	if p != nil {
 		p.PrevBootLastLine = red.Redact(p.PrevBootLastLine)
+		if p.WoA != nil {
+			// nvcc.exe location (a user profile on Windows); the adapter,
+			// PNP id, INF and WDDM version carry no personal data.
+			p.WoA.NvccPath = red.RedactPath(p.WoA.NvccPath)
+		}
 		// Legacy nested copies, normally nil (Report.* is the canonical home).
 		if p.DGXOS != nil {
 			redactDGXOS(p.DGXOS, red)
@@ -534,6 +550,11 @@ func redactLinux(l *types.LinuxInfo, red *Redactor) {
 	for i := range l.XidErrors {
 		l.XidErrors[i].Message = red.Redact(l.XidErrors[i].Message)
 	}
+	// Kernel-log lines kept verbatim for dgx-spark-gsp-init-failure; the
+	// collector already drops the hostname, redaction is the safety net.
+	for i := range l.GSPFailureLines {
+		l.GSPFailureLines[i] = red.Redact(l.GSPFailureLines[i])
+	}
 }
 
 func redactAI(ai *types.AIInfo, red *Redactor) {
@@ -543,6 +564,9 @@ func redactAI(ai *types.AIInfo, red *Redactor) {
 	}
 	if ai.PyTorchInfo != nil {
 		ai.PyTorchInfo.Error = red.Redact(ai.PyTorchInfo.Error)
+		for i := range ai.PyTorchInfo.Warnings {
+			ai.PyTorchInfo.Warnings[i] = red.Redact(ai.PyTorchInfo.Warnings[i])
+		}
 	}
 	if ai.TensorFlowInfo != nil {
 		ai.TensorFlowInfo.Error = red.Redact(ai.TensorFlowInfo.Error)

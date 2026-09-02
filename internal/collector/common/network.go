@@ -228,10 +228,9 @@ func detectInterfaceTypeLinux(info *types.NetworkInfo, errs *[]types.CollectorEr
 		return
 	}
 
-	// Check if the interface has a wireless directory
-	r := util.RunCommand(timeout, "test", "-d",
-		fmt.Sprintf("/sys/class/net/%s/wireless", info.InterfaceName))
-	if r.ExitCode == 0 {
+	// Check if the interface has a wireless directory (through NVC_SIM_ROOT)
+	if SimFileExists(fmt.Sprintf("/sys/class/net/%s/wireless", info.InterfaceName)) {
+		var r util.CommandResult
 		info.InterfaceType = "wifi"
 
 		// Try iwconfig for signal strength
