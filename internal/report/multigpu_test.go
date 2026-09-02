@@ -133,3 +133,54 @@ func TestPcieWarnedFor(t *testing.T) {
 		t.Error("no findings, no warning")
 	}
 }
+
+// nvidia-smi returned two thermal/PCIe rows but the inventory knows only GPU 0
+// (or nothing at all, when 'nvidia-smi -L' could not be parsed). The unmatched
+// samples are still printed rather than silently dropped from text/markdown.
+func TestGenerateText_UnmatchedSamplesStillPrinted(t *testing.T) {
+	r := twoGPUReport()
+	r.GPUs = r.GPUs[:1] // GPU 1 vanished from the inventory
+	out := GenerateText(r)
+	want := "  [GPU 1] (not in inventory)\n" +
+		"    PCIe:      Gen1 x16 (DOWNSHIFTED, max Gen4 x16)\n" +
+		"    Thermal:   71°C, P0, fan 70%, 431.20 / 450.00 W\n\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("GPU 1 samples must be printed even without an inventory entry:\n%s", out)
+	}
+	if !strings.Contains(out, "  [GPU 0] NVIDIA GeForce RTX 3090\n") || strings.Contains(out, "[GPU 0] (not in inventory)") {
+		t.Errorf("GPU 0 keeps its normal inventory block:\n%s", out)
+	}
+
+	md := GenerateMarkdown(r)
+	for _, w := range []string{"### GPU 1: (not in inventory)\n", "| PCIe | Gen1 x16 (DOWNSHIFTED, max Gen4 x16) |\n", "| Thermal | 71°C, P0, fan 70%, 431.20 / 450.00 W |\n"} {
+		if !strings.Contains(md, w) {
+			t.Errorf("markdown missing %q:\n%s", w, md)
+		}
+	}
+
+	// No inventory at all: every sample is shown, in index order.
+	r.GPUs = nil
+	out = GenerateText(r)
+	i0, i1 := strings.Index(out, "  [GPU 0] (not in inventory)\n    PCIe:      Gen1 x16 (idle, max Gen4)\n"), strings.Index(out, "  [GPU 1] (not in inventory)\n")
+	if i0 < 0 || i1 < 0 || i0 > i1 {
+		t.Errorf("both unmatched GPUs should be printed in order (%d, %d):\n%s", i0, i1, out)
+	}
+	if !strings.Contains(out, "  No GPUs detected.\n") {
+		t.Errorf("empty inventory notice still expected:\n%s", out)
+	}
+}
+
+func TestUnmatchedSampleIndexes(t *testing.T) {
+	r := &types.Report{
+		GPUs:       []types.GPUInfo{{Index: 0, IsNVIDIA: true}, {Index: 1, IsNVIDIA: false}},
+		GPUPCIe:    []types.PCIeInfo{{GPUIndex: 2}, {GPUIndex: 0}},
+		GPUThermal: []types.ThermalInfo{{GPUIndex: 1}, {GPUIndex: 2}},
+	}
+	got := unmatchedSampleIndexes(r)
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Errorf("unmatchedSampleIndexes = %v, want [1 2] (index 1 is a non-NVIDIA entry, index 0 matches)", got)
+	}
+	if got := unmatchedSampleIndexes(twoGPUReport()); len(got) != 0 {
+		t.Errorf("fully matched report should have no unmatched indexes, got %v", got)
+	}
+}

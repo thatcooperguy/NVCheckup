@@ -42,11 +42,9 @@ func CollectPCIeAll(timeout int) ([]types.PCIeInfo, []types.CollectorError) {
 	var errs []types.CollectorError
 
 	if !util.CommandExists("nvidia-smi") {
-		errs = append(errs, types.CollectorError{
-			Collector: "pcie",
-			Error:     "nvidia-smi not found in PATH",
-			Fatal:     true,
-		})
+		if e := missingNvidiaSmiError("pcie", isJetsonHost()); e != nil {
+			errs = append(errs, *e)
+		}
 		return nil, errs
 	}
 

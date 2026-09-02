@@ -114,3 +114,18 @@ func TestParseRowIndex(t *testing.T) {
 		}
 	}
 }
+
+// A host without nvidia-smi is a Fatal collector error on a desktop or server,
+// but nothing at all on Jetson, where JetPack simply does not ship nvidia-smi
+// and the analyzer's jetson-detected finding explains the missing data.
+func TestMissingNvidiaSmiError(t *testing.T) {
+	for _, collector := range []string{"thermal", "pcie"} {
+		e := missingNvidiaSmiError(collector, false)
+		if e == nil || e.Collector != collector || !e.Fatal || !strings.Contains(e.Error, "nvidia-smi not found in PATH") {
+			t.Errorf("%s on a non-Jetson host: got %+v, want a Fatal 'nvidia-smi not found in PATH' error", collector, e)
+		}
+		if e := missingNvidiaSmiError(collector, true); e != nil {
+			t.Errorf("%s on Jetson must not report a collector error, got %+v", collector, e)
+		}
+	}
+}

@@ -106,12 +106,56 @@ func pcieFor(samples []types.PCIeInfo, gpu types.GPUInfo) *types.PCIeInfo {
 	if !gpu.IsNVIDIA {
 		return nil
 	}
+	return pcieAt(samples, gpu.Index)
+}
+
+// pcieAt returns the PCIe sample for nvidia-smi index idx, or nil.
+func pcieAt(samples []types.PCIeInfo, idx int) *types.PCIeInfo {
 	for i := range samples {
-		if samples[i].GPUIndex == gpu.Index {
+		if samples[i].GPUIndex == idx {
 			return &samples[i]
 		}
 	}
 	return nil
+}
+
+// thermalAt returns the thermal sample for nvidia-smi index idx, or nil.
+func thermalAt(samples []types.ThermalInfo, idx int) *types.ThermalInfo {
+	for i := range samples {
+		if samples[i].GPUIndex == idx {
+			return &samples[i]
+		}
+	}
+	return nil
+}
+
+// unmatchedSampleIndexes lists, in ascending order, every GPU index that has
+// a thermal or PCIe sample but no NVIDIA entry in the GPU inventory. Such
+// samples would otherwise disappear from the per-GPU rendering.
+func unmatchedSampleIndexes(report *types.Report) []int {
+	known := map[int]bool{}
+	for _, gpu := range report.GPUs {
+		if gpu.IsNVIDIA {
+			known[gpu.Index] = true
+		}
+	}
+	seen := map[int]bool{}
+	var out []int
+	add := func(idx int) {
+		if known[idx] || seen[idx] {
+			return
+		}
+		seen[idx] = true
+		out = append(out, idx)
+	}
+	for _, p := range report.GPUPCIe {
+		add(p.GPUIndex)
+	}
+	for _, t := range report.GPUThermal {
+		add(t.GPUIndex)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // thermalFor returns the thermal sample for an inventory entry, or nil.
@@ -119,12 +163,7 @@ func thermalFor(samples []types.ThermalInfo, gpu types.GPUInfo) *types.ThermalIn
 	if !gpu.IsNVIDIA {
 		return nil
 	}
-	for i := range samples {
-		if samples[i].GPUIndex == gpu.Index {
-			return &samples[i]
-		}
-	}
-	return nil
+	return thermalAt(samples, gpu.Index)
 }
 
 // pcieGen parses "Gen4" (or "4") into 4; 0 when unknown.
@@ -259,6 +298,20 @@ func GenerateText(report *types.Report) string {
 			}
 		}
 		w("\n")
+	}
+	// Samples nvidia-smi returned for an index the inventory does not know
+	// (e.g. 'nvidia-smi -L' failed to parse) are still shown rather than lost.
+	if perGPU {
+		for _, idx := range unmatchedSampleIndexes(report) {
+			w("  [GPU %d] (not in inventory)\n", idx)
+			if p := pcieAt(report.GPUPCIe, idx); p != nil {
+				w("    PCIe:      %s\n", pcieSummaryFor(report.Findings, p))
+			}
+			if t := thermalAt(report.GPUThermal, idx); t != nil {
+				w("    Thermal:   %s\n", thermalSummary(t))
+			}
+			w("\n")
+		}
 	}
 
 	// Driver Info. With a single GPU the PCIe and Thermal lines keep their

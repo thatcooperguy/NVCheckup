@@ -1459,7 +1459,10 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 
 	nvidiaLoaded := mods["nvidia"]
 
-	if !nvidiaLoaded && report.Driver.Version == "" {
+	// On Jetson the driver version is never known (it comes only from
+	// nvidia-smi) and L4T R32 boards load 'nvgpu' rather than 'nvidia', so a
+	// healthy board would otherwise be told its module is missing.
+	if !nvidiaLoaded && report.Driver.Version == "" && !report.System.IsJetson {
 		findings = append(findings, types.Finding{
 			ID:           "nvidia-module-not-loaded",
 			Severity:     types.SeverityCrit,
@@ -1496,8 +1499,10 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 		})
 	}
 
-	// libcuda.so
-	if report.Linux.LibCudaPath == "" {
+	// libcuda.so. JetPack ships it under /usr/lib/<triplet>/tegra and the only
+	// remedy offered here ("install the NVIDIA driver package") is wrong on
+	// Jetson, so the check is skipped there; jetson-detected covers it.
+	if report.Linux.LibCudaPath == "" && !report.System.IsJetson {
 		findings = append(findings, types.Finding{
 			ID:           "libcuda-not-found",
 			Severity:     types.SeverityWarn,
@@ -2182,8 +2187,13 @@ func multiGPUSummary(report *types.Report) string {
 		n = len(report.GPUThermal)
 	}
 	line := fmt.Sprintf("GPUs: %d NVIDIA", n)
+	// Rows whose temperature failed to parse carry 0 and must not be
+	// reported as the hottest GPU.
 	worst := -1
 	for i, t := range report.GPUThermal {
+		if t.TemperatureC <= 0 {
+			continue
+		}
 		if worst < 0 || t.TemperatureC > report.GPUThermal[worst].TemperatureC {
 			worst = i
 		}

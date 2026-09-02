@@ -78,6 +78,20 @@ func GenerateMarkdown(report *types.Report) string {
 		}
 		w("\n")
 	}
+	// Samples for indexes the inventory does not know are still shown.
+	if perGPU {
+		for _, idx := range unmatchedSampleIndexes(report) {
+			w("### GPU %d: (not in inventory)\n\n", idx)
+			table()
+			if p := pcieAt(report.GPUPCIe, idx); p != nil {
+				row("PCIe", pcieSummaryFor(report.Findings, p))
+			}
+			if t := thermalAt(report.GPUThermal, idx); t != nil {
+				row("Thermal", thermalSummary(t))
+			}
+			w("\n")
+		}
+	}
 
 	w("**NVIDIA Driver:** %s | **CUDA (driver):** %s\n\n", valueOrNA(report.Driver.Version), valueOrNA(report.Driver.CUDAVersion))
 	if !perGPU && report.PCIe != nil {

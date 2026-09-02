@@ -144,3 +144,25 @@ func parseSmallInt(s string) (int, bool) {
 	}
 	return n, true
 }
+
+// missingNvidiaSmiError describes a host without nvidia-smi in PATH for the
+// named collector. On Jetson / Tegra nvidia-smi does not ship with JetPack, so
+// its absence is the healthy state and nil is returned: the analyzer's
+// jetson-detected finding already explains why thermal and PCIe data are
+// missing, and a Fatal collector error next to it would contradict that.
+func missingNvidiaSmiError(collector string, isJetson bool) *types.CollectorError {
+	if isJetson {
+		return nil
+	}
+	return &types.CollectorError{
+		Collector: collector,
+		Error:     "nvidia-smi not found in PATH",
+		Fatal:     true,
+	}
+}
+
+// isJetsonHost is DetectJetson reduced to the boolean the collectors need.
+func isJetsonHost() bool {
+	is, _ := DetectJetson()
+	return is
+}

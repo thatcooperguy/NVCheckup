@@ -97,7 +97,8 @@ func ruleCorpus() []struct {
 		// no GPU, no driver, no nvidia-smi, nothing to encode with
 		full(&types.Report{}),
 		// Jetson: no nvidia-smi by design, reported as the platform instead
-		full(&types.Report{System: types.SystemInfo{IsJetson: true, JetsonRelease: "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, DATE: Wed Jan 8 01:49:37 UTC 2025"}}),
+		full(&types.Report{System: types.SystemInfo{IsJetson: true, JetsonRelease: "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, DATE: Wed Jan 8 01:49:37 UTC 2025"},
+			Linux: &types.LinuxInfo{LoadedModules: map[string]bool{"nvgpu": true}}}),
 		// Linux: nvidia loaded but nodes missing; Secure Boot fine; Wayland
 		full(&types.Report{GPUs: nv, Driver: drv, Linux: &types.LinuxInfo{
 			LoadedModules: map[string]bool{"nvidia": true}, LibCudaPath: "/usr/lib/libcuda.so",

@@ -14,9 +14,16 @@ const jetsonRelease = "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: ge
 // must not read as "no GPU, no driver"; it is reported once as the platform.
 func TestAnalyze_JetsonSuppressesDesktopFindings(t *testing.T) {
 	for _, mode := range []types.RunMode{types.ModeGaming, types.ModeAI, types.ModeCreator, types.ModeStreaming, types.ModeFull} {
-		report := &types.Report{System: types.SystemInfo{OSName: "Ubuntu", OSVersion: "22.04", Architecture: "arm64", IsJetson: true, JetsonRelease: jetsonRelease}}
+		// Linux is populated the way a real L4T R32 board (Nano, Xavier NX,
+		// TX2) looks: the GPU module is 'nvgpu', not 'nvidia', the driver
+		// version is unknown because there is no nvidia-smi, and libcuda lives
+		// under the tegra directory the common-path search does not know.
+		report := &types.Report{
+			System: types.SystemInfo{OSName: "Ubuntu", OSVersion: "22.04", Architecture: "arm64", IsJetson: true, JetsonRelease: jetsonRelease},
+			Linux:  &types.LinuxInfo{LoadedModules: map[string]bool{"nvgpu": true}},
+		}
 		Analyze(report, mode)
-		for _, forbidden := range []string{"no-nvidia-gpu", "driver-not-detected", "nvidia-smi-missing"} {
+		for _, forbidden := range []string{"no-nvidia-gpu", "driver-not-detected", "nvidia-smi-missing", "nvidia-module-not-loaded", "libcuda-not-found"} {
 			if f := findByID(report.Findings, forbidden); f != nil {
 				t.Errorf("mode %s: %s must be suppressed on Jetson: %+v", mode, forbidden, f)
 			}
@@ -47,10 +54,11 @@ func TestAnalyzeJetson_UnknownReleaseAndNonJetson(t *testing.T) {
 	if got := analyzeJetson(&types.Report{}); len(got) != 0 {
 		t.Errorf("non-Jetson must not produce jetson-detected: %+v", got)
 	}
-	// The desktop rules still fire on a non-Jetson with nothing detected.
-	desktop := &types.Report{}
+	// The desktop rules still fire on a non-Jetson with nothing detected,
+	// including the Linux module check that is skipped on Jetson.
+	desktop := &types.Report{Linux: &types.LinuxInfo{LoadedModules: map[string]bool{"nvgpu": true}}}
 	Analyze(desktop, types.ModeFull)
-	for _, want := range []string{"no-nvidia-gpu", "driver-not-detected", "nvidia-smi-missing"} {
+	for _, want := range []string{"no-nvidia-gpu", "driver-not-detected", "nvidia-smi-missing", "nvidia-module-not-loaded", "libcuda-not-found"} {
 		if findByID(desktop.Findings, want) == nil {
 			t.Errorf("non-Jetson empty report should still raise %s: %v", want, ids(desktop.Findings))
 		}
@@ -274,5 +282,28 @@ func TestGPULabel(t *testing.T) {
 	}
 	if got := gpuLabel(report, 5); got != "GPU 5" {
 		t.Errorf("gpuLabel(5) = %q", got)
+	}
+}
+
+// A row whose temperature failed to parse carries 0 and must never be named
+// the hottest GPU; when no row parsed the parenthetical is dropped entirely.
+func TestMultiGPUSummary_SkipsUnparsedTemperatures(t *testing.T) {
+	gpus := []types.GPUInfo{
+		{Index: 0, Name: "NVIDIA A100-SXM4-80GB", IsNVIDIA: true},
+		{Index: 1, Name: "NVIDIA A100-SXM4-80GB", IsNVIDIA: true},
+	}
+	mixed := &types.Report{GPUs: gpus, GPUThermal: []types.ThermalInfo{
+		{GPUIndex: 0, TemperatureC: 0},
+		{GPUIndex: 1, TemperatureC: 61},
+	}}
+	if got, want := multiGPUSummary(mixed), "GPUs: 2 NVIDIA (worst temp 61°C on GPU 1)"; got != want {
+		t.Errorf("mixed rows: got %q, want %q", got, want)
+	}
+	allBad := &types.Report{GPUs: gpus, GPUThermal: []types.ThermalInfo{
+		{GPUIndex: 0, TemperatureC: 0},
+		{GPUIndex: 1, TemperatureC: 0},
+	}}
+	if got, want := multiGPUSummary(allBad), "GPUs: 2 NVIDIA"; got != want {
+		t.Errorf("all rows unparsed: got %q, want %q", got, want)
 	}
 }

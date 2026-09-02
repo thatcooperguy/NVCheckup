@@ -92,11 +92,9 @@ func CollectThermalAll(timeout int) ([]types.ThermalInfo, []types.CollectorError
 	var errs []types.CollectorError
 
 	if !util.CommandExists("nvidia-smi") {
-		errs = append(errs, types.CollectorError{
-			Collector: "thermal",
-			Error:     "nvidia-smi not found in PATH",
-			Fatal:     true,
-		})
+		if e := missingNvidiaSmiError("thermal", isJetsonHost()); e != nil {
+			errs = append(errs, *e)
+		}
 		return nil, errs
 	}
 
