@@ -50,7 +50,10 @@ func windowsBuild(build string) int {
 // analyzeWoA runs the rtx-spark-* and woa-* rules.
 func analyzeWoA(r *types.Report) []types.Finding {
 	var findings []types.Finding
-	woa := r.Platform.IsWindowsOnArm
+	// Catalog platforms for woa-nvcheckup-emulated and
+	// woa-windows-build-too-old are [rtx-spark] (spec 5): a Windows-on-Arm
+	// machine without an N1X (e.g. a Snapdragon X laptop) gets neither.
+	woa := r.Platform.IsWindowsOnArm && isRTXSpark(r)
 
 	// Rule row woa-nvcheckup-emulated (spec 5), WARN.
 	if woa && r.Platform.ProcessEmulated {

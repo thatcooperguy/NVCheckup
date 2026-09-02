@@ -108,7 +108,7 @@ Top: RTX Spark Developer Preview Driver
     Evidence:     The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver package ships nvidia-smi.exe is unconfirmed (spec 2.2), so this is informational.
     Why:          Without nvidia-smi the GPU, thermal and PCIe samples come from WMI only; memory is the unified pool (Win32_OperatingSystem.TotalVisibleMemorySize), not AdapterRAM.
     Next Steps:
-      • No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.
+      • If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.
 
 ────────────────────────────────────────────────────────────────────────
 
@@ -119,7 +119,7 @@ Top: RTX Spark Developer Preview Driver
 == RECOMMENDED NEXT STEPS ==
 
   1. Check the RTX Spark Developer Preview thread (S24) and OEM/Windows Update for a production Arm64 driver (read-only).
-  2. Advisory: installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).
+  2. ! Advisory: installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).
 
 ────────────────────────────────────────────────────────────────────────
 

@@ -27,6 +27,13 @@ var stateChangingRe = regexp.MustCompile(`^(Advisory\b|Last resort\b)`)
 // bold rendering in markdown.
 var advisoryPrefixRe = regexp.MustCompile(`^Advisory:?`)
 
+// unifiedGPU reports whether a GPU's thermal sample belongs to a
+// unified-memory part: the platform flag, or nvidia-smi memory reported as
+// not-supported for that GPU (spec 2.1 / 5.1).
+func unifiedGPU(report *types.Report, gpu types.GPUInfo) bool {
+	return report.Platform.UnifiedMemory || gpu.MemoryReporting == "not-supported"
+}
+
 // isAdvisory reports whether a next step is an Advisory (state-changing) step.
 func isAdvisory(step string) bool {
 	return advisoryRe.MatchString(step)

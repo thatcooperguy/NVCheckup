@@ -84,7 +84,7 @@ func GenerateMarkdown(report *types.Report) string {
 				row("PCIe", pcieSummaryFor(report.Findings, p))
 			}
 			if t := thermalFor(report.GPUThermal, gpu); t != nil {
-				row("Thermal", thermalSummary(t))
+				row("Thermal", thermalSummary(t, unifiedGPU(report, gpu)))
 			}
 		}
 		w("\n")
@@ -98,7 +98,7 @@ func GenerateMarkdown(report *types.Report) string {
 				row("PCIe", pcieSummaryFor(report.Findings, p))
 			}
 			if t := thermalAt(report.GPUThermal, idx); t != nil {
-				row("Thermal", thermalSummary(t))
+				row("Thermal", thermalSummary(t, report.Platform.UnifiedMemory))
 			}
 			w("\n")
 		}
@@ -109,7 +109,7 @@ func GenerateMarkdown(report *types.Report) string {
 		w("**PCIe:** %s\n\n", pcieSummary(report))
 	}
 	if !perGPU && report.Thermal != nil {
-		w("**Thermal:** %s\n\n", thermalSummary(report.Thermal))
+		w("**Thermal:** %s\n\n", thermalSummary(report.Thermal, report.Platform.UnifiedMemory))
 	}
 
 	// Windows details
@@ -280,9 +280,10 @@ func GenerateMarkdown(report *types.Report) string {
 	}
 	w("\n")
 
+	// Advisory steps are bolded like in the details section (spec 5).
 	w("## Recommended Next Steps\n\n")
 	for i, step := range report.NextSteps {
-		w("%d. %s\n", i+1, step)
+		w("%d. %s\n", i+1, markdownStep(step))
 	}
 	w("\n")
 

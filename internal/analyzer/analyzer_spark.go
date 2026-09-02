@@ -186,12 +186,6 @@ func isWindowsReport(r *types.Report) bool {
 		strings.Contains(strings.ToLower(r.System.OSName), "windows")
 }
 
-// isArm64Linux reports whether the host is a Linux aarch64 machine.
-func isArm64Linux(r *types.Report) bool {
-	arch := strings.ToLower(strings.TrimSpace(r.System.Architecture))
-	return (arch == "arm64" || arch == "aarch64") && !isWindowsReport(r)
-}
-
 // gb10Hardware: GB10 silicon is present whatever nvidia-smi says (spec 3.1
 // row 5: lspci [10de:2e12] or the GB10 name).
 func gb10Hardware(r *types.Report) bool {
@@ -731,8 +725,14 @@ func analyzeDGXOS(r *types.Report) []types.Finding {
 			orNA(dgx.OTAVersion), orNA(dgx.OTADate), orNA(r.System.KernelVersion), orNA(r.Driver.Version), otaCurrentDisplay)))
 	}
 
-	// Rule row dgx-spark-dashboard-unhealthy (spec 5), WARN.
-	if !dgx.DashboardActive || !dgx.DashboardAdminActive || !dgx.DashboardPortOpen || !dgx.FwupdActive || dgx.FwupdError != "" {
+	// Rule row dgx-spark-dashboard-unhealthy (spec 5), WARN. The trigger is
+	// "DGX OS AND (...)", so the clause needs a real DGX OS build string.
+	// The *Active booleans are measurements only when the collector reports
+	// DGXOSInfo.UnitsQueried (systemctl answered; integration contract in
+	// pkg/types): DashboardPortOpen comes from /proc/net/tcp and FwupdError
+	// from the journal independently of systemctl, so neither proves the
+	// units were queried, and when UnitsQueried is false the rule stays silent.
+	if dgx.SWBuildVersion != "" && dgx.UnitsQueried && (!dgx.DashboardActive || !dgx.DashboardAdminActive || !dgx.DashboardPortOpen || !dgx.FwupdActive || dgx.FwupdError != "") {
 		state := func(b bool) string {
 			if b {
 				return "active"
@@ -1220,7 +1220,10 @@ func ngcImageTooOld(ref string) bool {
 // arm64-container-amd64-image and sm121-ngc-image-too-old (spec 5).
 func analyzeArm64Containers(r *types.Report) []types.Finding {
 	var findings []types.Finding
-	arm64Host := isDGXSpark(r) || r.Platform.Class == classArm64DGPU || isArm64Linux(r)
+	// Catalog platforms for arm64-flash-attn-no-wheel and
+	// arm64-container-amd64-image are [dgx-spark, arm64-dgpu] only (spec 5):
+	// Jetson and Grace Hopper are aarch64 too but are excluded on purpose.
+	arm64Host := isDGXSpark(r) || r.Platform.Class == classArm64DGPU
 	if !arm64Host {
 		return findings
 	}

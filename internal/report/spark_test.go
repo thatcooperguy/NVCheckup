@@ -173,11 +173,60 @@ func TestAdvisorySteps_RenderedDistinctAndAfterReadOnly(t *testing.T) {
 	if !strings.Contains(md, "- **Advisory** sudo apt install docker-ce") {
 		t.Errorf("markdown should bold the bare Advisory token:\n%s", md)
 	}
+	// The RECOMMENDED NEXT STEPS list (report.NextSteps, built by the
+	// analyzer) carries the same marker: "!" in text, bold in markdown.
+	report.NextSteps = []string{
+		"Read-only: docker info.",
+		"Advisory: (data loss) sudo snap remove docker deletes the snap's containers (revert: snap restore).",
+		"Advisory sudo apt install docker-ce (revert: apt remove docker-ce).",
+	}
+	text = GenerateText(report)
+	if !strings.Contains(text, "== RECOMMENDED NEXT STEPS ==\n\n  1. Read-only: docker info.\n  2. ! Advisory: (data loss) sudo snap remove docker") || !strings.Contains(text, "  3. ! Advisory sudo apt install docker-ce") {
+		t.Errorf("RECOMMENDED NEXT STEPS should mark Advisory steps with '!':\n%s", text)
+	}
+	md = GenerateMarkdown(report)
+	if !strings.Contains(md, "## Recommended Next Steps\n\n1. Read-only: docker info.\n2. **Advisory:** (data loss) sudo snap remove docker") || !strings.Contains(md, "3. **Advisory** sudo apt install docker-ce") {
+		t.Errorf("Recommended Next Steps should bold the Advisory token:\n%s", md)
+	}
 	// INFO findings and findings without impact keep the plain header.
 	report.Findings = []types.Finding{{ID: "y", Severity: types.SeverityInfo, Title: "Y", Impact: "none"}, {ID: "z", Severity: types.SeverityWarn, Title: "Z"}}
 	text = GenerateText(report)
 	if !strings.Contains(text, "[INFO] #1: Y (y)") || !strings.Contains(text, "[WARN] #2: Z (z)") {
 		t.Errorf("INFO and impact-less findings must not print an impact label:\n%s", text)
+	}
+}
+
+func TestThermalSummary_LimitNAOnUnifiedMemoryOnly(t *testing.T) {
+	// A GB10 sample whose collector filled PowerLimitSupported=false but no
+	// EventCounters still prints the draw with "limit N/A" on a unified
+	// platform; a legacy discrete sample with no limit prints no power.
+	sample := &types.ThermalInfo{TemperatureC: 42, PowerState: "P8", PowerDrawW: "9.87", PowerLimitSupported: false}
+	if got := thermalSummary(sample, true); got != "42°C, P8, fan N/A, 9.87 W / limit N/A" {
+		t.Errorf("unified: %q", got)
+	}
+	if got := thermalSummary(sample, false); got != "42°C, P8, fan N/A" {
+		t.Errorf("legacy discrete: %q", got)
+	}
+	full := &types.ThermalInfo{TemperatureC: 60, PowerState: "P0", PowerDrawW: "250.0", PowerLimitW: "450.0", FanSupported: true, FanSpeedPct: 40}
+	if got := thermalSummary(full, true); got != "60°C, P0, fan 40%, 250.0 / 450.0 W" {
+		t.Errorf("real limit wins even when unified: %q", got)
+	}
+	// Through the renderers: the fixture without EventCounters.
+	r := fixtures.GB10()
+	r.Thermal.EventCounters = nil
+	if out := GenerateText(r); !strings.Contains(out, "Thermal:       42°C, P8, fan N/A, 9.87 W / limit N/A") {
+		t.Errorf("text renderer should gate on the platform, not on EventCounters:\n%s", out)
+	}
+	if out := GenerateMarkdown(r); !strings.Contains(out, "**Thermal:** 42°C, P8, fan N/A, 9.87 W / limit N/A") {
+		t.Errorf("markdown renderer should gate on the platform, not on EventCounters:\n%s", out)
+	}
+	// Per-GPU path on a two-GPU unified report (MemoryReporting drives it).
+	r = fixtures.GB10()
+	r.Platform.UnifiedMemory = false
+	r.GPUThermal = []types.ThermalInfo{{TemperatureC: 42, PowerState: "P8", PowerDrawW: "9.87", GPUIndex: 0}, {TemperatureC: 43, PowerState: "P8", PowerDrawW: "9.90", GPUIndex: 1}}
+	r.GPUs = append(r.GPUs, types.GPUInfo{Index: 1, Name: "NVIDIA GB10", IsNVIDIA: true, MemoryReporting: "not-supported"})
+	if out := GenerateText(r); !strings.Contains(out, "Thermal:   42°C, P8, fan N/A, 9.87 W / limit N/A") {
+		t.Errorf("per-GPU path should honour MemoryReporting not-supported:\n%s", out)
 	}
 }
 

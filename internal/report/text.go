@@ -201,8 +201,10 @@ func eventCount(errs []types.CollectorError, collector string, n int) string {
 	return fmt.Sprintf("%d event(s)", n)
 }
 
-// thermalSummary renders temperature, pstate and fan on one line.
-func thermalSummary(t *types.ThermalInfo) string {
+// thermalSummary renders temperature, pstate and fan on one line. unified is
+// true on unified-memory platforms (GB10/N1X), where every power limit is
+// N/A by design (spec 2.1) although the power draw is real.
+func thermalSummary(t *types.ThermalInfo, unified bool) string {
 	parts := []string{fmt.Sprintf("%d°C", t.TemperatureC)}
 	if t.PowerState != "" {
 		parts = append(parts, t.PowerState)
@@ -214,9 +216,9 @@ func thermalSummary(t *types.ThermalInfo) string {
 	}
 	if t.PowerDrawW != "" && t.PowerLimitW != "" {
 		parts = append(parts, fmt.Sprintf("%s / %s W", t.PowerDrawW, t.PowerLimitW))
-	} else if t.PowerDrawW != "" && t.EventCounters != nil {
+	} else if t.PowerDrawW != "" && unified {
 		// A GB10-style sample: power draw is real but every limit is N/A
-		// (spec 2.1). EventCounters marks the Spark collector path.
+		// (spec 2.1 / 5.1); legacy discrete samples are never unified.
 		parts = append(parts, fmt.Sprintf("%s W / limit N/A", t.PowerDrawW))
 	}
 	if t.SlowdownActive {
@@ -315,7 +317,7 @@ func GenerateText(report *types.Report) string {
 				w("    PCIe:      %s\n", pcieSummaryFor(report.Findings, p))
 			}
 			if t := thermalFor(report.GPUThermal, gpu); t != nil {
-				w("    Thermal:   %s\n", thermalSummary(t))
+				w("    Thermal:   %s\n", thermalSummary(t, unifiedGPU(report, gpu)))
 			}
 		}
 		w("\n")
@@ -329,7 +331,7 @@ func GenerateText(report *types.Report) string {
 				w("    PCIe:      %s\n", pcieSummaryFor(report.Findings, p))
 			}
 			if t := thermalAt(report.GPUThermal, idx); t != nil {
-				w("    Thermal:   %s\n", thermalSummary(t))
+				w("    Thermal:   %s\n", thermalSummary(t, report.Platform.UnifiedMemory))
 			}
 			w("\n")
 		}
@@ -344,7 +346,7 @@ func GenerateText(report *types.Report) string {
 		w("  PCIe:          %s\n", pcieSummary(report))
 	}
 	if !perGPU && report.Thermal != nil {
-		w("  Thermal:       %s\n", thermalSummary(report.Thermal))
+		w("  Thermal:       %s\n", thermalSummary(report.Thermal, report.Platform.UnifiedMemory))
 	}
 	line()
 
@@ -428,9 +430,16 @@ func GenerateText(report *types.Report) string {
 	w("\n")
 
 	// Next Steps
+	// Advisory steps keep the same "!" marker as in the findings section
+	// (spec 5); analyzer.buildNextSteps partitions report.NextSteps so the
+	// Advisory / Last resort steps follow every read-only step.
 	w("== RECOMMENDED NEXT STEPS ==\n\n")
 	for i, step := range report.NextSteps {
-		w("  %d. %s\n", i+1, step)
+		if isAdvisory(step) {
+			w("  %d. ! %s\n", i+1, step)
+		} else {
+			w("  %d. %s\n", i+1, step)
+		}
 	}
 	w("\n")
 	line()
