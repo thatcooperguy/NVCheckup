@@ -234,12 +234,41 @@ jobs:
           dpkg-query -W -f='${Package} ${Version}\n' nvidia-driver-580-open | grep -q '580.159.03'
           nvidia-spark-ota-check summary | grep -q 'detected_ota OTA2607'
           fwupdmgr get-devices | grep -q 'Current version'
+          # fwupdmgr get-upgrades with nothing pending exits 2 (tool behaviour placeholder); the collector parses stdout regardless.
+          rc=0; fwupdmgr get-upgrades --no-unreported-check --no-metadata-check --no-remote-check --no-device-prompt >/dev/null || rc=$?; [ "$rc" -eq 2 ]
           systemctl is-active dgx-dashboard.service | grep -qx active
+          # dgxos_host.go tells an installed-but-stopped unit from a missing one with LoadState; a stock unit has no gb10-clock-cap.service (S48 add-on).
+          test "$(systemctl show -p LoadState --value dgx-dashboard.service)" = "loaded"
+          test "$(systemctl show -p LoadState --value gb10-clock-cap.service)" = "not-found"
           ibdev2netdev | grep -q 'rocep1s0f0 port 1 ==> enp1s0f0np0'
+          ip -4 -o addr show | grep -q 'enp1s0f0np0 .*inet 192.168.100.10/24'
+          ip route show default | grep -q '^default via .* dev enP7s7'
           uname -r | grep -qx '6.17.0-1026-nvidia'
+          # spec 5 gb10-logless-hard-poweroff: the previous boot ends with a clean-shutdown marker; kernel lines come from the scenario, not the runner.
+          journalctl --list-boots --no-pager -q | grep -q '^ *-1 '
+          journalctl -b -1 --no-pager -q -o cat -n 30 | tail -1 | grep -qx 'Journal stopped'
+          journalctl -k -b --no-pager -q -o cat | grep -q 'NVRM: loading NVIDIA Open GPU Kernel Module for aarch64  580.159.03'
+          test -z "$(journalctl -u avahi-daemon.service -b --no-pager -q -g 'Host name conflict')"
+          # ldconfig -p lists the driver libraries linux.go / cx7.go look up; the real ldconfig would rebuild the cache and is never called.
+          ldconfig -p | grep -q 'libcuda.so.1 .*=> /usr/lib/aarch64-linux-gnu/libcuda.so.1'
+          # spec 2.1: no per-process memory on unified memory; the compute-apps query answers an empty list, not an error.
+          test -z "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
+          nvidia-smi -q -d PERFORMANCE | grep -q 'Clocks Event Reasons Counters'
           # NVC_SIM_ROOT files
           grep -q 'DGX_NAME="DGX Spark"' "$SIMROOT/gb10/etc/dgx-release"
           grep -q '^MemTotal: *125513944 kB' "$SIMROOT/gb10/proc/meminfo"
+          grep -qx '6.17.0-1026-nvidia' "$SIMROOT/gb10/proc/sys/kernel/osrelease"
+          grep -q '^pswpin 0' "$SIMROOT/gb10/proc/vmstat"
+          grep -qx 'acpitz' "$SIMROOT/gb10/sys/class/thermal/thermal_zone0/type"
+          test -d "$SIMROOT/gb10/sys/fs/pstore" && test -z "$(ls -A "$SIMROOT/gb10/sys/fs/pstore")"
+          grep -q 'mtu: 9000' "$SIMROOT/gb10/etc/netplan/50-cx7.yaml"
+          grep -qx 'ENABLED=no' "$SIMROOT/gb10/etc/ufw/ufw.conf"
+          test -f "$SIMROOT/gb10/etc/nvidia/cx7-hotplug-enabled"
+          grep -q '"nvidia"' "$SIMROOT/gb10/etc/docker/daemon.json" && test -f "$SIMROOT/gb10/etc/cdi/nvidia.yaml"
+          grep -q '^deb ' "$SIMROOT/gb10/etc/apt/sources.list.d/nvidia-container-toolkit.list"
+          grep -qx '0x15b3' "$SIMROOT/gb10/sys/class/net/enp1s0f0np0/device/vendor"
+          grep -q 'PCI_SLOT_NAME=0002:01:00.0' "$SIMROOT/gb10/sys/class/infiniband/roceP2p1s0f0/device/uevent"
+          test -d "$SIMROOT/gb10/sys/class/infiniband/roceP2p1s0f0/device/net/enP2p1s0f0np0"
           echo "OK: shims and simroot answer the spec's strings"
 
       - name: "Scenario gb10: self-test sees the GB10"
@@ -323,7 +352,56 @@ jobs:
               text = e["error"].lower()
               assert "panic" not in text and "runtime error" not in text, e
               print("collector note:", e["collector"], "->", e["error"][:120])
-          print("OK: GB10 platform, unified memory and findings match spec section 10")
+          # --- DGX OS (integration: linux.CollectDGXOS wired into phase 4; pkg/types DGXOSInfo.UnitsQueried contract) ---
+          dgx = j.get("dgx_os")
+          assert dgx, "dgx_os section missing (CollectDGXOS not wired)"
+          print("dgx_os:", {k: dgx.get(k) for k in ("ota_version", "ota_name", "ota_torn", "driver_pkg_version", "firmware_pkg_version", "modules_for_kernel", "units_queried", "dashboard_active", "dashboard_admin_active", "fwupd_active", "dashboard_port_open", "fwupd_error")})
+          assert dgx.get("units_queried") is True, dgx                          # systemctl (shim) answered: the *_active booleans are measurements
+          assert dgx.get("dashboard_active") is True and dgx.get("dashboard_admin_active") is True and dgx.get("fwupd_active") is True, dgx
+          assert dgx.get("dashboard_port_open") is True, dgx                    # /proc/net/tcp LISTEN on 11000 from the simroot
+          assert not dgx.get("fwupd_error"), dgx
+          assert "dgx-spark-dashboard-unhealthy" not in by, by.get("dgx-spark-dashboard-unhealthy")   # healthy units must not be reported unhealthy
+          assert dgx.get("ota_name") == "OTA2607" and dgx.get("ota_torn") == 0 and not dgx.get("ota_failed"), dgx   # spec 2.1 / scenario
+          assert dgx.get("modules_for_kernel") is True, dgx                     # spec 3.2 linux-modules-nvidia-580-open-<kernel> present
+          assert dgx.get("driver_pkg_version", "").startswith("580.159.03"), dgx
+          assert "serial_number" not in dgx or dgx["serial_number"] in ("", "<serial>"), dgx
+          # --- host state from journalctl / pstore / thermal fixtures (linux.CollectDGXHostState) ---
+          assert plat.get("prev_boot_clean") is True, plat                      # journalctl shim: previous boot ends with "Journal stopped"
+          assert not plat.get("unclean_boots"), plat
+          assert plat.get("pstore_empty") is True, plat
+          assert not plat.get("clock_cap_unit"), plat                           # a stock unit has no gb10-clock-cap.service
+          assert "gb10-clock-cap-active" not in by and "dgx-spark-suspend-failure" not in by, by.keys()
+          fw = {c["name"]: c for c in plat.get("firmware") or []}
+          assert set(fw) == {"Embedded Controller", "UEFI Device Firmware", "USB Power Delivery Controller"}, fw   # fwupdmgr shim (names are placeholders)
+          assert fw["Embedded Controller"].get("version") == "3.5.8", fw       # hex 0x03000508 decoded (ASSUMPTION marked in dgxos_host.go; spec rule dgx-spark-firmware-behind)
+          assert "dgx-spark-firmware-behind" not in by, by.get("dgx-spark-firmware-behind")
+          # --- ConnectX-7 (integration: linux.CollectCluster wired into phase 4; spec 9) ---
+          cl = j.get("cluster")
+          assert cl and cl.get("ports"), "cluster section missing (CollectCluster not wired or no 15b3 functions seen)"
+          ports = cl["ports"]
+          print("cluster ports:", [(p.get("netdev"), p.get("rdma_dev"), p.get("pci_addr"), p.get("cage"), p.get("state"), p.get("speed_mbps"), p.get("mtu"), p.get("ipv4")) for p in ports])
+          assert len(ports) == 4, ports                                          # four 15b3 functions, two per cage
+          active = [p for p in ports if "ACTIVE" in (p.get("state") or "")]
+          assert len(active) == 2, ports                                         # exactly the two cabled twins are ACTIVE
+          assert {p["cage"] for p in active} == {0}, active                      # ... and they form one cage (function .0 of domains 0000 and 0002)
+          assert {p["cage"] for p in ports} == {0, 1}, ports
+          for p in active:
+              assert p.get("speed_mbps") == 200000 and p.get("mtu") == 9000, p   # spec 9 healthy link
+              assert p.get("ipv4") and all(a.endswith("/24") for a in p["ipv4"]), p   # addresses redacted, prefix kept
+              assert not any("192.168.10" in a for a in p["ipv4"]), p            # ... and really redacted
+          assert cl.get("hotplug_file_enabled") is True and cl.get("ufw_enabled") is False and cl.get("avahi_active") is True, cl
+          for never in ("cx7-twin-link-mismatch", "cx7-link-speed-degraded", "cx7-up-no-ip", "cx7-twins-same-subnet", "cx7-mtu-mismatch",
+                        "nccl-env-misconfigured", "cx7-mdns-hostname-conflict", "cx7-firewall-blocks-cluster"):
+              assert never not in by, f"unexpected finding {never}: {by[never]}"   # spec 9 healthy cluster
+          # --- ecosystem (ai.CollectEcosystem; a runner has docker without the nvidia runtime and python3 without torch) ---
+          eco = j.get("ecosystem")
+          if eco is None:
+              print("ecosystem: absent on this runner (tolerated)")
+          else:
+              assert isinstance(eco, dict), eco
+              print("ecosystem:", {k: eco.get(k) for k in ("torch_arch_list", "docker_runtimes", "docker_cdi", "cdi_spec_present", "snap_docker", "listening_ports")})
+              assert 11000 in (eco.get("listening_ports") or []), eco           # /proc/net/tcp from the simroot, not the runner
+          print("OK: GB10 platform, unified memory, DGX OS, cluster and findings match spec section 10")
           PY
           echo "--- summary lines ---"
           # spec 5.1 / 10: the summary block replaces VRAM with a unified-memory line and adds a Platform line.
@@ -335,8 +413,13 @@ jobs:
           for f in gb10/report.txt gb10/report.json gb10/report.md; do
             if grep -qF "1234567890123" "$f"; then echo "DGX serial number leaked in $f"; exit 1; fi
             if grep -qF -- "$(hostname)" "$f"; then echo "hostname leaked in $f"; exit 1; fi
+            # The journalctl shim prints the scenario's DGX OS default hostname (spark-0f01) in its short format;
+            # redact maps the spark-xxxx form to <host> (ASSUMPTION documented in internal/redact).
+            if grep -qF "spark-0f01" "$f"; then echo "DGX OS default hostname leaked in $f"; exit 1; fi
+            # Fabric addresses are LAN ranges and must leave as <lan-ip>/24.
+            if grep -qE '192\.168\.10[01]\.10' "$f"; then echo "fabric IPv4 leaked in $f"; exit 1; fi
           done
-          echo "OK: summary lines present, serial and hostname redacted"
+          echo "OK: summary lines present, serial, hostnames and fabric addresses redacted"
 
       - name: "Scenario gb10: snapshot"
         env:
@@ -360,14 +443,15 @@ jobs:
           test -s gb10-snap/comparison.md
           echo "OK: snapshot/compare on GB10"
 
-      - name: "Scenario gb10: llm-plan (WP3-dependent)"
-        # WP3 ships `nvcheckup llm-plan` (spec section 7). Until it has merged the
-        # subcommand does not exist and this step only prints a notice; once it
-        # exists the plan must be produced from the measured MemTotal (spec 7.4:
-        # pool = 119.7 GiB, never "128 GB") and exit 0/1/2. continue-on-error
-        # stays until WP3 confirms the --model spelling for "Llama 3.1 8B
-        # Instruct" in knowledge/models.json; then remove it.
-        continue-on-error: true
+      - name: "Scenario gb10: llm-plan from the saved report (spec 7)"
+        # `nvcheckup llm-plan --report FILE` plans offline from report.json: the
+        # pool is the report's unified_memory.mem_total_kb (119.7 GiB, never "128
+        # GB"). The first worked example of spec 7.5 (Llama 3.1 8B, default BF16
+        # weights, agent profile = 4 streams x 32K, vLLM) must come out at W 15.0
+        # + KV 16.0 + R 12 + F 8 = 51.0 GiB and --gpu-memory-utilization 0.40. The
+        # guard only skips (with a notice) when the binary has no llm-plan
+        # subcommand at all, i.e. before the WP3 branch is merged; a wrong answer
+        # fails the job.
         env:
           NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
           NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10
@@ -375,28 +459,32 @@ jobs:
           set -uo pipefail
           export PATH="$SHIMS:$PATH"
           if ! ./nvcheckup help 2>&1 | grep -q "llm-plan"; then
-            echo "::notice::llm-plan is not in this build yet (WP3); skipping"
+            echo "::notice::llm-plan is not in this build (WP3 not merged yet); skipping"
             exit 0
           fi
+          test -s gb10/report.json
           mkdir -p gb10-plan
-          # spec 7.1 flags: --model NAME --quant fp8 --context TOKENS --json --out DIR
-          rc=0; ./nvcheckup llm-plan --model "Llama 3.1 8B Instruct" --quant fp8 --context 8192 --json --out gb10-plan | tee gb10-plan/plan.txt || rc=$?
+          ./nvcheckup llm-plan --list-models | tee gb10-plan/models.txt | grep -q 'llama-3.1-8b-instruct'
+          # spec 7.1 flags as implemented: --report FILE --model ID --profile agent --runtime vllm --json --out DIR
+          rc=0; ./nvcheckup llm-plan --report gb10/report.json --model llama-3.1-8b-instruct --profile agent --runtime vllm --json --out gb10-plan | tee gb10-plan/stdout.txt || rc=$?
           echo "llm-plan exit=$rc"
-          # spec 7.1: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. An 8B FP8 model fits a 119.7 GiB pool.
+          # spec 7.1: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. 51.0 GiB fits a 119.7 GiB pool.
           [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]
           test -s gb10-plan/plan.json
+          test -s gb10-plan/plan.txt
+          grep -q "119.7" gb10-plan/plan.txt                            # spec 7.4: pool = measured MemTotal
+          ! grep -q "128 GB" gb10-plan/plan.txt                         # spec 7.9
           python3 - <<'PY'
           import json
           p = json.load(open("gb10-plan/plan.json", encoding="utf-8"))
-          print({k: p.get(k) for k in ("platform", "memory", "fit", "estimates")})
-          total = p["memory"]["total_gib"]
-          assert abs(total - 119.7) < 0.1, total                       # spec 7.5: pool = measured MemTotal 119.7 GiB
-          assert p["fit"]["fits_total"] is True, p["fit"]
-          assert abs(p["fit"]["weights_gib"] - 7.5) < 0.1, p["fit"]   # spec 7.5: Llama 3.1 8B FP8 = 7.5 GiB
-          assert p["fit"]["total_gib"] <= total, p["fit"]
-          assert "128" not in json.dumps(p["memory"]), p["memory"]     # spec 7.9: never assume "128 GB"
+          fit = p.get("fit") or {}
+          print("fit:", fit)
+          print("memory:", p.get("memory"))
+          assert abs(float(fit["total_gib"]) - 51.0) < 0.05, fit                   # spec 7.5: W 15.0 + KV 16.0 + R 12 + F 8
+          assert abs(float(fit["gpu_memory_utilization"]) - 0.40) < 0.001, fit    # spec 7.5: ceil05(43.0 / 119.7) = 0.40
+          assert "128" not in json.dumps(p.get("memory")), p.get("memory")      # spec 7.9: never assume "128 GB"
           PY
-          echo "OK: llm-plan sized from the measured pool"
+          echo "OK: llm-plan planned offline from report.json with the spec 7.5 numbers"
 
       - name: "Scenario gb10-gsp-fail: GSP init failure is a CRIT, not 'no GPU' (spec 10)"
         env:
@@ -430,11 +518,22 @@ jobs:
           for never in ("no-nvidia-gpu", "driver-not-detected"):               # spec 10 and 5.1
               assert never not in by, f"{never} must not fire when dgx-spark-gsp-init-failure does: {by[never]}"
           assert "jetson-detected" not in by, by.keys()
-          # spec 3.2: the OTA checker reports failed: ["driver"]; dgx-spark-ota-torn may fire, it is not forbidden here.
+          # spec 3.2: the OTA checker reports failed: ["driver"] and torn 1; dgx-spark-ota-torn may fire, it is not forbidden here.
+          dgx = j.get("dgx_os") or {}
+          print("dgx_os:", {k: dgx.get(k) for k in ("ota_name", "ota_torn", "ota_failed", "units_queried")})
+          assert dgx.get("units_queried") is True, dgx
+          assert "driver" in (dgx.get("ota_failed") or []), dgx
+          # spec 3.2: the SEC2 / GSP lines reach the analyzer verbatim (LinuxInfo.GSPFailureLines) and no PCI-domain digit is lost.
+          lines = " ".join((j.get("linux") or {}).get("gsp_failure_lines") or [])
+          assert "ksec2PrepareBootCommands_GB20B" in lines and "RmInitAdapter failed! (0x62:0x65:2028)" in lines, lines
           for e in j.get("collector_errors") or []:
               assert "panic" not in e["error"].lower(), e
           print("OK: GSP failure classified as dgx-spark-gsp-init-failure CRIT")
           PY
+          for f in gb10-gsp-fail/report.txt gb10-gsp-fail/report.json gb10-gsp-fail/report.md; do
+            if grep -qF "1234567890123" "$f"; then echo "DGX serial number leaked in $f"; exit 1; fi
+            if grep -qF -- "$(hostname)" "$f"; then echo "hostname leaked in $f"; exit 1; fi
+          done
 
       - name: upload
         if: always()
