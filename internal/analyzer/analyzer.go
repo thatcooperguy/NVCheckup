@@ -10,6 +10,7 @@ package analyzer
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -271,7 +272,9 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 			f.Title = "nvidia-smi Not Found (may be absent on RTX Spark)"
 			f.Evidence = "The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver package ships nvidia-smi.exe is unconfirmed (spec 2.2), so this is informational."
 			f.WhyItMatters = "Without nvidia-smi the GPU, thermal and PCIe samples come from WMI only; memory is the unified pool (Win32_OperatingSystem.TotalVisibleMemorySize), not AdapterRAM."
-			f.NextSteps = []string{"No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set."}
+			// Same sentence as the rtx-spark driver-not-detected step so the
+			// two collapse to one entry in RECOMMENDED NEXT STEPS.
+			f.NextSteps = []string{"If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set."}
 			f.Confidence = 60
 		}
 		findings = append(findings, f)
@@ -2211,6 +2214,30 @@ func isPlaceholderStep(lowerStep string) bool {
 		strings.HasPrefix(lowerStep, "no network action needed")
 }
 
+// stateChangingRe marks the steps that must never precede a read-only step
+// in RECOMMENDED NEXT STEPS (spec 5, "read-only steps always come first"):
+// Advisory steps and the "Last resort" System Recovery reimage steps, which
+// erase the unit and belong at the very end. The report renderers apply the
+// same partition to the per-finding steps.
+var stateChangingRe = regexp.MustCompile(`^(Advisory\b|Last resort\b)`)
+
+// orderReadOnlyFirst stable-partitions steps: read-only steps in their
+// original order, then the Advisory / Last resort steps in theirs.
+func orderReadOnlyFirst(steps []string) []string {
+	out := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if !stateChangingRe.MatchString(s) {
+			out = append(out, s)
+		}
+	}
+	for _, s := range steps {
+		if stateChangingRe.MatchString(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // buildNextSteps interleaves the findings' steps round-robin: the first step
 // of every CRIT/WARN finding, then the second step of each, and so on. This
 // way a single verbose finding cannot crowd out the others. INFO findings
@@ -2258,7 +2285,10 @@ func buildNextSteps(findings []types.Finding) []string {
 	if len(steps) == 0 {
 		steps = append(steps, "No immediate action required. System appears healthy.")
 	}
-	return steps
+	// Spec 5: rules whose only steps are Advisory (e.g. dgx-spark-ota-outdated)
+	// would otherwise place their depth-0 Advisory step ahead of another
+	// finding's read-only step, so partition the interleaved list once.
+	return orderReadOnlyFirst(steps)
 }
 
 // summaryLineWidth is the widest a summary line may be so the block fits in

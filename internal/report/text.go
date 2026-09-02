@@ -431,7 +431,8 @@ func GenerateText(report *types.Report) string {
 
 	// Next Steps
 	// Advisory steps keep the same "!" marker as in the findings section
-	// (spec 5); buildNextSteps already orders them after read-only steps.
+	// (spec 5); analyzer.buildNextSteps partitions report.NextSteps so the
+	// Advisory / Last resort steps follow every read-only step.
 	w("== RECOMMENDED NEXT STEPS ==\n\n")
 	for i, step := range report.NextSteps {
 		if isAdvisory(step) {

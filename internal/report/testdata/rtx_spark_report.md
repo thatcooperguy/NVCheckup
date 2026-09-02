@@ -86,7 +86,7 @@ Top: RTX Spark Developer Preview Driver
 | **WARN** (impact: persistent) | RTX Spark Developer Preview Driver | Driver 616.00 (nv_surface_woa.inf) is the RTX Spark Developer Preview branch ... | Check the RTX Spark Developer Preview thread (S24) and OEM/Windows Update for... |
 | **INFO** | Unified Memory: nvidia-smi Memory Fields Are [N/A] by Design | nvidia-smi memory '[N/A]' on GPU 0 (NVIDIA RTX Spark N1X (6144-core Blackwell... | Use /proc/meminfo MemAvailable (+SwapFree), free -h 'available' or the DGX Da... |
 | **INFO** | NVIDIA RTX Spark (N1X) Detected | RTX Spark N1X (6144-core, DEV_2E03), Windows build 26100 ARM64, Microsoft Sur... | Report total RAM as the GPU pool; record driver version and INF. |
-| **INFO** | nvidia-smi Not Found (may be absent on RTX Spark) | The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver pack... | No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup ... |
+| **INFO** | nvidia-smi Not Found (may be absent on RTX Spark) | The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver pack... | If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the ful... |
 
 ### Details
 
@@ -143,7 +143,7 @@ Top: RTX Spark Developer Preview Driver
 **Why it matters:** Without nvidia-smi the GPU, thermal and PCIe samples come from WMI only; memory is the unified pool (Win32_OperatingSystem.TotalVisibleMemorySize), not AdapterRAM.
 
 **Next steps:**
-- No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.
+- If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.
 
 </details>
 

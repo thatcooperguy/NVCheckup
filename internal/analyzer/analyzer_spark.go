@@ -726,14 +726,13 @@ func analyzeDGXOS(r *types.Report) []types.Finding {
 	}
 
 	// Rule row dgx-spark-dashboard-unhealthy (spec 5), WARN. The trigger is
-	// "DGX OS AND (...)", so the clause needs a real DGX OS build string and
-	// at least one positive service/port/fwupd observation: a DGXOSInfo whose
-	// service bools are all false with no fwupd error is indistinguishable
-	// from a collector that never queried systemd (e.g. /etc/dgx-release
-	// readable, systemctl unavailable) and must not produce a false WARN.
-	servicesProbed := dgx.SWBuildVersion != "" && (dgx.DashboardActive || dgx.DashboardAdminActive ||
-		dgx.FwupdActive || dgx.PersistencedActive || dgx.DashboardPortOpen || dgx.FwupdError != "")
-	if servicesProbed && (!dgx.DashboardActive || !dgx.DashboardAdminActive || !dgx.DashboardPortOpen || !dgx.FwupdActive || dgx.FwupdError != "") {
+	// "DGX OS AND (...)", so the clause needs a real DGX OS build string.
+	// The *Active booleans are measurements only when the collector reports
+	// DGXOSInfo.UnitsQueried (systemctl answered; integration contract in
+	// pkg/types): DashboardPortOpen comes from /proc/net/tcp and FwupdError
+	// from the journal independently of systemctl, so neither proves the
+	// units were queried, and when UnitsQueried is false the rule stays silent.
+	if dgx.SWBuildVersion != "" && dgx.UnitsQueried && (!dgx.DashboardActive || !dgx.DashboardAdminActive || !dgx.DashboardPortOpen || !dgx.FwupdActive || dgx.FwupdError != "") {
 		state := func(b bool) string {
 			if b {
 				return "active"

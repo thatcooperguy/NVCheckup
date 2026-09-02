@@ -124,6 +124,7 @@ func sparkCorpus() []sparkCorpusEntry {
 		// dgx-spark-dashboard-unhealthy
 		full(gb10(func(r *types.Report) {
 			r.DGXOS.DashboardActive = false
+			r.DGXOS.UnitsQueried = true
 			r.DGXOS.FwupdError = "libfwupd version 1.9.34 does not match daemon 1.9.30"
 		})),
 		// dgx-spark-firmware-behind (FE, EC one patch level behind)
@@ -812,31 +813,113 @@ func TestOTAOutdated_Clauses(t *testing.T) {
 }
 
 func TestDashboardUnhealthy_NeedsProbedServices(t *testing.T) {
-	// A DGXOSInfo with only the release fields (systemctl never queried) or a
-	// zero value must not yield the WARN in any mode.
-	for _, dgx := range []*types.DGXOSInfo{{}, {Name: "DGX OS", SWBuildVersion: "7.5.0", OTAVersion: "7.5.0"}} {
+	// DGXOSInfo.UnitsQueried integration contract: when false the *Active
+	// booleans are unknown and the rule must stay silent in every mode, even
+	// when the port probe (from /proc/net/tcp) or the fwupd journal error
+	// (independent of systemctl) carries a positive observation.
+	for _, dgx := range []*types.DGXOSInfo{
+		{},
+		{Name: "DGX OS", SWBuildVersion: "7.5.0", OTAVersion: "7.5.0"},
+		{SWBuildVersion: "7.5.0", DashboardPortOpen: true},
+		{SWBuildVersion: "7.5.0", FwupdError: "libfwupd version 1.9.34 does not match daemon 1.9.30"},
+		{SWBuildVersion: "7.5.0", PersistencedActive: true},
+	} {
 		for _, mode := range []types.RunMode{types.ModeGaming, types.ModeAI, types.ModeCreator, types.ModeFull, types.ModeStreaming} {
 			r := gb10(func(r *types.Report) { r.DGXOS = dgx })
 			Analyze(r, mode)
 			if f := findByID(r.Findings, "dgx-spark-dashboard-unhealthy"); f != nil {
-				t.Errorf("mode %s, dgx %+v: dashboard clause fired without probed services: %+v", mode, dgx, f)
+				t.Errorf("mode %s, dgx %+v: dashboard clause fired with UnitsQueried=false: %+v", mode, dgx, f)
 			}
 		}
 	}
-	// One positive observation (persistenced active) is enough to trust the
-	// inactive dashboard bools.
+	// Units queried, everything inactive, port closed, no fwupd error: the
+	// most unhealthy real state must fire.
 	r := gb10(func(r *types.Report) {
-		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", PersistencedActive: true}
+		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", UnitsQueried: true}
 	})
 	if f := findByID(analyzeDGXOS(r), "dgx-spark-dashboard-unhealthy"); f == nil || !strings.Contains(f.Evidence, "dgx-dashboard inactive, dgx-dashboard-admin inactive, port 11000 closed, fwupd inactive") {
-		t.Errorf("probed services with the dashboard down should fire: %+v", f)
+		t.Errorf("queried units with the dashboard down should fire: %+v", f)
 	}
-	// A fwupd error alone also counts as a probe.
+	// Units queried and healthy except for a fwupd error.
 	r = gb10(func(r *types.Report) {
-		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", DashboardActive: true, DashboardAdminActive: true, DashboardPortOpen: true, FwupdError: "libfwupd version 1.9.34 does not match daemon 1.9.30"}
+		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", UnitsQueried: true, DashboardActive: true, DashboardAdminActive: true, DashboardPortOpen: true, FwupdActive: true, FwupdError: "libfwupd version 1.9.34 does not match daemon 1.9.30"}
 	})
 	if f := findByID(analyzeDGXOS(r), "dgx-spark-dashboard-unhealthy"); f == nil || !strings.Contains(f.Evidence, "fwupd failed") {
 		t.Errorf("fwupd error should fire: %+v", f)
+	}
+	// Units queried and fully healthy: silent.
+	r = gb10(func(r *types.Report) {
+		r.DGXOS = &types.DGXOSInfo{SWBuildVersion: "7.5.0", UnitsQueried: true, DashboardActive: true, DashboardAdminActive: true, DashboardPortOpen: true, FwupdActive: true}
+	})
+	if f := findByID(analyzeDGXOS(r), "dgx-spark-dashboard-unhealthy"); f != nil {
+		t.Errorf("healthy queried units must not fire: %+v", f)
+	}
+	// A DGX OS build string is still required (trigger is "DGX OS AND ...").
+	r = gb10(func(r *types.Report) { r.DGXOS = &types.DGXOSInfo{UnitsQueried: true} })
+	if f := findByID(analyzeDGXOS(r), "dgx-spark-dashboard-unhealthy"); f != nil {
+		t.Errorf("no DGX OS build string must not fire: %+v", f)
+	}
+}
+
+func TestBuildNextSteps_ReadOnlyBeforeAdvisory(t *testing.T) {
+	// Spec 5: "read-only steps always come first" applies to the report-level
+	// RECOMMENDED NEXT STEPS too. dgx-spark-ota-outdated and
+	// dgx-spark-driver-too-old have only Advisory / Last resort steps, so
+	// their depth-0 step used to land ahead of the read-only first step of
+	// dgx-spark-ota-torn ("Prefer Dashboard updates ...").
+	r := gb10(func(r *types.Report) {
+		r.Driver.Version = "570.86.10"
+		r.DGXOS.OTAVersion = "7.2.3"
+		r.DGXOS.OTAFailed = []string{"nvidia-driver-580-open"}
+	})
+	Analyze(r, types.ModeFull)
+	for _, id := range []string{"dgx-spark-ota-outdated", "dgx-spark-driver-too-old", "dgx-spark-ota-torn"} {
+		if findByID(r.Findings, id) == nil {
+			t.Fatalf("fixture should trip %s, got %v", id, ids(r.Findings))
+		}
+	}
+	if len(r.NextSteps) < 2 {
+		t.Fatalf("expected several next steps, got %v", r.NextSteps)
+	}
+	if !strings.HasPrefix(r.NextSteps[0], "Prefer Dashboard updates") {
+		t.Errorf("step 1 should be the read-only OTA check, got %q in %v", r.NextSteps[0], r.NextSteps)
+	}
+	sawAdvisory := false
+	for i, step := range r.NextSteps {
+		if stateChangingRe.MatchString(step) {
+			sawAdvisory = true
+		} else if sawAdvisory {
+			t.Errorf("report.NextSteps[%d] %q is read-only but follows an Advisory/Last resort step: %v", i, step, r.NextSteps)
+		}
+	}
+	if !sawAdvisory {
+		t.Errorf("expected at least one Advisory step to survive in %v", r.NextSteps)
+	}
+	// The fallback line is untouched when nothing is actionable.
+	if got := buildNextSteps(nil); len(got) != 1 || !strings.HasPrefix(got[0], "No immediate action required") {
+		t.Errorf("fallback changed: %v", got)
+	}
+	// Partition is stable: relative order within each class is kept.
+	got := orderReadOnlyFirst([]string{"Advisory: a", "read 1", "Last resort: b", "read 2", "Advisory: c"})
+	want := []string{"read 1", "read 2", "Advisory: a", "Last resort: b", "Advisory: c"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("orderReadOnlyFirst = %v, want %v", got, want)
+	}
+}
+
+func TestRTXSpark_NvidiaSmiStepsCollapse(t *testing.T) {
+	// nvidia-smi-missing and driver-not-detected share one sentence on
+	// rtx-spark without nvidia-smi.exe so the report lists it once.
+	r := rtxSpark(func(r *types.Report) { r.Driver = types.DriverInfo{} })
+	Analyze(r, types.ModeFull)
+	n := 0
+	for _, s := range r.NextSteps {
+		if strings.Contains(s, "re-run NVCheckup for the fuller sample set") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("expected the re-run step exactly once, got %d in %v", n, r.NextSteps)
 	}
 }
 
@@ -1169,11 +1252,6 @@ func TestWSLLinuxDriverInstalled(t *testing.T) {
 // ── every finding carries an impact; advisory steps are ordered ───────
 
 var advisoryRe = regexp.MustCompile(`^Advisory\b`)
-
-// stateChangingRe marks the steps that must never precede a read-only step:
-// Advisory steps (spec 5) and the "Last resort" System Recovery reimage
-// steps, which erase the unit and belong at the very end.
-var stateChangingRe = regexp.MustCompile(`^(Advisory\b|Last resort\b)`)
 
 func TestAnalyze_EveryFindingHasImpactAndOrderedAdvisories(t *testing.T) {
 	allowed := map[string]bool{"none": true, "reversible": true, "persistent": true, "irreversible": true, "data-loss": true}
