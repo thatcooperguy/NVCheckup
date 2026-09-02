@@ -3,15 +3,17 @@
 package windows
 
 import (
-	"regexp"
+	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// wmiVideoController represents a Win32_VideoController WMI object.
+// wmiVideoController represents a Win32_VideoController WMI object (one per
+// graphics adapter, not per monitor).
 type wmiVideoController struct {
 	Name                        string
 	CurrentHorizontalResolution int
@@ -20,54 +22,205 @@ type wmiVideoController struct {
 	AdapterCompatibility        string
 }
 
-// CollectDisplayInfo gathers display/monitor information on Windows via WMI
-// and registry queries for HDR and G-Sync/VRR status.
-func CollectDisplayInfo(timeout int) ([]types.DisplayInfo, []types.CollectorError) {
-	var displays []types.DisplayInfo
-	var errs []types.CollectorError
-
-	// Query video controllers via WMI
-	controllers := queryVideoControllers(timeout, &errs)
-
-	// Query HDR status from registry
-	hdrEnabled := queryHDRStatus(timeout, &errs)
-
-	// Query G-Sync/VRR status from registry
-	vrrEnabled := queryGSyncStatus(timeout, &errs)
-
-	// Build DisplayInfo entries from controllers
-	for i, ctl := range controllers {
-		di := types.DisplayInfo{
-			Name:       ctl.Name,
-			GPUIndex:   i,
-			Primary:    i == 0,
-			VRREnabled: vrrEnabled,
-			HDREnabled: hdrEnabled,
-		}
-
-		if ctl.CurrentHorizontalResolution > 0 && ctl.CurrentVerticalResolution > 0 {
-			di.Resolution = strconv.Itoa(ctl.CurrentHorizontalResolution) + "x" + strconv.Itoa(ctl.CurrentVerticalResolution)
-		}
-
-		if ctl.CurrentRefreshRate > 0 {
-			di.RefreshHz = ctl.CurrentRefreshRate
-		}
-
-		// Determine output type heuristic based on adapter name
-		di.OutputType = inferOutputTypeWindows(ctl.Name, ctl.AdapterCompatibility)
-
-		displays = append(displays, di)
-	}
-
-	return displays, errs
+// screenInfo is one entry from System.Windows.Forms.Screen.AllScreens: a
+// logical monitor as the desktop sees it. Width/Height are physical pixels
+// because the probe calls SetProcessDPIAware() first (see screensScript).
+type screenInfo struct {
+	DeviceName string `json:"DeviceName"`
+	Primary    bool   `json:"Primary"`
+	Width      int    `json:"W"`
+	Height     int    `json:"H"`
 }
 
-// queryVideoControllers runs a PowerShell WMI query for Win32_VideoController
-// and parses the JSON output into a slice of controller structs.
-func queryVideoControllers(timeout int, errs *[]types.CollectorError) []wmiVideoController {
-	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
-		`Get-CimInstance -ClassName Win32_VideoController | Select-Object Name, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate, AdapterCompatibility | ConvertTo-Json`)
+// monitorIdentity is the EDID-derived identity of a connected monitor from
+// root\wmi WmiMonitorID joined with WmiMonitorConnectionParams. It carries no
+// PnP instance path on purpose: the instance path
+// (DISPLAY\DEL41B3\5&1babaec3&0&UID266501_0) is machine-identifying.
+type monitorIdentity struct {
+	Manufacturer string // three-letter PnP vendor code, e.g. "DEL"
+	FriendlyName string // EDID descriptor, e.g. "DELL U2720Q"
+	Active       bool
+	OutputType   string // "DP", "HDMI", ... from VideoOutputTechnology; "" if unknown
+}
 
+// screensScript enumerates monitors with WinForms. SetProcessDPIAware is
+// P/Invoked first because without it Screen.Bounds is reported in
+// DPI-scaled logical pixels (3072x1728 for a 4K panel at 125 %), which would
+// mislead any resolution-based rule.
+const screensScript = `$ErrorActionPreference = 'SilentlyContinue'; ` +
+	`Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class NvcDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'; ` +
+	`[void][NvcDpi]::SetProcessDPIAware(); ` +
+	`Add-Type -AssemblyName System.Windows.Forms; ` +
+	`[System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName,Primary,@{n='W';e={$_.Bounds.Width}},@{n='H';e={$_.Bounds.Height}} | ConvertTo-Json -Compress; ` +
+	`exit 0`
+
+// monitorIdentityScript decodes the uint16 EDID strings of WmiMonitorID and
+// joins the connector type from WmiMonitorConnectionParams by InstanceName.
+// The InstanceName is used only as the join key inside PowerShell and is not
+// printed.
+const monitorIdentityScript = `$ErrorActionPreference = 'SilentlyContinue'; ` +
+	`$conn = @{}; ` +
+	`Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams | ForEach-Object { $conn[$_.InstanceName] = $_.VideoOutputTechnology }; ` +
+	`Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID | ForEach-Object { ` +
+	`$m = -join ($_.ManufacturerName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }); ` +
+	`$n = -join ($_.UserFriendlyName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }); ` +
+	`"$m|$n|$($_.Active)|$($conn[$_.InstanceName])" }; ` +
+	`exit 0`
+
+const videoControllerScript = `Get-CimInstance -ClassName Win32_VideoController | Select-Object Name, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate, AdapterCompatibility | ConvertTo-Json -Compress`
+
+// displayProbeCache memoizes the three PowerShell display probes. Both
+// CollectWindowsInfo (Windows.Monitors) and CollectDisplayInfo (Displays) need
+// the same data and each PowerShell spawn costs one to two seconds, so the
+// probes run once per process. Collector errors are handed to the first
+// caller only, so they appear once in the report.
+type displayProbeCache struct {
+	mu      sync.Mutex
+	loaded  bool
+	screens []screenInfo
+	idents  []monitorIdentity
+	ctls    []wmiVideoController
+	errs    []types.CollectorError
+}
+
+var displayProbes displayProbeCache
+
+func (c *displayProbeCache) load(timeout int) ([]screenInfo, []monitorIdentity, []wmiVideoController, []types.CollectorError) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.loaded {
+		return c.screens, c.idents, c.ctls, nil
+	}
+	c.loaded = true
+	c.ctls = queryVideoControllers(timeout, &c.errs)
+	c.screens = queryScreens(timeout, &c.errs)
+	c.idents = queryMonitorIdentities(timeout, &c.errs)
+	return c.screens, c.idents, c.ctls, c.errs
+}
+
+// CollectDisplayInfo returns one DisplayInfo per connected monitor.
+//
+// HDREnabled/VRREnabled/HDRCapable/ColorDepth are deliberately left at their
+// zero values: the registry keys previously consulted (GraphicsDrivers\EnableHDR
+// and nvlddmkm\Global\GSync) are not per-monitor state and are absent on most
+// systems, so reporting them as "false" claimed a check that never happened.
+// Reading real HDR/VRR state needs DXGI or NVAPI, which stdlib Go cannot reach
+// without cgo.
+func CollectDisplayInfo(timeout int) ([]types.DisplayInfo, []types.CollectorError) {
+	screens, idents, ctls, errs := displayProbes.load(timeout)
+	return buildDisplays(screens, idents, ctls), errs
+}
+
+// buildDisplays pairs enumerated screens with monitor identities and the
+// driving adapter. It is pure so it can be unit-tested with captured output.
+func buildDisplays(screens []screenInfo, idents []monitorIdentity, ctls []wmiVideoController) []types.DisplayInfo {
+	var displays []types.DisplayInfo
+	adapter, gpuIndex := pickAdapter(ctls)
+	active := activeIdentities(idents)
+
+	if len(screens) == 0 {
+		// Screen enumeration failed (headless session, WinForms unavailable).
+		// Fall back to the adapter view so the report is not empty, even
+		// though this cannot distinguish multiple monitors on one GPU.
+		for i, ctl := range ctls {
+			if ctl.CurrentHorizontalResolution == 0 || ctl.CurrentVerticalResolution == 0 {
+				continue
+			}
+			displays = append(displays, types.DisplayInfo{
+				Name:       identityName(active, i, "Display "+strconv.Itoa(i+1)),
+				Resolution: strconv.Itoa(ctl.CurrentHorizontalResolution) + "x" + strconv.Itoa(ctl.CurrentVerticalResolution),
+				RefreshHz:  ctl.CurrentRefreshRate,
+				OutputType: identityOutputType(active, i),
+				GPUIndex:   i,
+				Primary:    i == 0,
+			})
+		}
+		return displays
+	}
+
+	for i, s := range screens {
+		if s.Width == 0 || s.Height == 0 {
+			continue
+		}
+		displays = append(displays, types.DisplayInfo{
+			Name:       identityName(active, i, "Display "+strconv.Itoa(i+1)),
+			Resolution: strconv.Itoa(s.Width) + "x" + strconv.Itoa(s.Height),
+			RefreshHz:  adapter.CurrentRefreshRate,
+			OutputType: identityOutputType(active, i),
+			GPUIndex:   gpuIndex,
+			Primary:    s.Primary,
+		})
+	}
+	return displays
+}
+
+// pickAdapter chooses the adapter whose refresh rate is applied to every
+// monitor: the first NVIDIA adapter, else the first adapter with a mode set.
+// Win32_VideoController has no link to \\.\DISPLAYn, so on multi-GPU systems
+// every monitor is attributed to the first NVIDIA GPU (gpuIndex 0), which
+// matches nvidia-smi ordering for the single-vendor case.
+func pickAdapter(ctls []wmiVideoController) (wmiVideoController, int) {
+	for _, ctl := range ctls {
+		if isNvidiaAdapter(ctl) {
+			return ctl, 0
+		}
+	}
+	for _, ctl := range ctls {
+		if ctl.CurrentRefreshRate > 0 {
+			return ctl, 0
+		}
+	}
+	if len(ctls) > 0 {
+		return ctls[0], 0
+	}
+	return wmiVideoController{}, 0
+}
+
+func isNvidiaAdapter(ctl wmiVideoController) bool {
+	return strings.Contains(strings.ToLower(ctl.AdapterCompatibility), "nvidia") ||
+		strings.Contains(strings.ToLower(ctl.Name), "nvidia")
+}
+
+// activeIdentities drops monitors WMI still remembers but that are not
+// currently active, so the list lines up with Screen.AllScreens.
+func activeIdentities(idents []monitorIdentity) []monitorIdentity {
+	var out []monitorIdentity
+	for _, id := range idents {
+		if id.Active {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// identityName returns the friendly name for the i-th monitor. Screens and
+// WMI identities are paired by ordinal because neither side exposes a shared
+// key without EnumDisplayDevices; on mixed-monitor systems this can pair a
+// name with a neighbouring screen, which is acceptable for a diagnostic
+// listing and never leaks anything machine-specific.
+func identityName(idents []monitorIdentity, i int, fallback string) string {
+	if i < len(idents) {
+		if n := friendlyMonitorName(idents[i]); n != "" {
+			return n
+		}
+	}
+	return fallback
+}
+
+func identityOutputType(idents []monitorIdentity, i int) string {
+	if i < len(idents) && idents[i].OutputType != "" {
+		return idents[i].OutputType
+	}
+	return "Unknown"
+}
+
+// friendlyMonitorName builds e.g. "DEL DELL U2720Q" from the EDID fields.
+func friendlyMonitorName(id monitorIdentity) string {
+	return strings.TrimSpace(strings.TrimSpace(id.Manufacturer) + " " + strings.TrimSpace(id.FriendlyName))
+}
+
+func queryVideoControllers(timeout int, errs *[]types.CollectorError) []wmiVideoController {
+	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command", videoControllerScript)
 	if r.Err != nil {
 		*errs = append(*errs, types.CollectorError{
 			Collector: "windows.display",
@@ -75,156 +228,135 @@ func queryVideoControllers(timeout int, errs *[]types.CollectorError) []wmiVideo
 		})
 		return nil
 	}
-
-	output := strings.TrimSpace(r.Stdout)
-	if output == "" {
+	ctls, err := parseVideoControllerJSON(r.Stdout)
+	if err != nil {
 		*errs = append(*errs, types.CollectorError{
 			Collector: "windows.display",
-			Error:     "Win32_VideoController returned empty output",
+			Error:     "Could not parse Win32_VideoController output: " + err.Error(),
+		})
+	}
+	return ctls
+}
+
+func queryScreens(timeout int, errs *[]types.CollectorError) []screenInfo {
+	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command", screensScript)
+	if r.Err != nil {
+		*errs = append(*errs, types.CollectorError{
+			Collector: "windows.display.screens",
+			Error:     "Failed to enumerate screens: " + r.Err.Error(),
 		})
 		return nil
 	}
-
-	return parseVideoControllerJSON(output)
-}
-
-// parseVideoControllerJSON parses the PowerShell ConvertTo-Json output.
-// The output may be a single JSON object (one GPU) or an array (multiple GPUs).
-// We parse manually to avoid importing encoding/json, using only the standard
-// library string/regexp/strconv.
-func parseVideoControllerJSON(raw string) []wmiVideoController {
-	var controllers []wmiVideoController
-
-	// Split into individual object blocks by looking for { ... } pairs
-	// This handles both single objects and arrays.
-	blocks := extractJSONObjects(raw)
-
-	for _, block := range blocks {
-		ctl := wmiVideoController{}
-		ctl.Name = extractJSONStringField(block, "Name")
-		ctl.CurrentHorizontalResolution = extractJSONIntField(block, "CurrentHorizontalResolution")
-		ctl.CurrentVerticalResolution = extractJSONIntField(block, "CurrentVerticalResolution")
-		ctl.CurrentRefreshRate = extractJSONIntField(block, "CurrentRefreshRate")
-		ctl.AdapterCompatibility = extractJSONStringField(block, "AdapterCompatibility")
-		controllers = append(controllers, ctl)
+	screens, err := parseScreensJSON(r.Stdout)
+	if err != nil {
+		*errs = append(*errs, types.CollectorError{
+			Collector: "windows.display.screens",
+			Error:     "Could not parse screen enumeration: " + err.Error(),
+		})
 	}
-
-	return controllers
+	return screens
 }
 
-// extractJSONObjects splits a JSON string (single object or array) into
-// individual object strings.
-func extractJSONObjects(raw string) []string {
-	var objects []string
-	depth := 0
-	start := -1
-
-	for i, ch := range raw {
-		switch ch {
-		case '{':
-			if depth == 0 {
-				start = i
-			}
-			depth++
-		case '}':
-			depth--
-			if depth == 0 && start >= 0 {
-				objects = append(objects, raw[start:i+1])
-				start = -1
-			}
-		}
-	}
-
-	return objects
-}
-
-// extractJSONStringField extracts a string value for a given key from a JSON
-// object string using regexp.
-func extractJSONStringField(obj, key string) string {
-	re := regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `"\s*:\s*"([^"]*)"`)
-	m := re.FindStringSubmatch(obj)
-	if len(m) >= 2 {
-		return m[1]
-	}
-	return ""
-}
-
-// extractJSONIntField extracts an integer value for a given key from a JSON
-// object string using regexp.
-func extractJSONIntField(obj, key string) int {
-	re := regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `"\s*:\s*(\d+)`)
-	m := re.FindStringSubmatch(obj)
-	if len(m) >= 2 {
-		n, err := strconv.Atoi(m[1])
-		if err == nil {
-			return n
-		}
-	}
-	return 0
-}
-
-// queryHDRStatus checks the Windows registry for HDR enablement.
-func queryHDRStatus(timeout int, errs *[]types.CollectorError) bool {
-	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
-		`try { (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name EnableHDR -ErrorAction Stop).EnableHDR } catch { "NotFound" }`)
-
+func queryMonitorIdentities(timeout int, errs *[]types.CollectorError) []monitorIdentity {
+	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command", monitorIdentityScript)
 	if r.Err != nil {
 		*errs = append(*errs, types.CollectorError{
-			Collector: "windows.display.hdr",
-			Error:     "Failed to query HDR registry key: " + r.Err.Error(),
+			Collector: "windows.display.monitorid",
+			Error:     "Failed to query WmiMonitorID: " + r.Err.Error(),
 		})
-		return false
+		return nil
 	}
-
-	val := strings.TrimSpace(r.Stdout)
-	return val == "1"
+	return parseMonitorIdentityLines(r.Stdout)
 }
 
-// queryGSyncStatus checks the Windows registry for G-Sync/VRR enablement.
-func queryGSyncStatus(timeout int, errs *[]types.CollectorError) bool {
-	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
-		`try { (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\GSync' -ErrorAction Stop) | Out-String } catch { "NotFound" }`)
-
-	if r.Err != nil {
-		*errs = append(*errs, types.CollectorError{
-			Collector: "windows.display.gsync",
-			Error:     "Failed to query G-Sync registry key: " + r.Err.Error(),
-		})
-		return false
+// parseVideoControllerJSON parses ConvertTo-Json output, which is a bare
+// object for one adapter and an array for several. Null numeric fields
+// (headless adapters) decode to zero.
+func parseVideoControllerJSON(raw string) ([]wmiVideoController, error) {
+	var ctls []wmiVideoController
+	if err := unmarshalObjectOrArray(raw, &ctls); err != nil {
+		return nil, err
 	}
-
-	val := strings.TrimSpace(r.Stdout)
-	// If the key exists and is not "NotFound", G-Sync support is present.
-	// Look for a value indicating enablement.
-	if val == "NotFound" || val == "" {
-		return false
-	}
-
-	// Check if output contains an enabled indicator
-	lower := strings.ToLower(val)
-	return strings.Contains(lower, "1") || strings.Contains(lower, "true") || strings.Contains(lower, "enabled")
+	return ctls, nil
 }
 
-// inferOutputTypeWindows attempts to determine the display output type from
-// the adapter name and compatibility string.
-func inferOutputTypeWindows(name, adapterCompat string) string {
-	combined := strings.ToLower(name + " " + adapterCompat)
+// parseScreensJSON parses the AllScreens ConvertTo-Json output (object or
+// array). Entries with zero-size bounds are dropped by the callers.
+func parseScreensJSON(raw string) ([]screenInfo, error) {
+	var screens []screenInfo
+	if err := unmarshalObjectOrArray(raw, &screens); err != nil {
+		return nil, err
+	}
+	return screens, nil
+}
 
-	if strings.Contains(combined, "displayport") || strings.Contains(combined, " dp") {
-		return "DP"
+// parseMonitorIdentityLines parses "MFR|Friendly name|True|10" lines.
+func parseMonitorIdentityLines(out string) []monitorIdentity {
+	var idents []monitorIdentity
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 2 {
+			continue
+		}
+		id := monitorIdentity{
+			Manufacturer: strings.TrimSpace(parts[0]),
+			FriendlyName: strings.TrimSpace(parts[1]),
+			Active:       true, // older drivers omit Active; assume connected
+		}
+		if len(parts) >= 3 && strings.TrimSpace(parts[2]) != "" {
+			id.Active = strings.EqualFold(strings.TrimSpace(parts[2]), "True")
+		}
+		if len(parts) >= 4 {
+			if code, err := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64); err == nil {
+				id.OutputType = videoOutputTechnologyName(code)
+			}
+		}
+		idents = append(idents, id)
 	}
-	if strings.Contains(combined, "hdmi") {
-		return "HDMI"
-	}
-	if strings.Contains(combined, "usb-c") || strings.Contains(combined, "usb c") {
-		return "USB-C"
-	}
-	if strings.Contains(combined, "dvi") {
-		return "DVI"
-	}
-	if strings.Contains(combined, "vga") {
+	return idents
+}
+
+// videoOutputTechnologyName maps D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY values.
+// USB-C DisplayPort alt-mode reports as external DisplayPort (10).
+func videoOutputTechnologyName(code int64) string {
+	switch code {
+	case 0:
 		return "VGA"
+	case 4:
+		return "DVI"
+	case 5:
+		return "HDMI"
+	case 6, 11, 13, 0x80000000:
+		return "Internal"
+	case 10:
+		return "DP"
+	case 12:
+		return "UDI"
+	case 15:
+		return "Miracast"
+	default:
+		return ""
 	}
+}
 
-	return "Unknown"
+// unmarshalObjectOrArray accepts either a JSON array or a single JSON object
+// (PowerShell's ConvertTo-Json emits a bare object for one-element input).
+func unmarshalObjectOrArray[T any](raw string, out *[]T) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		return json.Unmarshal([]byte(raw), out)
+	}
+	var one T
+	if err := json.Unmarshal([]byte(raw), &one); err != nil {
+		return err
+	}
+	*out = append(*out, one)
+	return nil
 }

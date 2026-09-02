@@ -14,14 +14,11 @@ func DetectWSL(timeout int) (types.WSLInfo, []types.CollectorError) {
 	var info types.WSLInfo
 	var errs []types.CollectorError
 
+	// IsWSL means "this process is running inside a WSL distro". A Windows
+	// host is by definition not inside WSL, so there is nothing to probe: the
+	// previous "wsl --status" call spawned wsl.exe (slow, UTF-16 output,
+	// absent on many machines) and then discarded its answer.
 	if runtime.GOOS != "linux" {
-		// On Windows, check if WSL is available
-		if runtime.GOOS == "windows" {
-			r := util.RunCommand(timeout, "wsl", "--status")
-			if r.Err == nil {
-				info.IsWSL = false // We're on the host side
-			}
-		}
 		return info, errs
 	}
 
