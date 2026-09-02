@@ -194,6 +194,11 @@ type LinuxInfo struct {
 	XidErrors          []XidError      `json:"xid_errors,omitempty"`
 	LlvmpipeFallback   bool            `json:"llvmpipe_fallback"`
 	GLRenderer         string          `json:"gl_renderer,omitempty"`
+
+	// GSP/SEC2 boot-failure lines from the kernel log (spec 3.2 "GSP failure"),
+	// collected on GB10 by linux.CollectNVRMMessages independently of
+	// --include-logs so dgx-spark-gsp-init-failure can fire without it.
+	GSPFailureLines []string `json:"gsp_failure_lines,omitempty"`
 }
 
 // AIInfo holds AI/CUDA framework info
@@ -512,6 +517,22 @@ type PlatformInfo struct {
 	GDMSleepPolicy      string         `json:"gdm_sleep_policy,omitempty"`
 	SuspendAttempts     int            `json:"suspend_attempts,omitempty"`
 	SuspendFailed       bool           `json:"suspend_failed,omitempty"`
+	UncleanBoots        int            `json:"unclean_boots,omitempty"` // boots in the journal window that ended without a clean-shutdown marker (gb10-logless-hard-poweroff)
+
+	// RTX Spark adapter facts on Windows on Arm (spec 3.1 row 2, 3.2, section 8).
+	WoA *WoAInfo `json:"woa,omitempty"`
+}
+
+// WoAInfo holds the Windows-on-Arm adapter and toolkit facts that spec
+// section 8 assigns to the Windows collectors (windows.CollectWoA).
+type WoAInfo struct {
+	AdapterName      string `json:"adapter_name,omitempty"`   // Win32_VideoController.Name, e.g. "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+	PNPDeviceID      string `json:"pnp_device_id,omitempty"`  // PCI\VEN_10DE&DEV_2E03&SUBSYS_...
+	DriverVersion    string `json:"driver_version,omitempty"` // WDDM DriverVersion, expected to end in 16.1600 for 616.00
+	InfFilename      string `json:"inf_filename,omitempty"`   // e.g. nv_surface_woa.inf
+	DeveloperPreview bool   `json:"developer_preview"`        // DriverVersion ends 16.1600 or INF nv_surface_woa.inf
+	NvccMachine      string `json:"nvcc_machine,omitempty"`   // PE machine type of nvcc.exe: ARM64 | AMD64 | I386 | 0x....
+	NvccPath         string `json:"nvcc_path,omitempty"`
 }
 
 // DGXOSInfo holds DGX OS release, OTA, package and service state read on
