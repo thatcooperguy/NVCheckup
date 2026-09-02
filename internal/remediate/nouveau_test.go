@@ -2,6 +2,8 @@ package remediate
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -200,5 +202,100 @@ func TestCheckNouveauRestorable(t *testing.T) {
 	// never record something undo would later refuse.
 	if validateUndoInfo("blacklist-nouveau", b.String()) == nil {
 		t.Error("validateUndoInfo must reject oversized content too")
+	}
+}
+
+func TestDkmsStatusHasInstalledNvidia(t *testing.T) {
+	const k = "6.8.0-40-generic"
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"dkms3 installed", "nvidia/550.107.02, 6.8.0-40-generic, x86_64: installed\n", true},
+		{"dkms2 installed", "nvidia, 550.107.02, 6.8.0-40-generic, x86_64: installed\n", true},
+		{"installed with warning", "nvidia/550.107.02, 6.8.0-40-generic, x86_64: installed (WARNING! Diff between built and installed module!)\n", true},
+		{"only other kernel", "nvidia/550.107.02, 6.5.0-28-generic, x86_64: installed\n", false},
+		{"added not built", "nvidia/550.107.02: added\n", false},
+		{"built not installed", "nvidia/550.107.02, 6.8.0-40-generic, x86_64: built\n", false},
+		{"other module installed", "v4l2loopback/0.12.7, 6.8.0-40-generic, x86_64: installed\n", false},
+		{"empty", "", false},
+		{"mixed", "nvidia/550.107.02, 6.5.0-28-generic, x86_64: installed\nnvidia/550.107.02, 6.8.0-40-generic, x86_64: installed\n", true},
+	}
+	for _, c := range cases {
+		if got := dkmsStatusHasInstalledNvidia(c.out, k); got != c.want {
+			t.Errorf("%s: dkmsStatusHasInstalledNvidia = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if dkmsStatusHasInstalledNvidia("nvidia/550, 6.8.0-40-generic, x86_64: installed", "") {
+		t.Error("unknown running kernel must never match")
+	}
+}
+
+func TestFindBuiltNvidiaModule(t *testing.T) {
+	root := t.TempDir()
+	if got := findBuiltNvidiaModule(root); got != "" {
+		t.Errorf("empty module tree should yield no module, got %q", got)
+	}
+	if got := findBuiltNvidiaModule(filepath.Join(root, "does-not-exist")); got != "" {
+		t.Errorf("missing directory should yield no module, got %q", got)
+	}
+	if got := findBuiltNvidiaModule(""); got != "" {
+		t.Errorf("empty path should yield no module, got %q", got)
+	}
+
+	// Decoys: a userspace library and a differently named module.
+	mk := func(rel string) string {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mk("kernel/drivers/gpu/drm/nouveau/nouveau.ko.zst")
+	mk("kernel/drivers/video/nvidia-uvm.ko")
+	if got := findBuiltNvidiaModule(root); got != "" {
+		t.Errorf("decoys must not count as the nvidia module, got %q", got)
+	}
+	want := mk("updates/dkms/nvidia.ko.zst")
+	if got := findBuiltNvidiaModule(root); got != want {
+		t.Errorf("findBuiltNvidiaModule = %q, want %q", got, want)
+	}
+}
+
+func TestIsNvidiaModuleFile(t *testing.T) {
+	for _, n := range []string{"nvidia.ko", "nvidia.ko.xz", "nvidia.ko.zst", "nvidia.ko.gz"} {
+		if !isNvidiaModuleFile(n) {
+			t.Errorf("%s should be recognised", n)
+		}
+	}
+	for _, n := range []string{"nvidia-uvm.ko", "nvidia_drm.ko", "libnvidia.so", "nvidia.kop", "nouveau.ko"} {
+		if isNvidiaModuleFile(n) {
+			t.Errorf("%s must not be recognised", n)
+		}
+	}
+}
+
+func TestDriverInstallVerdict(t *testing.T) {
+	if ev, ok := driverInstallVerdict(true, "", "", ""); !ok || !strings.Contains(ev, "modinfo") {
+		t.Errorf("modinfo success must be sufficient: %q %v", ev, ok)
+	}
+	if ev, ok := driverInstallVerdict(false, "dpkg -l", "a built module exists (x)", "6.8.0"); !ok || !strings.Contains(ev, "dpkg -l") {
+		t.Errorf("package + module must pass: %q %v", ev, ok)
+	}
+	ev, ok := driverInstallVerdict(false, "dpkg -l", "", "6.8.0-40-generic")
+	if ok {
+		t.Fatal("package without a built module must be refused")
+	}
+	for _, want := range []string{"dpkg -l", "6.8.0-40-generic", "DKMS", "no nvidia kernel module is built"} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("refusal reason should mention %q: %s", want, ev)
+		}
+	}
+	if ev, ok := driverInstallVerdict(false, "", "", ""); ok || !strings.Contains(ev, "no NVIDIA driver detected") {
+		t.Errorf("nothing found must be refused with a plain reason: %q %v", ev, ok)
 	}
 }

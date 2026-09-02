@@ -64,6 +64,14 @@ func TestParsePCIeCSV(t *testing.T) {
 		// Low utilization at P0 counts as idle, so a gen drop is tolerated.
 		{"p0 low util", "1, 4, 16, 16, P0, 5", false, true, "P0", 5, "Gen1", "x16"},
 		{"full speed", "4, 4, 16, 16, P0, 99", false, false, "P0", 99, "Gen4", "x16"},
+		// Unknown load state (pstate and utilization both [N/A]): a Gen1 link is
+		// neither a confirmed downshift nor confirmed idle. The analyzer needs
+		// positive load evidence before warning, so the collector must agree.
+		{"gen1 unknown load", "1, 4, 16, 16, [N/A], [N/A]", false, false, "", 0, "Gen1", "x16"},
+		// P0 alone is positive load evidence even without a utilization figure.
+		{"gen1 p0 no util", "1, 4, 16, 16, P0, [N/A]", true, false, "P0", 0, "Gen1", "x16"},
+		// Width below max is a fault even with unknown load.
+		{"width x8 unknown load", "4, 4, 8, 16, [N/A], [N/A]", true, false, "", 0, "Gen4", "x8"},
 	}
 	for _, tt := range tests {
 		info, errs := parsePCIeCSV(tt.line)
@@ -111,6 +119,21 @@ func TestParsePCIeCSV_Malformed(t *testing.T) {
 	_, errs := parsePCIeCSV("x, 4, 16, 16, P0, 99")
 	if len(errs) != 1 || errs[0].Collector != "pcie.current_gen" {
 		t.Errorf("expected one current_gen error, got %+v", errs)
+	}
+}
+
+func TestIsActivePState(t *testing.T) {
+	active := []string{"P0", "P1", "P2", "P3", "P4", "p0"}
+	notActive := []string{"P5", "P8", "P12", "", "[N/A]", "N/A", "P13", "Px"}
+	for _, p := range active {
+		if !isActivePState(p) {
+			t.Errorf("isActivePState(%q) = false, want true", p)
+		}
+	}
+	for _, p := range notActive {
+		if isActivePState(p) {
+			t.Errorf("isActivePState(%q) = true, want false", p)
+		}
 	}
 }
 

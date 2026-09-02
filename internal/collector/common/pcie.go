@@ -121,28 +121,51 @@ func parsePCIeCSV(line string) (types.PCIeInfo, []types.CollectorError) {
 	// parsed utilization counts; an unknown value must not read as "0% = idle".
 	info.IdleLikely = isIdlePState(info.PowerState) || (haveUtil && utilPct < idleUtilizationPct)
 
+	// Load detection needs positive evidence: an active P-state (P0..P4) or a
+	// parsed utilization at or above the idle threshold. When both fields are
+	// [N/A] we know nothing about load, and "not idle" must not be read as
+	// "busy". This mirrors the analyzer's pcieUnderLoad rule.
+	underLoad := isActivePState(info.PowerState) || (haveUtil && utilPct >= idleUtilizationPct)
+
 	// Width below max is always a fault (a bent pin, bad riser, or wrong slot
 	// cannot be explained by power saving). Gen below max only matters when the
-	// GPU is actually busy; idle GPUs routinely sit at Gen1.
+	// GPU is demonstrably busy; idle GPUs routinely sit at Gen1, and an unknown
+	// state is not evidence either way.
 	widthDownshift := haveCurrentWidth && haveMaxWidth && currentWidth > 0 && maxWidth > 0 && currentWidth < maxWidth
 	genDownshift := haveCurrentGen && haveMaxGen && currentGen > 0 && maxGen > 0 && currentGen < maxGen
-	info.Downshifted = widthDownshift || (genDownshift && !info.IdleLikely)
+	info.Downshifted = widthDownshift || (genDownshift && underLoad && !info.IdleLikely)
 
 	return info, errs
+}
+
+// parsePState parses an nvidia-smi pstate string (P0..P12) into its number.
+// ok is false for empty, "[N/A]", or malformed values.
+func parsePState(pstate string) (int, bool) {
+	p := strings.ToUpper(strings.TrimSpace(pstate))
+	if !strings.HasPrefix(p, "P") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(p[1:])
+	if err != nil || n < 0 || n > 12 {
+		return 0, false
+	}
+	return n, true
 }
 
 // isIdlePState reports whether an nvidia-smi pstate string (P0..P12) is one of
 // the power-saving states P5 and above.
 func isIdlePState(pstate string) bool {
-	p := strings.ToUpper(strings.TrimSpace(pstate))
-	if !strings.HasPrefix(p, "P") {
-		return false
-	}
-	n, err := strconv.Atoi(p[1:])
-	if err != nil {
-		return false
-	}
-	return n >= 5 && n <= 12
+	n, ok := parsePState(pstate)
+	return ok && n >= 5
+}
+
+// isActivePState reports whether an nvidia-smi pstate string is one of the
+// performance states P0..P4, which is positive evidence that the GPU was
+// busy when the link was sampled (some mobile parts and video workloads sit
+// in P3/P4 under load).
+func isActivePState(pstate string) bool {
+	n, ok := parsePState(pstate)
+	return ok && n <= 4
 }
 
 // formatPCIeGen formats a PCIe generation number as "GenN".

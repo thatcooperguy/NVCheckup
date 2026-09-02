@@ -35,35 +35,66 @@ func CollectAIInfo(timeout int) (types.AIInfo, []types.CollectorError) {
 	return info, errs
 }
 
+// nvccReleaseRe matches the release field of "nvcc --version":
+//
+//	Cuda compilation tools, release 12.4, V12.4.131
+var nvccReleaseRe = regexp.MustCompile(`release\s+(\d+(?:\.\d+)*)`)
+
+// cudaDirVersionRe extracts the version from an install directory such as
+// /usr/local/cuda-12.4 or /opt/cuda-12.4.
+var cudaDirVersionRe = regexp.MustCompile(`cuda[- ]?(\d+(?:\.\d+)*)`)
+
+// parseNvccVersion returns the toolkit release ("12.4") from nvcc --version
+// output, or "" when the release line is missing.
+func parseNvccVersion(output string) string {
+	if m := nvccReleaseRe.FindStringSubmatch(output); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// cudaVersionFromPath extracts a toolkit version embedded in an install path
+// ("/usr/local/cuda-12.4" -> "12.4"), or "" when the path carries none.
+func cudaVersionFromPath(path string) string {
+	if m := cudaDirVersionRe.FindStringSubmatch(path); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// linuxCudaHome is the conventional toolkit location on Linux. It is usually a
+// symlink, and on Debian/Ubuntu often a symlink to /etc/alternatives/cuda
+// which in turn points at the versioned directory, so it must be resolved
+// fully before the version can be read from the path.
+const linuxCudaHome = "/usr/local/cuda"
+
 func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	// Check nvcc
+	// Check nvcc on PATH
 	if util.CommandExists("nvcc") {
 		r := util.RunCommand(timeout, "nvcc", "--version")
 		if r.Err == nil {
 			info.NvccPath = "nvcc"
-			// Parse version: "Cuda compilation tools, release 12.2, V12.2.140"
-			re := regexp.MustCompile(`release\s+([\d.]+)`)
-			if m := re.FindStringSubmatch(r.Stdout); m != nil {
-				info.CUDAToolkitVersion = m[1]
-			}
+			info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
 		}
 	}
 
-	// On Linux, check /usr/local/cuda symlink
+	// On Linux, follow /usr/local/cuda (through /etc/alternatives when present)
 	if runtime.GOOS == "linux" {
-		if target, err := os.Readlink("/usr/local/cuda"); err == nil {
-			if info.CUDAToolkitVersion == "" {
-				// Extract version from path like /usr/local/cuda-12.2
-				re := regexp.MustCompile(`cuda[- ]?([\d.]+)`)
-				if m := re.FindStringSubmatch(target); m != nil {
-					info.CUDAToolkitVersion = m[1]
-				}
-			}
-			if info.NvccPath == "" {
-				nvccPath := filepath.Join(target, "bin", "nvcc")
-				if _, err := os.Stat(nvccPath); err == nil {
+		if target, err := filepath.EvalSymlinks(linuxCudaHome); err == nil {
+			nvccPath := filepath.Join(target, "bin", "nvcc")
+			if _, err := os.Stat(nvccPath); err == nil {
+				if info.NvccPath == "" {
 					info.NvccPath = nvccPath
 				}
+				if info.CUDAToolkitVersion == "" {
+					r := util.RunCommand(timeout, nvccPath, "--version")
+					if r.Err == nil {
+						info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
+					}
+				}
+			}
+			if info.CUDAToolkitVersion == "" {
+				info.CUDAToolkitVersion = cudaVersionFromPath(target)
 			}
 		}
 	}
@@ -77,11 +108,10 @@ func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeou
 				if info.NvccPath == "" {
 					info.NvccPath = nvccPath
 				}
-				r := util.RunCommand(timeout, nvccPath, "--version")
-				if r.Err == nil && info.CUDAToolkitVersion == "" {
-					re := regexp.MustCompile(`release\s+([\d.]+)`)
-					if m := re.FindStringSubmatch(r.Stdout); m != nil {
-						info.CUDAToolkitVersion = m[1]
+				if info.CUDAToolkitVersion == "" {
+					r := util.RunCommand(timeout, nvccPath, "--version")
+					if r.Err == nil {
+						info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
 					}
 				}
 			}

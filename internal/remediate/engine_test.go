@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -498,5 +499,77 @@ func TestUndo_MatchingEntryIsMarkedUndone(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].UndoneAt.IsZero() || !entries[0].UndoSuccess || entries[0].UndoOutput != "successfully undone" {
 		t.Errorf("journal entry should be marked undone, got %+v", entries[0])
+	}
+}
+
+func TestResolveSystemCommand(t *testing.T) {
+	root := `C:\WINDOWS`
+	sys32 := func(base string) string { return filepath.Join(root, "System32", base+".exe") }
+	exists := func(p string) bool { return p == sys32("reg") || p == sys32("powercfg") }
+	cases := []struct {
+		goos, name, want string
+	}{
+		{"windows", "reg", sys32("reg")},
+		{"windows", "REG.exe", sys32("reg")},
+		{"windows", "powercfg", sys32("powercfg")},
+		// whoami is in the allow-list but the predicate says System32 lacks it: bare name.
+		{"windows", "whoami", "whoami"},
+		// Not a privileged system tool: untouched.
+		{"windows", "nvidia-smi", "nvidia-smi"},
+		// Already a path: untouched (never re-rooted under System32).
+		{"windows", `D:\tools\reg.exe`, `D:\tools\reg.exe`},
+		{"windows", "./reg", "./reg"},
+		// Other OSes never resolve.
+		{"linux", "reg", "reg"},
+	}
+	for _, c := range cases {
+		if got := resolveSystemCommand(c.goos, root, c.name, exists); got != c.want {
+			t.Errorf("resolveSystemCommand(%s, %q) = %q, want %q", c.goos, c.name, got, c.want)
+		}
+	}
+	if got := resolveSystemCommand("windows", "", "reg", exists); got != "reg" {
+		t.Errorf("without SystemRoot the bare name must be kept, got %q", got)
+	}
+}
+
+func TestResolveCommandOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("System32 resolution only applies on Windows")
+	}
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		t.Skip("SystemRoot not set")
+	}
+	for _, name := range []string{"reg", "powercfg", "whoami", "net"} {
+		got := resolveCommand(name)
+		want := filepath.Join(root, "System32", name+".exe")
+		if !strings.EqualFold(got, want) {
+			t.Errorf("resolveCommand(%q) = %q, want %q", name, got, want)
+		}
+		if !fileExists(got) {
+			t.Errorf("resolved %q does not exist", got)
+		}
+	}
+	if got := resolveCommand("nvidia-smi"); got != "nvidia-smi" {
+		t.Errorf("non-system command must stay bare, got %q", got)
+	}
+	// The resolved reg.exe must actually run: this is what "fix --dry-run"
+	// previews depend on.
+	out, err := (&DefaultExecutor{}).Run("reg", "query", `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`, "/v", "CurrentBuild")
+	if err != nil || !strings.Contains(out, "CurrentBuild") {
+		t.Errorf("System32 reg.exe query failed: %v: %s", err, out)
+	}
+}
+
+func TestDefaultExecutorMissingBinaryIsNotTimeout(t *testing.T) {
+	// A command that cannot start must surface the exec error, not the
+	// timeout message (the timeout path itself is not exercised here because
+	// it would take defaultExecTimeout to trigger).
+	_, err := (&DefaultExecutor{}).Run("nvcheckup-definitely-missing-binary-xyz")
+	if err == nil {
+		t.Fatal("expected an error for a missing binary")
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Errorf("missing binary must not be reported as a timeout: %v", err)
 	}
 }

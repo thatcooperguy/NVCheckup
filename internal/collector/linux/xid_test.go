@@ -3,8 +3,12 @@
 package linux
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/thatcooperguy/nvcheckup/internal/util"
 )
 
 func TestParseXidTimestampDmesgIsBootTimePlusOffset(t *testing.T) {
@@ -67,5 +71,55 @@ func TestParseAndGroupXidErrors(t *testing.T) {
 	}
 	if got[1].Code != 79 || got[1].Count != 1 || !got[1].Timestamp.Equal(boot.Add(200*time.Second)) {
 		t.Errorf("second group = %+v", got[1])
+	}
+}
+
+func TestFilterXidLines(t *testing.T) {
+	dmesg := "[    0.000000] Linux version 6.8.0-40-generic\n" +
+		"[   12.345678] NVRM: loading NVIDIA UNIX x86_64 Kernel Module  550.107.02\n" +
+		"[ 1234.567890] NVRM: Xid (PCI:0000:01:00): 79, pid=1234, GPU has fallen off the bus.\n" +
+		"[ 1300.000000] nvrm: xid (PCI:0000:01:00): 31, pid=1, Ch 00000010\n" +
+		"[ 1400.000000] nouveau 0000:01:00.0: fifo: fault\n"
+	got := filterXidLines(dmesg)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 Xid lines, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "79") || !strings.Contains(got[1], "31") {
+		t.Errorf("unexpected lines: %v", got)
+	}
+	if got := filterXidLines("[ 0.1] nothing here\n[ 0.2] NVRM: loaded\n"); len(got) != 0 {
+		t.Errorf("healthy log must yield no lines, got %v", got)
+	}
+	if got := filterXidLines(""); len(got) != 0 {
+		t.Errorf("empty output must yield no lines, got %v", got)
+	}
+}
+
+func TestToolFailure(t *testing.T) {
+	if d := toolFailure(util.CommandResult{Stdout: "ok"}); d != "" {
+		t.Errorf("success must not be a failure, got %q", d)
+	}
+	// grep-style "nothing matched": non-zero exit, nothing on stderr.
+	if d := toolFailure(util.CommandResult{Err: errors.New("exit status 1"), ExitCode: 1}); d != "" {
+		t.Errorf("silent non-zero exit must not be reported, got %q", d)
+	}
+	restricted := util.CommandResult{Err: errors.New("exit status 1"), ExitCode: 1,
+		Stderr: "dmesg: read kernel buffer failed: Operation not permitted"}
+	if d := toolFailure(restricted); !strings.Contains(d, "Operation not permitted") {
+		t.Errorf("stderr should be surfaced, got %q", d)
+	}
+	if !isPermissionDenied(restricted) {
+		t.Error("dmesg_restrict failure should be recognised as a permission problem")
+	}
+	if isPermissionDenied(util.CommandResult{Stderr: "dmesg: unknown option"}) {
+		t.Error("unrelated stderr must not be a permission problem")
+	}
+	timedOut := util.CommandResult{Err: errors.New("command timed out after 5s: dmesg"), TimedOut: true, ExitCode: -1}
+	if d := toolFailure(timedOut); !strings.Contains(d, "timed out") {
+		t.Errorf("timeouts must be reported, got %q", d)
+	}
+	multi := util.CommandResult{Err: errors.New("exit status 2"), ExitCode: 2, Stderr: "first line\nsecond line"}
+	if d := toolFailure(multi); d != "first line" {
+		t.Errorf("only the first stderr line should be used, got %q", d)
 	}
 }

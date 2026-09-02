@@ -2,6 +2,8 @@ package selftest
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/thatcooperguy/nvcheckup/internal/util"
@@ -56,5 +58,40 @@ func TestCheckElevationIsInfoEitherWay(t *testing.T) {
 	}
 	if r.Name != "Elevation" || r.Detail == "" {
 		t.Errorf("unexpected elevation row: %+v", r)
+	}
+}
+
+func TestCheckWritePermissionsUsesUniqueProbe(t *testing.T) {
+	dir := t.TempDir()
+	// A user file with the legacy fixed probe name must never be touched.
+	legacy := filepath.Join(dir, ".nvcheckup-selftest-write")
+	if err := os.WriteFile(legacy, []byte("user data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+
+	r := checkWritePermissions()
+	if r.Status != "OK" {
+		t.Fatalf("expected OK in a writable temp dir, got %+v", r)
+	}
+	data, err := os.ReadFile(legacy)
+	if err != nil || string(data) != "user data" {
+		t.Errorf("legacy-named user file was modified or removed: %q, %v", data, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != ".nvcheckup-selftest-write" {
+			t.Errorf("probe file %q was left behind", e.Name())
+		}
 	}
 }

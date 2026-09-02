@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
@@ -23,24 +24,59 @@ var packageManagers = []struct {
 	{"pacman", []string{"-Q"}},
 }
 
-// nvidiaDriverInstalled reports whether a proprietary/open NVIDIA kernel
-// driver is present, returning a short evidence string. Blacklisting nouveau
-// without a replacement driver leaves the machine with no accelerated display
-// driver at all (black screen on many desktops), so this is a hard gate.
+// modulesRoot is where the kernel looks for modules of the running kernel.
+const modulesRoot = "/lib/modules"
+
+// nvidiaDriverInstalled reports whether a usable proprietary/open NVIDIA
+// kernel driver is present, returning an evidence string (or, when ok is
+// false, the reason). Blacklisting nouveau without a replacement driver
+// leaves the machine with no accelerated display driver at all (black screen
+// on many desktops), so this is a hard gate.
+//
+// A driver package alone does not count: the package may be installed while
+// its DKMS module failed to build for the running kernel. The gate therefore
+// requires modinfo to succeed, or a package plus a built module for the
+// running kernel (an nvidia.ko* under /lib/modules/<uname -r> or a dkms
+// status line marking nvidia installed for that kernel).
 func (e *Engine) nvidiaDriverInstalled() (evidence string, ok bool) {
 	if _, err := e.executor.Run("modinfo", "nvidia"); err == nil {
-		return "kernel module 'nvidia' is available (modinfo nvidia)", true
+		return driverInstallVerdict(true, "", "", "")
 	}
+
+	packageEvidence := ""
 	for _, pm := range packageManagers {
 		out, err := e.executor.Run(pm.Name, pm.Args...)
 		if err != nil {
 			continue
 		}
 		if packageListHasNvidiaDriver(out) {
-			return fmt.Sprintf("NVIDIA driver package installed (%s)", cmdString(pm.Name, pm.Args...)), true
+			packageEvidence = cmdString(pm.Name, pm.Args...)
+			break
 		}
 	}
-	return "", false
+	if packageEvidence == "" {
+		return driverInstallVerdict(false, "", "", "")
+	}
+
+	kernel := e.runningKernel()
+	moduleEvidence := ""
+	if kernel != "" {
+		if path := findBuiltNvidiaModule(filepath.Join(modulesRoot, kernel)); path != "" {
+			moduleEvidence = "a built module exists for the running kernel (" + path + ")"
+		} else if out, err := e.executor.Run("dkms", "status"); err == nil && dkmsStatusHasInstalledNvidia(out, kernel) {
+			moduleEvidence = "dkms status reports nvidia installed for the running kernel " + kernel
+		}
+	}
+	return driverInstallVerdict(false, packageEvidence, moduleEvidence, kernel)
+}
+
+// runningKernel returns "uname -r" (trimmed), or "" when it cannot be read.
+func (e *Engine) runningKernel() string {
+	out, err := e.executor.Run("uname", "-r")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // readNouveauFile returns the current blacklist file content, absent=true when
@@ -92,10 +128,9 @@ func (e *Engine) rebuildInitramfs(tool initramfsTool) (string, error) {
 func (e *Engine) actionBlacklistNouveau() (output, undoInfo string, err error) {
 	evidence, ok := e.nvidiaDriverInstalled()
 	if !ok {
-		return "", "", fmt.Errorf("refusing to blacklist nouveau: no NVIDIA driver detected " +
-			"(modinfo nvidia failed and no nvidia driver package is installed). " +
-			"Blacklisting nouveau without a replacement driver can leave the system without a working display. " +
-			"Install the NVIDIA driver first, then re-run this fix")
+		return "", "", fmt.Errorf("refusing to blacklist nouveau: %s. "+
+			"Blacklisting nouveau without a working replacement driver can leave the system without a display. "+
+			"Install (or rebuild) the NVIDIA driver first, then re-run this fix", evidence)
 	}
 
 	existing, absent, err := readNouveauFile()
@@ -233,7 +268,7 @@ func (e *Engine) inspectBlacklistNouveau() (inspection, error) {
 	}
 	evidence, driverOK := e.nvidiaDriverInstalled()
 	if !driverOK {
-		evidence = "NO NVIDIA driver detected; apply will be refused"
+		evidence = "NO usable NVIDIA driver: " + evidence + "; apply will be refused"
 	}
 
 	insp := inspection{UndoInfo: absentSentinel}
