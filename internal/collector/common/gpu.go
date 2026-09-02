@@ -13,6 +13,29 @@ import (
 // lets each row be matched to the GPU nvidia-smi -L listed under that index.
 const GPUQueryFields = "index,driver_version,pci.bus_id,memory.total,memory.free,memory.used,temperature.gpu,power.draw"
 
+// GPUCapQueryFields is the separate, tolerant compute-capability query of
+// docs/roadmap/spark-support.md section 4. It is deliberately not part of
+// GPUQueryFields: older drivers answer 'Field "compute_cap" is not a valid
+// field to query.' with exit 2, and folding it into the main list would
+// discard every GPU row on those machines. Exported so self-test can run it.
+const GPUCapQueryFields = "index,compute_cap"
+
+// noDevicesFoundText is nvidia-smi's own message when the driver is loaded but
+// sees no GPU (spec section 3.2 lists it as part of the GB10 GSP failure).
+const noDevicesFoundText = "No devices were found"
+
+// gb10NoDevicesExplanation is appended as a note on Linux when lspci still
+// lists the GB10 [10de:2e12] while nvidia-smi reports "No devices were found":
+// on DGX Spark that pairing is the driver/GSP initialisation failure signature
+// of spec section 3.2, not a missing GPU.
+const gb10NoDevicesExplanation = "lspci lists the DGX Spark GPU [10de:2e12] but nvidia-smi reports 'No devices were found': " +
+	"on GB10 this is the driver/GSP firmware pairing failure (spec 3.2; look for 'Timeout after 6s of waiting for RPC response from GPU0 GSP!', " +
+	"'SEC2 secure boot partition timed out' or 'RmInitAdapter failed!' in dmesg), not a missing GPU"
+
+// tableMemoryNotSupported is the Memory-Usage cell nvidia-smi's table prints on
+// unified-memory GPUs (spec 2.1: Memory-Usage "Not Supported").
+const tableMemoryNotSupported = "Not Supported"
+
 // gpuListRe matches one GPU line of "nvidia-smi -L":
 //
 //	GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-xxxxx)
@@ -80,6 +103,18 @@ func collectFromNvidiaSmi(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs 
 		*errs = append(*errs, e)
 	}
 
+	// Compute capability is a separate query so that a driver rejecting the
+	// field (older releases) costs a note, never the GPU rows above.
+	r = util.RunCommand(timeout, "nvidia-smi", "--query-gpu="+GPUCapQueryFields, "--format=csv,noheader")
+	if r.Err == nil {
+		applyGPUCapRows(*gpus, r.Stdout)
+	} else {
+		*errs = append(*errs, types.CollectorError{
+			Collector: "gpu.compute_cap",
+			Error:     "nvidia-smi compute_cap query not accepted by this driver (compute capability unavailable): " + commandFailureDetail(r),
+		})
+	}
+
 	// Get CUDA version from nvidia-smi header
 	r = util.RunCommand(timeout, "nvidia-smi")
 	if r.Err == nil {
@@ -90,7 +125,59 @@ func collectFromNvidiaSmi(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs 
 		if m := cudaRe.FindStringSubmatch(r.Stdout); m != nil {
 			driver.CUDAVersion = m[1]
 		}
+		applyTableMemoryReporting(*gpus, r.Stdout)
 	}
+}
+
+// applyGPUCapRows fills GPUInfo.ComputeCap from "index, compute_cap" rows.
+// "[N/A]" (some virtual GPUs) leaves the field empty.
+func applyGPUCapRows(gpus []types.GPUInfo, out string) {
+	rows, _ := csvRows(out)
+	for i, row := range rows {
+		idx, fields := parseRowIndex(splitCSV(row), i)
+		if len(fields) == 0 {
+			continue
+		}
+		g := gpuByIndex(gpus, idx)
+		if g == nil || isNotAvailable(fields[0]) || fields[0] == "" {
+			continue
+		}
+		g.ComputeCap = fields[0]
+	}
+}
+
+// applyTableMemoryReporting marks GPUs whose memory query never answered as
+// not-supported when the nvidia-smi table shows "Not Supported" in the
+// Memory-Usage column (spec 3.1 flag rule B accepts either signal). GPUs that
+// already have a MemoryReporting value keep it.
+func applyTableMemoryReporting(gpus []types.GPUInfo, table string) {
+	if !tableShowsMemoryNotSupported(table) {
+		return
+	}
+	for i := range gpus {
+		if gpus[i].IsNVIDIA && gpus[i].MemoryReporting == "" {
+			gpus[i].MemoryReporting = MemoryReportingNotSupported
+		}
+	}
+}
+
+// tableShowsMemoryNotSupported reports whether a GPU status row of the
+// nvidia-smi table prints "Not Supported" where "usedMiB / totalMiB" belongs.
+// Header lines and the Processes section are skipped so the "N/A" of the ECC
+// column or of the process list cannot trigger it.
+func tableShowsMemoryNotSupported(table string) bool {
+	for _, l := range strings.Split(table, "\n") {
+		if strings.Contains(l, "Processes:") {
+			return false
+		}
+		if !strings.HasPrefix(strings.TrimSpace(l), "|") || strings.Contains(l, "Memory-Usage") {
+			continue
+		}
+		if strings.Contains(l, tableMemoryNotSupported) && !strings.Contains(l, "MiB /") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseGPUList parses "nvidia-smi -L" output into one GPUInfo per GPU line.
@@ -145,8 +232,16 @@ func applyGPUQueryRows(gpus []types.GPUInfo, driver *types.DriverInfo, out strin
 		if s := get(1); s != "" && !isNotAvailable(s) {
 			g.PCIBusID = s
 		}
-		if s := get(2); s != "" && !isNotAvailable(s) {
-			g.VRAMTotalMB = parseIntSafe(s)
+		// memory.total decides MemoryReporting (spec 3.1 flag rule B): a
+		// number is dedicated VRAM, "[N/A]" is a unified-memory GPU whose
+		// memory NVML cannot report (GB10: "[N/A], [N/A], [N/A]").
+		if s := get(2); s != "" {
+			if isNotAvailable(s) {
+				g.MemoryReporting = MemoryReportingNotSupported
+			} else {
+				g.VRAMTotalMB = parseIntSafe(s)
+				g.MemoryReporting = MemoryReportingDedicated
+			}
 		}
 		if s := get(3); s != "" && !isNotAvailable(s) {
 			g.VRAMFreeMB = parseIntSafe(s)
@@ -292,6 +387,23 @@ func collectGPUsLinux(gpus *[]types.GPUInfo, errs *[]types.CollectorError, timeo
 	}
 
 	*gpus = append(*gpus, parseLspciGPUs(r.Stdout, *gpus)...)
+
+	// DGX Spark whose driver/GSP pairing failed: nvidia-smi says "No devices
+	// were found" while the GB10 is still on the bus. Explain it once so the
+	// note is not read as "no GPU installed" (spec 3.2).
+	if LspciHasGB10(r.Stdout) && errorsMention(*errs, noDevicesFoundText) {
+		*errs = append(*errs, types.CollectorError{Collector: "gpu.gb10", Error: gb10NoDevicesExplanation})
+	}
+}
+
+// errorsMention reports whether any collector error text contains needle.
+func errorsMention(errs []types.CollectorError, needle string) bool {
+	for _, e := range errs {
+		if strings.Contains(e.Error, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 var lspciGPURe = regexp.MustCompile(`^([0-9a-f:.]+)\s+(?:VGA|3D|Display).*?:\s+(.+?)\s*\[([0-9a-f]{4}):([0-9a-f]{4})\]`)
