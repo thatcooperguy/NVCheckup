@@ -91,10 +91,46 @@ func TestDescribeToggle(t *testing.T) {
 	}
 }
 
+func TestEventQueryScriptFiltersZeroEventsByFQID(t *testing.T) {
+	// The "no events" record must be dropped by its locale-independent
+	// FullyQualifiedErrorId, not only by the English message text, so a
+	// healthy non-English machine is reported as 0 events rather than as
+	// "could not read the System log".
+	script := eventQueryScript("Id=4101", 50)
+	if !containsSubstring([]string{script}, "$_.FullyQualifiedErrorId -notmatch '^"+noMatchingEventsFQID+"'") {
+		t.Errorf("script does not filter on FullyQualifiedErrorId %q:\n%s", noMatchingEventsFQID, script)
+	}
+	if noMatchingEventsFQID != "NoMatchingEventsFound" {
+		t.Errorf("FQID constant drifted from PowerShell's GetWinEventCommand id: %q", noMatchingEventsFQID)
+	}
+	if !containsSubstring([]string{script}, "exit 0") || !containsSubstring([]string{script}, "$ErrorActionPreference = 'SilentlyContinue'") {
+		t.Errorf("script must always exit 0 with SilentlyContinue:\n%s", script)
+	}
+}
+
 func TestParsePowerPlanScheme(t *testing.T) {
 	name, guid := parsePowerPlanScheme("Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)\r\n")
 	if name != "Balanced" || guid != "381b4222-f694-41f0-9685-ff5bb260df2e" {
 		t.Errorf("got name=%q guid=%q", name, guid)
+	}
+	// Localized powercfg does not print the literal "GUID:" token before the
+	// GUID; the parser must still find it and the label must canonicalise.
+	localized := []struct{ line, wantName string }{
+		{"GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)", "Ausbalanciert"},
+		{"GUID du mode de gestion de l'alimentation : 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (Performances élevées)", "Performances élevées"},
+	}
+	wantCanonical := []string{"Balanced", "High performance"}
+	for i, c := range localized {
+		n, g := parsePowerPlanScheme(c.line + "\r\n")
+		if n != c.wantName || g == "" {
+			t.Errorf("localized parse of %q: name=%q guid=%q", c.line, n, g)
+		}
+		if got := powerPlanLabel(n, g); got != wantCanonical[i] {
+			t.Errorf("localized label for %q = %q, want %q", c.line, got, wantCanonical[i])
+		}
+	}
+	if _, g := parsePowerPlanScheme("Power Scheme GUID: 381B4222-F694-41F0-9685-FF5BB260DF2E  (Balanced)"); g != "381b4222-f694-41f0-9685-ff5bb260df2e" {
+		t.Errorf("GUID not lower-cased: %q", g)
 	}
 	// Names may themselves contain parentheses and must survive whole.
 	name, _ = parsePowerPlanScheme("Power Scheme GUID: 11111111-2222-3333-4444-555555555555  (My plan (custom))")
@@ -159,8 +195,13 @@ func TestParseScreensJSON(t *testing.T) {
 		t.Fatalf("array parse: err=%v screens=%+v", err, screens)
 	}
 	screens, err = parseScreensJSON(`{"DeviceName":"\\\\.\\DISPLAY1","Primary":true,"W":2560,"H":1440}`)
-	if err != nil || len(screens) != 1 || screens[0].Height != 1440 {
-		t.Fatalf("single-object parse: err=%v screens=%+v", err, screens)
+	if err != nil || len(screens) != 1 || screens[0].Height != 1440 || screens[0].RefreshHz != 0 {
+		t.Fatalf("single-object parse (no Hz field): err=%v screens=%+v", err, screens)
+	}
+	// Captured from screensScript with the EnumDisplaySettings P/Invoke.
+	screens, err = parseScreensJSON(`[{"DeviceName":"\\\\.\\DISPLAY1","Primary":false,"W":3840,"H":2160,"Hz":60},{"DeviceName":"\\\\.\\DISPLAY2","Primary":true,"W":2560,"H":1440,"Hz":144}]`)
+	if err != nil || len(screens) != 2 || screens[0].RefreshHz != 60 || screens[1].RefreshHz != 144 {
+		t.Fatalf("per-monitor Hz parse: err=%v screens=%+v", err, screens)
 	}
 	if screens, err := parseScreensJSON(""); err != nil || len(screens) != 0 {
 		t.Errorf("empty input: err=%v screens=%+v", err, screens)
@@ -202,6 +243,42 @@ func TestBuildDisplaysOnePerMonitor(t *testing.T) {
 	}
 	if displays[0].Primary || !displays[1].Primary {
 		t.Errorf("primary flags wrong: %+v", displays)
+	}
+}
+
+func TestBuildDisplaysPerMonitorRefresh(t *testing.T) {
+	screens, idents, ctls := sampleDisplayProbes()
+	screens[0].RefreshHz = 60
+	screens[1].RefreshHz = 144
+	displays := buildDisplays(screens, idents, ctls)
+	if len(displays) != 2 || displays[0].RefreshHz != 60 || displays[1].RefreshHz != 144 {
+		t.Fatalf("mixed refresh rates not preserved per monitor: %+v", displays)
+	}
+	monitors := buildMonitors(screens, idents, ctls)
+	if len(monitors) != 2 || monitors[0].RefreshRate != "60Hz" || monitors[1].RefreshRate != "144Hz" {
+		t.Errorf("MonitorInfo refresh not per monitor: %+v", monitors)
+	}
+}
+
+func TestScreenRefreshFallsBackToAdapter(t *testing.T) {
+	adapter := wmiVideoController{CurrentRefreshRate: 59}
+	if got := screenRefresh(screenInfo{RefreshHz: 0}, adapter); got != 59 {
+		t.Errorf("Hz 0 should fall back to adapter, got %d", got)
+	}
+	if got := screenRefresh(screenInfo{RefreshHz: 120}, adapter); got != 120 {
+		t.Errorf("per-screen Hz should win, got %d", got)
+	}
+}
+
+func TestScreensScriptDeclaresEnumDisplaySettings(t *testing.T) {
+	for _, needle := range []string{"SetProcessDPIAware", "EnumDisplaySettings", "RefreshHz", "@{n='Hz'"} {
+		if !containsSubstring([]string{screensScript}, needle) {
+			t.Errorf("screensScript missing %q", needle)
+		}
+	}
+	// The C# is embedded in a single-quoted PowerShell literal.
+	if containsSubstring([]string{nvcDpiTypeDefinition}, "'") {
+		t.Errorf("nvcDpiTypeDefinition contains a single quote, which would end the PowerShell literal")
 	}
 }
 

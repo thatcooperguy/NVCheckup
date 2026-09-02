@@ -125,7 +125,14 @@ func collectGameMode(info *types.WindowsInfo, errs *[]types.CollectorError, time
 // Power plan
 // ---------------------------------------------------------------------------
 
-var powerSchemeRe = regexp.MustCompile(`(?i)GUID:\s*([0-9a-f-]{36})`)
+// powerSchemeRe matches a bare GUID anywhere on a powercfg line. It does not
+// anchor on the literal "GUID:" label because localized powercfg prints e.g.
+// "GUID des Energieschemas: 381b4222-...  (Ausbalanciert)" (de-DE) or
+// "GUID du mode de gestion de l'alimentation : 381b4222-...  (Utilisation
+// normale)" (fr-FR); requiring the English label defeated the GUID-based
+// canonicalisation in wellKnownPowerPlans and forced the Win32_PowerPlan
+// fallback, which returns zero rows on some machines.
+var powerSchemeRe = regexp.MustCompile(`(?i)\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b`)
 
 // wellKnownPowerPlans maps the built-in scheme GUIDs to their English names so
 // the analyzer's "high performance" check works on localized Windows and on
@@ -137,7 +144,8 @@ var wellKnownPowerPlans = map[string]string{
 	"e9a42b02-d5df-448d-aa00-03f14749eb61": "Ultimate Performance",
 }
 
-// parsePowerPlanScheme parses "Power Scheme GUID: 381b4222-...  (Balanced)".
+// parsePowerPlanScheme parses "Power Scheme GUID: 381b4222-...  (Balanced)"
+// or any localized equivalent that carries a GUID followed by "(name)".
 // The name is everything between the first "(" after the GUID and the last
 // ")" on the line, so a plan called "My plan (custom)" survives intact; the
 // GUID is returned lower-cased.
@@ -245,7 +253,7 @@ func buildMonitors(screens []screenInfo, idents []monitorIdentity, ctls []wmiVid
 		monitors = append(monitors, types.MonitorInfo{
 			Name:        identityName(active, i, "Display "+strconv.Itoa(i+1)),
 			Resolution:  strconv.Itoa(s.Width) + "x" + strconv.Itoa(s.Height),
-			RefreshRate: refreshLabel(adapter.CurrentRefreshRate),
+			RefreshRate: refreshLabel(screenRefresh(s, adapter)),
 			Primary:     s.Primary,
 		})
 	}
@@ -266,13 +274,23 @@ func refreshLabel(hz int) string {
 // eventLookbackDays bounds every System-log query.
 const eventLookbackDays = 30
 
+// noMatchingEventsFQID is the locale-independent FullyQualifiedErrorId prefix
+// PowerShell attaches to the error record Get-WinEvent emits when the filter
+// matches zero events (the full id is
+// "NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand").
+// eventQueryScript filters on this id rather than on the English exception
+// text so a healthy machine on a non-English Windows UI culture is reported as
+// "0 events" and not as "could not read the System log".
+const noMatchingEventsFQID = "NoMatchingEventsFound"
+
 // eventQueryScript builds a Get-WinEvent probe that always exits 0.
 //
 // Get-WinEvent -ErrorAction SilentlyContinue still makes powershell.exe exit 1
 // when the filter matches nothing, which previously made every healthy machine
-// look like it could not read the log. Errors other than "no events" are
-// echoed to stderr so Go can tell access-denied apart from a verified empty
-// result. Messages are collapsed to one line (newlines -> " | ") and capped at
+// look like it could not read the log. Errors other than "no events" (matched
+// by noMatchingEventsFQID, with the English message kept as a secondary
+// match) are echoed to stderr so Go can tell access-denied apart from a
+// verified empty result. Messages are collapsed to one line (newlines -> " | ") and capped at
 // 300 characters, which keeps the WHEA "Component:" and "Primary Device Name:"
 // fields the analyzer needs. TimeCreated is emitted in round-trip ("o") UTC
 // form so it parses unambiguously; the culture-formatted local string used
@@ -282,7 +300,7 @@ func eventQueryScript(filter string, maxEvents int) string {
 		`$e = @(Get-WinEvent -FilterHashtable @{LogName='System'; ` + filter + `; StartTime=(Get-Date).AddDays(-` + strconv.Itoa(eventLookbackDays) + `)} -MaxEvents ` + strconv.Itoa(maxEvents) + `); ` +
 		`$e | ForEach-Object { $m = ([string]$_.Message) -replace '\r?\n', ' | '; if ($m.Length -gt 300) { $m = $m.Substring(0, 300) }; ` +
 		`"$($_.TimeCreated.ToUniversalTime().ToString('o'))|$($_.Id)|$($_.LevelDisplayName)|$m" }; ` +
-		`$Error | Where-Object { $_.Exception.Message -notmatch 'No events were found' } | ForEach-Object { [Console]::Error.WriteLine($_.Exception.Message) }; ` +
+		`$Error | Where-Object { $_.FullyQualifiedErrorId -notmatch '^` + noMatchingEventsFQID + `' -and $_.Exception.Message -notmatch 'No events were found' } | ForEach-Object { [Console]::Error.WriteLine($_.Exception.Message) }; ` +
 		`exit 0`
 }
 

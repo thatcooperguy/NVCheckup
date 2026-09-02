@@ -25,11 +25,15 @@ type wmiVideoController struct {
 // screenInfo is one entry from System.Windows.Forms.Screen.AllScreens: a
 // logical monitor as the desktop sees it. Width/Height are physical pixels
 // because the probe calls SetProcessDPIAware() first (see screensScript).
+// RefreshHz is the per-monitor rate from EnumDisplaySettings(DeviceName,
+// ENUM_CURRENT_SETTINGS); it is 0 when that P/Invoke failed, in which case
+// the callers fall back to the adapter's WMI CurrentRefreshRate.
 type screenInfo struct {
 	DeviceName string `json:"DeviceName"`
 	Primary    bool   `json:"Primary"`
 	Width      int    `json:"W"`
 	Height     int    `json:"H"`
+	RefreshHz  int    `json:"Hz"`
 }
 
 // monitorIdentity is the EDID-derived identity of a connected monitor from
@@ -46,13 +50,37 @@ type monitorIdentity struct {
 // screensScript enumerates monitors with WinForms. SetProcessDPIAware is
 // P/Invoked first because without it Screen.Bounds is reported in
 // DPI-scaled logical pixels (3072x1728 for a 4K panel at 125 %), which would
-// mislead any resolution-based rule.
+// mislead any resolution-based rule. The same Add-Type block declares DEVMODE
+// and EnumDisplaySettings so each screen's current refresh rate is read per
+// \\.\DISPLAYn device (Win32_VideoController only knows one rate per adapter,
+// which hid mixed-refresh setups). RefreshHz returns 0 when the call fails so
+// the Go side can fall back to the adapter value.
 const screensScript = `$ErrorActionPreference = 'SilentlyContinue'; ` +
-	`Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class NvcDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'; ` +
+	`Add-Type -TypeDefinition '` + nvcDpiTypeDefinition + `'; ` +
 	`[void][NvcDpi]::SetProcessDPIAware(); ` +
 	`Add-Type -AssemblyName System.Windows.Forms; ` +
-	`[System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName,Primary,@{n='W';e={$_.Bounds.Width}},@{n='H';e={$_.Bounds.Height}} | ConvertTo-Json -Compress; ` +
+	`[System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName,Primary,@{n='W';e={$_.Bounds.Width}},@{n='H';e={$_.Bounds.Height}},@{n='Hz';e={[NvcDpi]::RefreshHz($_.DeviceName)}} | ConvertTo-Json -Compress; ` +
 	`exit 0`
+
+// nvcDpiTypeDefinition is the C# compiled by screensScript. It must not
+// contain single quotes (it is embedded in a single-quoted PowerShell
+// literal). DEVMODE uses the display-device union layout (dmPosition,
+// dmDisplayOrientation, dmDisplayFixedOutput); Marshal.SizeOf yields 220
+// bytes for the Unicode form, which EnumDisplaySettings requires in dmSize.
+const nvcDpiTypeDefinition = `using System; using System.Runtime.InteropServices; ` +
+	`public static class NvcDpi { ` +
+	`[DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); ` +
+	`[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct DEVMODE { ` +
+	`[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName; ` +
+	`public ushort dmSpecVersion; public ushort dmDriverVersion; public ushort dmSize; public ushort dmDriverExtra; public uint dmFields; ` +
+	`public int dmPositionX; public int dmPositionY; public uint dmDisplayOrientation; public uint dmDisplayFixedOutput; ` +
+	`public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate; ` +
+	`[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName; ` +
+	`public ushort dmLogPixels; public uint dmBitsPerPel; public uint dmPelsWidth; public uint dmPelsHeight; public uint dmDisplayFlags; public uint dmDisplayFrequency; ` +
+	`public uint dmICMMethod; public uint dmICMIntent; public uint dmMediaType; public uint dmDitherType; public uint dmReserved1; public uint dmReserved2; public uint dmPanningWidth; public uint dmPanningHeight; } ` +
+	`[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode); ` +
+	`public static int RefreshHz(string deviceName) { DEVMODE dm = new DEVMODE(); dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE)); ` +
+	`if (EnumDisplaySettings(deviceName, -1, ref dm)) { return (int)dm.dmDisplayFrequency; } return 0; } }`
 
 // monitorIdentityScript decodes the uint16 EDID strings of WmiMonitorID and
 // joins the connector type from WmiMonitorConnectionParams by InstanceName.
@@ -145,7 +173,7 @@ func buildDisplays(screens []screenInfo, idents []monitorIdentity, ctls []wmiVid
 		displays = append(displays, types.DisplayInfo{
 			Name:       identityName(active, i, "Display "+strconv.Itoa(i+1)),
 			Resolution: strconv.Itoa(s.Width) + "x" + strconv.Itoa(s.Height),
-			RefreshHz:  adapter.CurrentRefreshRate,
+			RefreshHz:  screenRefresh(s, adapter),
 			OutputType: identityOutputType(active, i),
 			GPUIndex:   gpuIndex,
 			Primary:    s.Primary,
@@ -154,8 +182,18 @@ func buildDisplays(screens []screenInfo, idents []monitorIdentity, ctls []wmiVid
 	return displays
 }
 
-// pickAdapter chooses the adapter whose refresh rate is applied to every
-// monitor: the first NVIDIA adapter, else the first adapter with a mode set.
+// screenRefresh prefers the per-monitor rate EnumDisplaySettings reported
+// for this screen and uses the adapter's WMI rate only when that P/Invoke
+// failed (RefreshHz 0), so mixed-refresh multi-monitor setups stay visible.
+func screenRefresh(s screenInfo, adapter wmiVideoController) int {
+	if s.RefreshHz > 0 {
+		return s.RefreshHz
+	}
+	return adapter.CurrentRefreshRate
+}
+
+// pickAdapter chooses the adapter that supplies GPUIndex and the fallback
+// refresh rate: the first NVIDIA adapter, else the first adapter with a mode set.
 // Win32_VideoController has no link to \\.\DISPLAYn, so on multi-GPU systems
 // every monitor is attributed to the first NVIDIA GPU (gpuIndex 0), which
 // matches nvidia-smi ordering for the single-vendor case.
