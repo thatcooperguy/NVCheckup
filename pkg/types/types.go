@@ -448,6 +448,13 @@ type Snapshot struct {
 	Windows  *WindowsInfo   `json:"windows,omitempty"`
 	Linux    *LinuxInfo     `json:"linux,omitempty"`
 	AI       *AIInfo        `json:"ai,omitempty"`
+
+	// Spark / unified-memory additions (docs/roadmap/spark-work-packages.md
+	// WP1 item 13: snapshot Diff on platform.class, ota_version, mem_total_kb,
+	// firmware versions). Omitted from JSON when not collected.
+	Platform      *PlatformInfo      `json:"platform,omitempty"`
+	UnifiedMemory *UnifiedMemoryInfo `json:"unified_memory,omitempty"`
+	DGXOS         *DGXOSInfo         `json:"dgx_os,omitempty"`
 }
 
 // ComparisonResult holds diffs between two snapshots
@@ -571,6 +578,12 @@ type UnifiedMemoryInfo struct {
 	GPUProcesses int `json:"gpu_processes"`  // processes holding a GPU context (count only)
 	OOMKills     int `json:"oom_kills"`      // kernel OOM-killer events seen in logs
 	NVRMNoMemory int `json:"nvrm_no_memory"` // NVRM out-of-memory class kernel messages
+
+	// /proc/vmstat pswpin (pages swapped in since boot) sampled at the start
+	// and end of the collector; the delta is the swap-in activity the
+	// unified-memory-swap-in-use rule looks for (spark-work-packages.md WP1 item 4).
+	Pswpin      int64 `json:"pswpin,omitempty"`
+	PswpinDelta int64 `json:"pswpin_delta,omitempty"`
 }
 
 // FirmwareComponent is one device row from fwupdmgr get-devices.

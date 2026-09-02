@@ -29,6 +29,20 @@ func ClockEventQuery(field string) string {
 	return "index," + field
 }
 
+// PerformanceQueryArgs are the nvidia-smi arguments for the per-GPU
+// "Clocks Event Reasons Counters" block (docs/roadmap/spark-support.md section
+// 4: ThermalInfo.EventCounters from nvidia-smi -q -d PERFORMANCE). The block
+// is only fetched when a GPU reports its power limit as [N/A] (GB10: "Pwr cap
+// N/A", spec 2.1), because the counters feed gb10-pd-power-wedge and cost an
+// extra nvidia-smi call on every other machine.
+var PerformanceQueryArgs = []string{"-q", "-d", "PERFORMANCE"}
+
+// eventCountersHeader is the section title inside -q -d PERFORMANCE output.
+// ASSUMPTION: the verbatim GB10 output of this block is an open question of the
+// spec (section 12), so the parser is tolerant: any "Name : N us" line under
+// the header is kept, keys are snake_cased.
+const eventCountersHeader = "Clocks Event Reasons Counters"
+
 // NVML clock event reason bits (nvmlClocksEventReasons / nvmlClocksThrottleReasons).
 const (
 	throttleGPUIdle              uint64 = 0x1
@@ -119,7 +133,98 @@ func CollectThermalAll(timeout int) ([]types.ThermalInfo, []types.CollectorError
 		applyThrottleMasks(infos, masks, &errs)
 	}
 
+	// Event reason counters (microseconds per reason) for unified-memory
+	// parts without a power limit; see PerformanceQueryArgs.
+	if anyPowerLimitUnsupported(infos) {
+		r := util.RunCommand(timeout, "nvidia-smi", PerformanceQueryArgs...)
+		if r.Err == nil {
+			applyEventCounters(infos, parsePerformanceCounters(r.Stdout))
+		} else {
+			errs = append(errs, types.CollectorError{
+				Collector: "thermal.event_counters",
+				Error:     "nvidia-smi -q -d PERFORMANCE failed: " + commandFailureDetail(r),
+			})
+		}
+	}
+
 	return infos, errs
+}
+
+// anyPowerLimitUnsupported reports whether any GPU row lacks a power limit.
+func anyPowerLimitUnsupported(infos []types.ThermalInfo) bool {
+	for _, in := range infos {
+		if !in.PowerLimitSupported {
+			return true
+		}
+	}
+	return false
+}
+
+// applyEventCounters stores per-GPU counters on the ThermalInfo rows, matched
+// by GPU order (the -q output lists GPUs in nvidia-smi index order).
+func applyEventCounters(infos []types.ThermalInfo, counters []map[string]int64) {
+	for i := range infos {
+		if i < len(counters) && len(counters[i]) > 0 {
+			infos[i].EventCounters = counters[i]
+		}
+	}
+}
+
+// parsePerformanceCounters parses nvidia-smi -q -d PERFORMANCE output into one
+// counter map per GPU section. Each "GPU <bus id>" line starts a section; the
+// lines under "Clocks Event Reasons Counters" of the form
+// "SW Power Capping : 12345 us" become {"sw_power_capping": 12345}. Sections
+// without the block yield an empty map so indices stay aligned.
+func parsePerformanceCounters(out string) []map[string]int64 {
+	var all []map[string]int64
+	var cur map[string]int64
+	inBlock := false
+	blockIndent := -1
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "GPU ") {
+			cur = map[string]int64{}
+			all = append(all, cur)
+			inBlock = false
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if trimmed == eventCountersHeader {
+			inBlock = true
+			blockIndent = indent
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		if indent <= blockIndent {
+			inBlock = false // next sibling section
+			continue
+		}
+		k, v := util.ParseKeyValue(trimmed, ":")
+		if k == "" {
+			continue
+		}
+		v = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "us"))
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			continue
+		}
+		cur[snakeKey(k)] = n
+	}
+	return all
+}
+
+// snakeKey lower-cases a counter name and joins its words with underscores.
+func snakeKey(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), "_")
 }
 
 // applyThrottleMasks decodes each GPU's raw clock event mask into its
@@ -252,8 +357,12 @@ func parseThermalRow(line string, ordinal int) (types.ThermalInfo, []types.Colle
 	if v, ok := parseInt(3, "thermal.max_clock", "max clock"); ok {
 		info.MaxClockMHz = v
 	}
+	// Power limit: "[N/A]" on GB10 (no -pl support, spec 2.1) and on some
+	// vGPU / laptop firmware. PowerLimitSupported records the distinction so
+	// the analyzer prints "limit N/A (unified memory)" instead of a cap.
 	if s := get(4); s != "" && !isNotAvailable(s) {
 		info.PowerLimitW = s
+		info.PowerLimitSupported = true
 	}
 	if s := get(5); s != "" && !isNotAvailable(s) {
 		info.PowerDrawW = s
@@ -362,11 +471,13 @@ func commandFailureDetail(r util.CommandResult) string {
 }
 
 // isNotAvailable reports whether an nvidia-smi field is a placeholder such as
-// "[N/A]", "[Not Supported]", "[Unknown Error]", or "N/A".
+// "[N/A]", "[Not Supported]", "[Unknown Error]", "N/A" or the bare
+// "Not Supported" that the table and some CSV fields print on unified-memory
+// GPUs (spec 2.1). These are "unsupported", never parse errors.
 func isNotAvailable(s string) bool {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
 		return true
 	}
-	return strings.EqualFold(s, "N/A")
+	return strings.EqualFold(s, "N/A") || strings.EqualFold(s, "Not Supported")
 }

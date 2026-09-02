@@ -41,15 +41,23 @@ func Run() int {
 	// Check 2: Architecture
 	results = append(results, checkArch())
 
+	// Platform class from files, lspci, DMI and the kernel (spec 3.1 phase-1
+	// rows); the GPU-derived rows and flag rules are applied below once the
+	// GPU inventory exists.
+	platform, _ := common.DetectPlatform(10)
+
 	// Check 3: nvidia-smi presence, then the collectors' actual query strings.
 	// A working "nvidia-smi -L" says nothing about whether the driver accepts
 	// every field the collectors ask for (an invalid field made thermal
 	// collection fail silently for a long time), so each list is run verbatim.
-	smi := checkNvidiaSmi()
+	smi := checkNvidiaSmi(platform)
 	results = append(results, smi)
 	if smi.Status == "OK" {
 		results = append(results, checkNvidiaSmiQueries()...)
 	}
+
+	// Check 3b: platform line and the memory-reporting verdict.
+	results = append(results, checkPlatform(platformReport(platform, smi.Status == "OK"))...)
 
 	// Check 4: Write permissions
 	results = append(results, checkWritePermissions())
@@ -167,7 +175,7 @@ func checkArch() CheckResult {
 // only these keeps the GPU count honest on MIG-enabled boards.
 var gpuListLineRe = regexp.MustCompile(`(?m)^GPU \d+:`)
 
-func checkNvidiaSmi() CheckResult {
+func checkNvidiaSmi(platform types.PlatformInfo) CheckResult {
 	if !util.CommandExists("nvidia-smi") {
 		// JetPack does not ship nvidia-smi; on a Jetson its absence is the
 		// healthy state, not a missing driver.
@@ -177,6 +185,11 @@ func checkNvidiaSmi() CheckResult {
 				detail += " - " + release
 			}
 			return CheckResult{Name: "nvidia-smi", Status: "INFO", Detail: detail}
+		}
+		// Whether nvidia-smi.exe ships in the RTX Spark Arm64 driver is
+		// unconfirmed (spec 2.2 / 5.1), so its absence there is INFO.
+		if platform.Class == common.ClassRTXSpark {
+			return CheckResult{Name: "nvidia-smi", Status: "INFO", Detail: "Not found in PATH; nvidia-smi.exe presence in the RTX Spark Arm64 driver is unconfirmed (GPU checks will be limited)"}
 		}
 		return CheckResult{
 			Name:   "nvidia-smi",
@@ -217,7 +230,111 @@ func checkNvidiaSmiQueries() []CheckResult {
 		results = append(results, runQueryCheck(c.name, c.fields))
 	}
 	results = append(results, checkClockEventQuery())
+	results = append(results, checkComputeCapQuery())
 	return results
+}
+
+// checkComputeCapQuery runs the separate compute_cap query. Older drivers
+// reject the field; the GPU collector tolerates that (rows are kept, the
+// capability is just unknown), so a rejection is INFO rather than WARN.
+func checkComputeCapQuery() CheckResult {
+	const name = "nvidia-smi compute cap"
+	r := util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.GPUCapQueryFields, "--format=csv,noheader")
+	if r.Err != nil {
+		return CheckResult{Name: name, Status: "INFO", Detail: fmt.Sprintf("compute_cap not accepted by this driver (exit %d): %s; compute capability will be unknown", r.ExitCode, failureDetail(r))}
+	}
+	return CheckResult{Name: name, Status: "OK", Detail: common.GPUCapQueryFields + " accepted"}
+}
+
+// platformReport assembles the minimal Report the flag rules of spec 3.1
+// need: the phase-1 platform plus, when nvidia-smi works, the GPU inventory.
+func platformReport(platform types.PlatformInfo, withGPUs bool) *types.Report {
+	r := &types.Report{Platform: platform}
+	r.Metadata.Platform = runtime.GOOS
+	r.System.Architecture = runtime.GOARCH
+	if withGPUs {
+		gpus, _, _ := common.CollectGPUInfo(10)
+		r.GPUs = gpus
+	}
+	common.ApplyPlatformFlags(r)
+	return r
+}
+
+// checkPlatform prints the Platform line (class, unified memory yes/no,
+// compute capability) and, when a GPU inventory exists, the memory-reporting
+// verdict: memory.total [N/A] is expected on unified-memory platforms and a
+// WARN everywhere else.
+func checkPlatform(r *types.Report) []CheckResult {
+	results := []CheckResult{{Name: "Platform", Status: "INFO", Detail: platformDetail(r.Platform)}}
+	if m, ok := memoryReportingCheck(r); ok {
+		results = append(results, m)
+	}
+	return results
+}
+
+// platformDetail renders e.g. "dgx-spark (GB10), unified memory yes, compute cap 12.1 - NVIDIA NVIDIA_DGX_Spark".
+func platformDetail(p types.PlatformInfo) string {
+	class := p.Class
+	if class == "" {
+		class = "generic (no Spark/Jetson/Grace Hopper row matched)"
+	}
+	if p.GPUSoC != "" {
+		class += " (" + p.GPUSoC + ")"
+	}
+	detail := fmt.Sprintf("%s, unified memory %s", class, yesNo(p.UnifiedMemory))
+	if p.ComputeCap != "" {
+		detail += ", compute cap " + p.ComputeCap
+	}
+	if p.IsWindowsOnArm {
+		detail += ", Windows on Arm"
+		if p.ProcessEmulated {
+			detail += " (this process is emulated)"
+		}
+	}
+	if v := strings.TrimSpace(p.Vendor + " " + p.Model); v != "" {
+		detail += " - " + v
+	}
+	return detail
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// memoryReportingCheck judges nvidia-smi's memory.total answer against the
+// platform: "[N/A]" is fine on unified memory (spec 2.1) and suspicious
+// otherwise; a numeric total is simply reported.
+func memoryReportingCheck(r *types.Report) (CheckResult, bool) {
+	const name = "nvidia-smi memory"
+	var notSupported, dedicated *types.GPUInfo
+	for i := range r.GPUs {
+		g := &r.GPUs[i]
+		if !g.IsNVIDIA {
+			continue
+		}
+		switch g.MemoryReporting {
+		case common.MemoryReportingNotSupported:
+			if notSupported == nil {
+				notSupported = g
+			}
+		case common.MemoryReportingDedicated:
+			if dedicated == nil {
+				dedicated = g
+			}
+		}
+	}
+	switch {
+	case notSupported != nil && r.Platform.UnifiedMemory:
+		return CheckResult{Name: name, Status: "INFO", Detail: fmt.Sprintf("memory.total [N/A] on %s: expected on unified-memory GPUs; /proc/meminfo MemAvailable is the pool", notSupported.Name)}, true
+	case notSupported != nil:
+		return CheckResult{Name: name, Status: "WARN", Detail: fmt.Sprintf("memory.total [N/A] on %s but no unified-memory platform was recognised", notSupported.Name)}, true
+	case dedicated != nil:
+		return CheckResult{Name: name, Status: "OK", Detail: fmt.Sprintf("dedicated VRAM reported (%d MiB on %s)", dedicated.VRAMTotalMB, dedicated.Name)}, true
+	}
+	return CheckResult{}, false
 }
 
 // runQueryCheck executes one nvidia-smi --query-gpu list exactly as a collector would.
