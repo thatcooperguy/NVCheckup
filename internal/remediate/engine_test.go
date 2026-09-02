@@ -3,6 +3,7 @@ package remediate
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,8 +20,10 @@ type mockResponse struct {
 }
 
 // MockExecutor records commands without executing them. Replies are looked up
-// by command prefix in responses (first match wins) and fall back to
-// output/err, so a single mock can script a whole apply/undo sequence.
+// in responses (an exact match wins over a prefix match, then the first prefix
+// match wins) and fall back to output/err, so a single mock can script a
+// whole apply/undo sequence. The exact-match rule matters because
+// "reg query <key>" is a prefix of "reg query <key> /v <name>".
 type MockExecutor struct {
 	commands  []string
 	output    string
@@ -32,11 +35,37 @@ func (m *MockExecutor) Run(name string, args ...string) (string, error) {
 	cmd := strings.Join(append([]string{name}, args...), " ")
 	m.commands = append(m.commands, cmd)
 	for _, r := range m.responses {
+		if cmd == r.prefix {
+			return r.output, r.err
+		}
+	}
+	for _, r := range m.responses {
 		if strings.HasPrefix(cmd, r.prefix) {
 			return r.output, r.err
 		}
 	}
 	return m.output, m.err
+}
+
+// anyAction returns the first platform action, or skips on platforms without any.
+func anyAction(t *testing.T) types.RemediationAction {
+	t.Helper()
+	actions := getAvailableActions()
+	if len(actions) == 0 {
+		t.Skip("no remediation actions on this platform")
+	}
+	return actions[0]
+}
+
+// writeCorruptJournal plants a journal that Journal.Read rejects and returns
+// its raw content so tests can check it was left untouched.
+func writeCorruptJournal(t *testing.T, dir string) string {
+	t.Helper()
+	raw := `[{"action_id":"disable-hags","applied_at":"not-a-time","success":true}]`
+	if err := os.WriteFile(filepath.Join(dir, journalFilename), []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 // setElevation replaces the elevation check for the duration of a test.
@@ -232,6 +261,54 @@ func TestUndo_RefusesWhenNotElevated(t *testing.T) {
 	}
 }
 
+// A change that cannot be journaled cannot be undone, so an unreadable
+// journal must stop Apply before any command runs.
+func TestApply_RefusesWhenJournalUnreadable(t *testing.T) {
+	setElevation(t, true)
+	def := anyAction(t)
+	dir := t.TempDir()
+	raw := writeCorruptJournal(t, dir)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, dir, false)
+
+	result, err := e.Apply(def)
+	if err == nil || !strings.Contains(err.Error(), "journal is unreadable") {
+		t.Fatalf("expected journal refusal, got %v", err)
+	}
+	if result != nil {
+		t.Errorf("result should be nil on refusal, got %+v", result)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run when the journal is unreadable, got %v", mock.commands)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, journalFilename))
+	if string(got) != raw {
+		t.Error("the corrupt journal must be left untouched for the user to inspect")
+	}
+}
+
+func TestUndo_RefusesWhenJournalUnreadable(t *testing.T) {
+	setElevation(t, true)
+	def := anyAction(t)
+	dir := t.TempDir()
+	raw := writeCorruptJournal(t, dir)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, dir, false)
+
+	entry := types.ChangeJournalEntry{ActionID: def.ID, Title: def.Title, AppliedAt: time.Now(), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	err := e.Undo(entry)
+	if err == nil || !strings.Contains(err.Error(), "journal is unreadable") {
+		t.Fatalf("expected journal refusal, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run when the journal is unreadable, got %v", mock.commands)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, journalFilename))
+	if string(got) != raw {
+		t.Error("the corrupt journal must be left untouched")
+	}
+}
+
 func TestUndo_RejectsInvalidUndoInfo(t *testing.T) {
 	setElevation(t, true)
 	mock := &MockExecutor{}
@@ -306,6 +383,9 @@ func TestListAvailable_ConsistentWithKnowledgeLabels(t *testing.T) {
 func TestDescribeUndoInfo(t *testing.T) {
 	if got := describeUndoInfo(absentSentinel); !strings.Contains(got, "did not exist") {
 		t.Errorf("absent sentinel description = %q", got)
+	}
+	if got := describeUndoInfo(absentKeySentinel); !strings.Contains(got, "key and value did not exist") {
+		t.Errorf("absent key sentinel description = %q", got)
 	}
 	if got := describeUndoInfo(""); !strings.Contains(got, "nothing") {
 		t.Errorf("empty description = %q", got)

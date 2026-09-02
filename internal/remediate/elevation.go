@@ -1,6 +1,9 @@
 package remediate
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // Windows integrity-level SIDs reported by "whoami /groups". A process running
 // at High (elevated administrator) or System integrity can write HKLM and
@@ -21,4 +24,15 @@ func isElevatedFromWhoamiGroups(output string) bool {
 		}
 	}
 	return false
+}
+
+// systemBinary returns the explicit path of a native Windows tool under
+// <systemRoot>\System32, so it cannot be shadowed by a same-named program
+// earlier on PATH (Git's coreutils whoami.exe, for example). When systemRoot
+// is empty the bare name is returned and normal PATH lookup applies.
+func systemBinary(systemRoot, name string) string {
+	if systemRoot == "" {
+		return name
+	}
+	return filepath.Join(systemRoot, "System32", name)
 }

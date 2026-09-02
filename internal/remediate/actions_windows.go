@@ -26,10 +26,46 @@ var (
 	gameModeValue = regDword{Path: `HKCU\Software\Microsoft\GameBar`, Name: "AutoGameModeEnabled"}
 )
 
+// hiveLongNames maps the hive abbreviations accepted by reg.exe to the full
+// names it prints in listings.
+var hiveLongNames = map[string]string{
+	"HKLM": "HKEY_LOCAL_MACHINE",
+	"HKCU": "HKEY_CURRENT_USER",
+	"HKU":  "HKEY_USERS",
+	"HKCR": "HKEY_CLASSES_ROOT",
+	"HKCC": "HKEY_CURRENT_CONFIG",
+}
+
+// longKeyPath expands the hive abbreviation of a key path to the form reg.exe
+// prints ("HKCU\Software" -> "HKEY_CURRENT_USER\Software").
+func longKeyPath(path string) string {
+	hive, rest, found := strings.Cut(path, `\`)
+	if long, ok := hiveLongNames[strings.ToUpper(hive)]; ok {
+		hive = long
+	}
+	if !found {
+		return hive
+	}
+	return hive + `\` + rest
+}
+
+// parentKeyPath returns the key one level up, or ok=false for a hive root.
+func parentKeyPath(path string) (string, bool) {
+	i := strings.LastIndex(path, `\`)
+	if i <= 0 {
+		return "", false
+	}
+	return path[:i], true
+}
+
 func (r regDword) String() string { return r.Path + `\` + r.Name }
 
 func (r regDword) queryArgs() []string {
 	return []string{"query", r.Path, "/v", r.Name}
+}
+
+func (r regDword) keyQueryArgs() []string {
+	return []string{"query", r.Path}
 }
 
 func (r regDword) addArgs(value string) []string {
@@ -40,65 +76,140 @@ func (r regDword) deleteArgs() []string {
 	return []string{"delete", r.Path, "/v", r.Name, "/f"}
 }
 
+func (r regDword) deleteKeyArgs() []string {
+	return []string{"delete", r.Path, "/f"}
+}
+
 // undoArgs returns the reg.exe arguments that restore a captured value: delete
 // when the value did not exist beforehand, otherwise add with the old value.
 func (r regDword) undoArgs(undoInfo string) []string {
-	if undoInfo == absentSentinel {
+	if undoInfo == absentSentinel || undoInfo == absentKeySentinel {
 		return r.deleteArgs()
 	}
 	return r.addArgs(undoInfo)
 }
 
-// regValueMissing reports whether reg.exe output says the key or value does
-// not exist. reg query exits 1 both for "not found" and for real failures
-// (access denied, bad hive), so the text is the only way to tell them apart.
-// The message is locale dependent; on non-English systems an absent value is
-// reported as an error and apply refuses rather than guessing.
-func regValueMissing(output string) bool {
-	return strings.Contains(strings.ToLower(output), "unable to find the specified registry key or value")
+// regState classifies what the read-only capture found.
+type regState int
+
+const (
+	regUnknown     regState = iota // read failed; nothing safe to record
+	regPresent                     // value exists
+	regValueAbsent                 // key exists, value does not
+	regKeyAbsent                   // the key itself does not exist
+)
+
+// undoInfoFor converts a captured state into the string recorded for undo.
+func undoInfoFor(value string, state regState) string {
+	switch state {
+	case regValueAbsent:
+		return absentSentinel
+	case regKeyAbsent:
+		return absentKeySentinel
+	default:
+		return value
+	}
 }
 
-// readRegDword captures the current value of r. It returns absent=true when
-// reg query reports the value does not exist, and an error for any other
-// failure (in which case the caller must refuse to apply: without a trusted
-// "before" value there is nothing safe to record for undo).
-func (e *Engine) readRegDword(r regDword) (value string, absent bool, err error) {
-	out, runErr := e.executor.Run("reg", r.queryArgs()...)
-	if runErr != nil {
-		if regValueMissing(out) {
-			return "", true, nil
+// regListingHasValue reports whether "reg query <key>" output lists a value
+// named name. Value lines look like "    HwSchMode    REG_DWORD    0x2";
+// subkey lines are a single full path and never match.
+func regListingHasValue(output, name string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], name) {
+			return true
 		}
-		return "", false, fmt.Errorf("could not read current value of %s: %v: %s", r, runErr, strings.TrimSpace(out))
 	}
-	parsed := parseRegDwordValue(out, r.Name)
-	if parsed == "" {
-		return "", false, fmt.Errorf("could not parse current value of %s from reg query output: %s", r, strings.TrimSpace(out))
+	return false
+}
+
+// regListingHasSubkey reports whether "reg query <parent>" output lists the
+// subkey whose full (long-hive) path is longPath.
+func regListingHasSubkey(output, longPath string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), longPath) {
+			return true
+		}
 	}
-	return parsed, false, nil
+	return false
+}
+
+// regListingIsEmpty reports whether "reg query <key>" output shows a key with
+// no values and no subkeys: only blank lines and the key header itself.
+func regListingIsEmpty(output, longPath string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.EqualFold(t, longPath) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// readRegDword captures the current state of r without depending on the
+// localized error text of reg.exe. reg query exits 1 both for "not found" and
+// for real failures (access denied, bad hive), so when the value query fails
+// the key is listed instead: a successful listing that does not mention the
+// value means the value is absent; if the key cannot be listed either, the
+// parent is listed to tell "key does not exist" from "key exists but is
+// unreadable". Any remaining ambiguity is an error and the caller must refuse
+// to apply: without a trusted "before" value there is nothing safe to record
+// for undo.
+func (e *Engine) readRegDword(r regDword) (value string, state regState, err error) {
+	out, runErr := e.executor.Run("reg", r.queryArgs()...)
+	if runErr == nil {
+		parsed := parseRegDwordValue(out, r.Name)
+		if parsed == "" {
+			return "", regUnknown, fmt.Errorf("could not parse current value of %s from reg query output: %s", r, strings.TrimSpace(out))
+		}
+		return parsed, regPresent, nil
+	}
+
+	keyOut, keyErr := e.executor.Run("reg", r.keyQueryArgs()...)
+	if keyErr == nil {
+		if regListingHasValue(keyOut, r.Name) {
+			return "", regUnknown, fmt.Errorf("could not read current value of %s although the key lists it: %v: %s", r, runErr, strings.TrimSpace(out))
+		}
+		return "", regValueAbsent, nil
+	}
+
+	if parent, ok := parentKeyPath(r.Path); ok {
+		parentOut, parentErr := e.executor.Run("reg", "query", parent)
+		if parentErr == nil {
+			if regListingHasSubkey(parentOut, longKeyPath(r.Path)) {
+				return "", regUnknown, fmt.Errorf("could not read current value of %s although key %s exists (access denied?): %v: %s", r, r.Path, runErr, strings.TrimSpace(out))
+			}
+			return "", regKeyAbsent, nil
+		}
+	}
+
+	return "", regUnknown, fmt.Errorf("could not read current value of %s: %v: %s", r, runErr, strings.TrimSpace(out))
 }
 
 // describeRegDword renders the captured state for previews and outputs.
-func describeRegDword(r regDword, value string, absent bool) string {
-	if absent {
+func describeRegDword(r regDword, value string, state regState) string {
+	switch state {
+	case regValueAbsent:
 		return fmt.Sprintf("%s is not set (value absent)", r)
+	case regKeyAbsent:
+		return fmt.Sprintf("%s is not set (key %s does not exist)", r, r.Path)
+	default:
+		return fmt.Sprintf("%s = %s", r, value)
 	}
-	return fmt.Sprintf("%s = %s", r, value)
 }
 
 // applyRegDword sets r to target after capturing its current value for undo.
 // It is shared by disable-hags and disable-game-mode.
 func (e *Engine) applyRegDword(r regDword, target, meaning string) (output, undoInfo string, err error) {
-	current, absent, err := e.readRegDword(r)
+	current, state, err := e.readRegDword(r)
 	if err != nil {
 		return "", "", err
 	}
+	undoInfo = undoInfoFor(current, state)
 
-	undoInfo = current
-	if absent {
-		undoInfo = absentSentinel
-	}
-
-	if !absent && current == target {
+	if state == regPresent && current == target {
 		return fmt.Sprintf("%s is already %s (%s); nothing changed", r, target, meaning), undoInfo, nil
 	}
 
@@ -107,39 +218,63 @@ func (e *Engine) applyRegDword(r regDword, target, meaning string) (output, undo
 		return setOutput, "", fmt.Errorf("failed to set %s to %s: %w: %s", r, target, err, strings.TrimSpace(setOutput))
 	}
 
-	return fmt.Sprintf("Set %s to %s (%s); before: %s", r, target, meaning, describeRegDword(r, current, absent)),
+	return fmt.Sprintf("Set %s to %s (%s); before: %s", r, target, meaning, describeRegDword(r, current, state)),
 		undoInfo, nil
 }
 
-// undoRegDword restores r from captured undo info. Deleting an already-absent
-// value is treated as success so a retried undo stays idempotent.
+// undoRegDword restores r from captured undo info. For the absent sentinels
+// the current state is read first so a retried undo stays idempotent without
+// relying on the localized "not found" message of reg.exe; for
+// absentKeySentinel the key that apply had to create is removed too, but only
+// if nothing else has been stored in it since.
 func (e *Engine) undoRegDword(r regDword, undoInfo string) error {
-	out, err := e.executor.Run("reg", r.undoArgs(undoInfo)...)
-	if err != nil {
-		if undoInfo == absentSentinel && regValueMissing(out) {
-			return nil
+	if undoInfo != absentSentinel && undoInfo != absentKeySentinel {
+		out, err := e.executor.Run("reg", r.addArgs(undoInfo)...)
+		if err != nil {
+			return fmt.Errorf("failed to restore %s: %w: %s", r, err, strings.TrimSpace(out))
 		}
-		return fmt.Errorf("failed to restore %s: %w: %s", r, err, strings.TrimSpace(out))
+		return nil
+	}
+
+	_, state, err := e.readRegDword(r)
+	if err != nil {
+		return fmt.Errorf("cannot undo %s: %w", r, err)
+	}
+	if state == regPresent {
+		out, err := e.executor.Run("reg", r.deleteArgs()...)
+		if err != nil {
+			return fmt.Errorf("failed to remove %s: %w: %s", r, err, strings.TrimSpace(out))
+		}
+	}
+	if undoInfo == absentKeySentinel && state != regKeyAbsent {
+		keyOut, keyErr := e.executor.Run("reg", r.keyQueryArgs()...)
+		if keyErr == nil && regListingIsEmpty(keyOut, longKeyPath(r.Path)) {
+			out, err := e.executor.Run("reg", r.deleteKeyArgs()...)
+			if err != nil {
+				return fmt.Errorf("removed %s but failed to remove the key %s it was created in: %w: %s", r.Name, r.Path, err, strings.TrimSpace(out))
+			}
+		}
 	}
 	return nil
 }
 
 // inspectRegDword builds the preview for a registry toggle without changing anything.
 func (e *Engine) inspectRegDword(r regDword, target string) (inspection, error) {
-	current, absent, err := e.readRegDword(r)
+	current, state, err := e.readRegDword(r)
 	if err != nil {
 		return inspection{}, err
 	}
-	undoInfo := current
-	if absent {
-		undoInfo = absentSentinel
-	}
-	return inspection{
-		Current:       describeRegDword(r, current, absent),
+	undoInfo := undoInfoFor(current, state)
+	insp := inspection{
+		Current:       describeRegDword(r, current, state),
 		UndoInfo:      undoInfo,
 		ApplyCommands: []string{cmdString("reg", r.addArgs(target)...)},
 		UndoCommands:  []string{cmdString("reg", r.undoArgs(undoInfo)...)},
-	}, nil
+	}
+	if state == regKeyAbsent {
+		insp.UndoCommands = append(insp.UndoCommands, cmdString("reg", r.deleteKeyArgs()...)+" (only if the key is then empty)")
+	}
+	return insp, nil
 }
 
 // readActivePowerScheme returns the active power plan GUID and its display
@@ -284,7 +419,7 @@ func getAvailableActions() []types.RemediationAction {
 			Title:       "Disable Hardware-Accelerated GPU Scheduling (HAGS)",
 			Description: "Sets " + hagsValue.String() + " to 1 (off). HAGS can cause stutter or instability with some games and driver versions. Takes effect after a reboot.",
 			DryRunDesc:  "Would run: " + cmdString("reg", hagsValue.addArgs("1")...) + " (after capturing the current value with reg query)",
-			UndoDesc:    "Restore the captured HwSchMode value with reg add, or delete the value with reg delete if it did not exist before. Reboot required.",
+			UndoDesc:    "Restore the captured HwSchMode value with reg add, or delete the value with reg delete if it did not exist before (removing the key too if apply had to create it and it is otherwise empty). Reboot required.",
 			Risk:        types.RiskMedium,
 			NeedsAdmin:  true,
 			NeedsReboot: true,
@@ -297,7 +432,7 @@ func getAvailableActions() []types.RemediationAction {
 			Title:       "Disable Windows Game Mode",
 			Description: "Sets " + gameModeValue.String() + " to 0. Game Mode can cause frame pacing issues in some titles.",
 			DryRunDesc:  "Would run: " + cmdString("reg", gameModeValue.addArgs("0")...) + " (after capturing the current value with reg query)",
-			UndoDesc:    "Restore the captured AutoGameModeEnabled value with reg add, or delete the value with reg delete if it did not exist before.",
+			UndoDesc:    "Restore the captured AutoGameModeEnabled value with reg add, or delete the value with reg delete if it did not exist before (removing the key too if apply had to create it and it is otherwise empty).",
 			Risk:        types.RiskLow,
 			NeedsAdmin:  false,
 			NeedsReboot: false,

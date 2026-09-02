@@ -69,6 +69,25 @@ ii  libnvidia-egl-wayland1:amd64   1:1.1.9-1.1                 amd64        Wayl
 	pacmanInstalled := "linux 6.8.9.arch1-1\nnvidia 550.78-6\nnvidia-utils 550.78-1\n"
 	pacmanOpen := "linux 6.8.9.arch1-1\nnvidia-open-dkms 550.78-1\n"
 	pacmanUtilsOnly := "linux 6.8.9.arch1-1\nnvidia-utils 550.78-1\nbc 1.07.1-4\n"
+	// Library/common/source split packages that can be present without any
+	// kernel module (Debian/Ubuntu and negativo17 naming).
+	dpkgLibsOnly := `ii  nvidia-driver-libs:i386        550.54.14-1                 i386         NVIDIA metapackage (OpenGL/GLX/EGL/GLES libraries)
+ii  nvidia-driver-libs:amd64       550.54.14-1                 amd64        NVIDIA metapackage (OpenGL/GLX/EGL/GLES libraries)
+ii  nvidia-driver-bin              550.54.14-1                 amd64        NVIDIA driver support binaries
+ii  nvidia-kernel-common           550.54.14-1                 amd64        NVIDIA binary kernel module support files
+ii  nvidia-kernel-common-550       550.54.14-0ubuntu0.22.04.1  amd64        Shared files used with the kernel module
+ii  nvidia-kernel-source-550       550.54.14-0ubuntu0.22.04.1  amd64        NVIDIA kernel source package
+ii  nvidia-kernel-support          550.54.14-1                 amd64        NVIDIA binary kernel module support files
+`
+	dpkgDkms := "ii  nvidia-dkms-550:amd64          550.54.14-0ubuntu0.22.04.1  amd64        NVIDIA DKMS package\n"
+	dpkgDebianKernelDkms := "ii  nvidia-kernel-dkms             550.54.14-1                 amd64        NVIDIA binary kernel module DKMS source\n"
+	dpkgOpenMeta := "ii  nvidia-driver-550-open         550.54.14-0ubuntu0.22.04.1  amd64        NVIDIA driver (open kernel) metapackage\n"
+	dpkgLinuxModules := "ii  linux-modules-nvidia-550-generic 6.8.0-40.40                amd64        Linux kernel nvidia modules\n"
+	rpmNegativoLibsOnly := "nvidia-driver-libs-550.76-1.fc40.x86_64\nnvidia-driver-cuda-550.76-1.fc40.x86_64\nnvidia-kmod-common-550.76-1.fc40.noarch\nnvidia-settings-550.76-1.fc40.x86_64\n"
+	rpmNegativoDkms := "nvidia-driver-libs-550.76-1.fc40.x86_64\ndkms-nvidia-550.76-1.fc40.x86_64\n"
+	rpmFusionLibsOnly := "xorg-x11-drv-nvidia-libs-550.76-1.fc40.x86_64\nxorg-x11-drv-nvidia-cuda-550.76-1.fc40.x86_64\nxorg-x11-drv-nvidia-kmodsrc-550.76-1.fc40.x86_64\n"
+	rpmFusionDriver := "xorg-x11-drv-nvidia-550.76-1.fc40.x86_64\n"
+	rpmKmod := "kmod-nvidia-6.8.5-301.fc40.x86_64-550.76-1.fc40.x86_64\n"
 
 	cases := []struct {
 		name string
@@ -83,10 +102,69 @@ ii  libnvidia-egl-wayland1:amd64   1:1.1.9-1.1                 amd64        Wayl
 		{"pacman nvidia-open-dkms", pacmanOpen, true},
 		{"pacman utils only", pacmanUtilsOnly, false},
 		{"empty", "", false},
+		{"dpkg libs/common/source only", dpkgLibsOnly, false},
+		{"dpkg nvidia-dkms", dpkgDkms, true},
+		{"dpkg debian nvidia-kernel-dkms", dpkgDebianKernelDkms, true},
+		{"dpkg open meta", dpkgOpenMeta, true},
+		{"dpkg linux-modules-nvidia", dpkgLinuxModules, true},
+		{"rpm negativo17 libs only", rpmNegativoLibsOnly, false},
+		{"rpm negativo17 dkms-nvidia", rpmNegativoDkms, true},
+		{"rpm fusion libs only", rpmFusionLibsOnly, false},
+		{"rpm fusion driver", rpmFusionDriver, true},
+		{"rpm kmod-nvidia", rpmKmod, true},
 	}
 	for _, c := range cases {
 		if got := packageListHasNvidiaDriver(c.in); got != c.want {
 			t.Errorf("%s: packageListHasNvidiaDriver = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestStripPackageVersion(t *testing.T) {
+	cases := map[string]string{
+		"nvidia-driver-550":                 "nvidia-driver",
+		"nvidia-driver-550-open":            "nvidia-driver",
+		"akmod-nvidia-550.76-1.fc40.x86_64": "akmod-nvidia",
+		"kmod-nvidia-6.8.5-301.fc40.x86_64": "kmod-nvidia",
+		"xorg-x11-drv-nvidia":               "xorg-x11-drv-nvidia",
+		"nvidia":                            "nvidia",
+		"nvidia-legacy-390xx-driver":        "nvidia-legacy",
+		"linux-modules-nvidia-550-generic":  "linux-modules-nvidia",
+		"nvidia-kernel-source-550":          "nvidia-kernel-source",
+	}
+	for in, want := range cases {
+		if got := stripPackageVersion(in); got != want {
+			t.Errorf("stripPackageVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestIsNvidiaDriverPackage(t *testing.T) {
+	yes := []string{
+		"nvidia", "nvidia-open", "nvidia-open-dkms", "nvidia-lts", "nvidia-dkms",
+		"nvidia-dkms-550", "nvidia-driver", "nvidia-driver-550", "nvidia-driver-550-server",
+		"nvidia-kernel-dkms", "nvidia-kernel-open-dkms", "nvidia-legacy-390xx-driver",
+		"akmod-nvidia-550.76-1.fc40.x86_64", "kmod-nvidia-550.76-1.fc40.x86_64",
+		"dkms-nvidia-550.76-1.fc40.x86_64", "xorg-x11-drv-nvidia-550.76-1.fc40.x86_64",
+		"linux-modules-nvidia-550-generic",
+	}
+	no := []string{
+		"", "nvidia-utils", "nvidia-settings", "libnvidia-compute-550", "nvidia-driver-libs",
+		"nvidia-driver-libs-nonglvnd", "nvidia-driver-bin", "nvidia-driver-cuda",
+		"nvidia-kernel-common", "nvidia-kernel-common-550", "nvidia-kernel-source",
+		"nvidia-kernel-source-550", "nvidia-kernel-support", "nvidia-kmod-common",
+		"xorg-x11-drv-nvidia-libs-550.76-1.fc40.x86_64", "xorg-x11-drv-nvidia-cuda",
+		"xorg-x11-drv-nvidia-kmodsrc", "nvidia-legacy-390xx-driver-libs",
+		"nvidia-driver-libs-550.76-1.fc40.x86_64", "nvidia-prime", "nvidia-persistenced",
+	}
+	for _, n := range yes {
+		if !isNvidiaDriverPackage(n) {
+			t.Errorf("isNvidiaDriverPackage(%q) should be true", n)
+		}
+	}
+	for _, n := range no {
+		if isNvidiaDriverPackage(n) {
+			t.Errorf("isNvidiaDriverPackage(%q) should be false", n)
 		}
 	}
 }

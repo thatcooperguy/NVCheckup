@@ -12,6 +12,12 @@ import (
 // of writing a guessed default the machine never had.
 const absentSentinel = "__ABSENT__"
 
+// absentKeySentinel is recorded as UndoInfo by the registry actions when not
+// even the parent key existed beforehand (apply had to create it). Undo then
+// removes the value and, if nothing else has been stored in the key since,
+// the key itself.
+const absentKeySentinel = "__ABSENT_KEY__"
+
 // maxUndoInfoBytes caps the size of undo data that Undo is willing to act on.
 // Real values are a GUID, a DWORD, or a three-line modprobe file; anything
 // larger indicates a corrupted or tampered journal.
@@ -47,16 +53,18 @@ func validateUndoInfo(actionID, undoInfo string) error {
 		return nil
 
 	case "disable-hags", "disable-game-mode":
-		if undoInfo == absentSentinel {
+		if undoInfo == absentSentinel || undoInfo == absentKeySentinel {
 			return nil
 		}
 		if !isDword(undoInfo) {
-			return fmt.Errorf("undo information %q is not a DWORD value or %s", undoInfo, absentSentinel)
+			return fmt.Errorf("undo information %q is not a DWORD value, %s or %s", undoInfo, absentSentinel, absentKeySentinel)
 		}
 		return nil
 
 	case "blacklist-nouveau":
-		if undoInfo == absentSentinel {
+		// normalizeNouveauUndoInfo also accepts the exact legacy v0.2.0 marker
+		// (the file path) that meant "nvcheckup created the file".
+		if normalizeNouveauUndoInfo(undoInfo) == absentSentinel {
 			return nil
 		}
 		if err := validateNouveauContent(undoInfo); err != nil {

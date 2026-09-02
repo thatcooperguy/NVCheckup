@@ -51,15 +51,28 @@ func detectInitramfsTool(look func(string) (string, error)) (initramfsTool, bool
 	return initramfsTool{}, false
 }
 
+// normalizeNouveauUndoInfo maps the legacy undo marker written by nvcheckup
+// v0.2.0 onto absentSentinel. That version recorded the file path itself
+// (exactly nouveauBlacklistPath) to mean "the file did not exist; we created
+// it". Only that exact string is translated; anything else is returned as is
+// so validateUndoInfo still rejects it.
+func normalizeNouveauUndoInfo(undoInfo string) string {
+	if undoInfo == nouveauBlacklistPath {
+		return absentSentinel
+	}
+	return undoInfo
+}
+
 // packageListHasNvidiaDriver scans package-manager output for an installed
 // NVIDIA kernel driver package. It understands:
 //   - dpkg -l: lines beginning with "ii" followed by the package name
 //   - rpm -qa / pacman -Q: one package per line
 //
-// It deliberately looks for driver packages (nvidia-driver-*, nvidia-dkms,
-// akmod-nvidia, kmod-nvidia, xorg-x11-drv-nvidia, nvidia, nvidia-open,
-// nvidia-lts) rather than any package containing "nvidia", because utilities
-// such as nvidia-settings or libnvidia-* can be present without a driver.
+// It deliberately looks for packages that provide (or build) the kernel
+// module rather than any package containing "nvidia": utilities such as
+// nvidia-settings, libraries such as libnvidia-* / nvidia-driver-libs, and
+// split packages such as nvidia-kernel-common can all be present without a
+// usable driver.
 func packageListHasNvidiaDriver(output string) bool {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
@@ -89,27 +102,69 @@ func packageListHasNvidiaDriver(output string) bool {
 	return false
 }
 
-// isNvidiaDriverPackage reports whether a package name denotes an NVIDIA
-// kernel driver (as opposed to a utility or library).
-func isNvidiaDriverPackage(name string) bool {
-	// rpm -qa includes the version: "akmod-nvidia-550.54.14-1.fc39.x86_64".
-	// Matching on prefixes keeps that working.
-	prefixes := []string{
-		"nvidia-driver",       // Debian/Ubuntu meta package, RPM Fusion
-		"nvidia-dkms",         // Debian/Ubuntu, Arch
-		"nvidia-kernel",       // Debian
-		"akmod-nvidia",        // Fedora RPM Fusion
-		"kmod-nvidia",         // RHEL / RPM Fusion
-		"xorg-x11-drv-nvidia", // Fedora/RHEL
-		"nvidia-open",         // Arch open kernel modules
-		"nvidia-lts",          // Arch LTS kernel
-		"nvidia-graphics-drivers",
+// nvidiaModulePackagePrefixes are the version-stripped names of packages that
+// provide or build the NVIDIA kernel module.
+var nvidiaModulePackagePrefixes = []string{
+	"nvidia-driver",        // Debian/Ubuntu meta package (nvidia-driver-550, -open, -server), RPM Fusion/negativo17
+	"nvidia-dkms",          // Debian/Ubuntu, Arch
+	"nvidia-kernel",        // Debian (nvidia-kernel-dkms, nvidia-kernel-open-dkms)
+	"nvidia-open",          // Arch open kernel modules, Debian nvidia-open-kernel-dkms
+	"nvidia-lts",           // Arch LTS kernel
+	"nvidia-legacy",        // Debian legacy branches (nvidia-legacy-390xx-driver)
+	"linux-modules-nvidia", // Ubuntu prebuilt signed modules (linux-modules-nvidia-550-generic)
+	"akmod-nvidia",         // Fedora RPM Fusion
+	"kmod-nvidia",          // RHEL / RPM Fusion prebuilt modules
+	"dkms-nvidia",          // negativo17
+	"xorg-x11-drv-nvidia",  // Fedora/RHEL
+	"nvidia-graphics-drivers",
+}
+
+// nvidiaNonModuleSegments are name components that mark a split package which
+// can be installed without a kernel module: libraries, userspace binaries,
+// shared configuration, sources, CUDA runtime, and so on.
+var nvidiaNonModuleSegments = map[string]bool{
+	"libs": true, "lib": true, "libs32": true, "bin": true, "common": true,
+	"source": true, "src": true, "kmodsrc": true, "cuda": true, "support": true,
+	"utils": true, "settings": true, "devel": true, "dev": true, "doc": true,
+	"docs": true, "firmware": true, "headers": true, "persistenced": true,
+	"power": true, "modprobe": true, "xconfig": true, "prime": true, "vulkan": true,
+	"nonglvnd": true, "egl": true, "gl": true, "compute": true, "encode": true,
+	"decode": true, "extra": true, "fbc": true, "ifr": true, "cfg1": true,
+}
+
+// stripPackageVersion cuts a package name at the first "-<digit>" boundary,
+// which is where dpkg embeds the branch ("nvidia-driver-550") and where rpm
+// -qa appends the version ("akmod-nvidia-550.76-1.fc40.x86_64").
+func stripPackageVersion(name string) string {
+	for i := 1; i+1 < len(name); i++ {
+		if name[i] == '-' && name[i+1] >= '0' && name[i+1] <= '9' {
+			return name[:i]
+		}
 	}
-	for _, p := range prefixes {
-		if strings.HasPrefix(name, p) {
+	return name
+}
+
+// isNvidiaDriverPackage reports whether a package name denotes an NVIDIA
+// kernel driver (as opposed to a utility, library, or common-files package).
+func isNvidiaDriverPackage(name string) bool {
+	// Arch: the driver package is literally "nvidia" (pacman -Q prints "nvidia 550.78-6").
+	if name == "nvidia" {
+		return true
+	}
+	// Any library/common/source style component anywhere in the name means the
+	// package does not carry the module, whatever its family prefix is
+	// (nvidia-driver-libs, nvidia-kernel-common, nvidia-kernel-source-550,
+	// xorg-x11-drv-nvidia-cuda, nvidia-legacy-390xx-driver-libs).
+	for _, seg := range strings.Split(name, "-") {
+		if nvidiaNonModuleSegments[seg] {
+			return false
+		}
+	}
+	base := stripPackageVersion(name)
+	for _, p := range nvidiaModulePackagePrefixes {
+		if base == p || strings.HasPrefix(base, p+"-") {
 			return true
 		}
 	}
-	// Arch: the driver package is literally "nvidia" (pacman -Q prints "nvidia 550.54-1").
-	return name == "nvidia"
+	return false
 }

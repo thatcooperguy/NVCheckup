@@ -57,10 +57,11 @@ func readNouveauFile() (content string, absent bool, err error) {
 }
 
 // restoreNouveauFile puts the blacklist file back to a captured state: removes
-// it for absentSentinel, otherwise writes the captured content. The content
-// must already have passed validateNouveauContent.
+// it for absentSentinel (or the legacy v0.2.0 marker, see
+// normalizeNouveauUndoInfo), otherwise writes the captured content. The
+// content must already have passed validateNouveauContent.
 func restoreNouveauFile(undoInfo string) error {
-	if undoInfo == absentSentinel {
+	if normalizeNouveauUndoInfo(undoInfo) == absentSentinel {
 		if err := os.Remove(nouveauBlacklistPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("could not remove %s: %w", nouveauBlacklistPath, err)
 		}

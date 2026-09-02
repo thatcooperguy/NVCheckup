@@ -1,6 +1,9 @@
 package remediate
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Trimmed real output of "whoami /groups" from an elevated and a normal prompt.
 const (
@@ -32,5 +35,15 @@ func TestElevationCheckDefaultsToIsElevated(t *testing.T) {
 	// Smoke test: the real check must not panic and must be deterministic.
 	if elevationCheck() != IsElevated() {
 		t.Error("elevationCheck should default to IsElevated")
+	}
+}
+
+func TestSystemBinary(t *testing.T) {
+	if got := systemBinary("", "whoami.exe"); got != "whoami.exe" {
+		t.Errorf("without SystemRoot the bare name must be returned, got %q", got)
+	}
+	got := systemBinary(`C:\WINDOWS`, "whoami.exe")
+	if !strings.Contains(got, "System32") || !strings.HasSuffix(got, "whoami.exe") || !strings.HasPrefix(got, `C:\WINDOWS`) {
+		t.Errorf("systemBinary should point under SystemRoot\\System32, got %q", got)
 	}
 }

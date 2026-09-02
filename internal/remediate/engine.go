@@ -13,9 +13,13 @@
 //     state instead of a guessed default.
 //   - Undo validates journal-supplied undo data before using it, because the
 //     journal is a plain file the user (or another program) can edit.
+//   - Apply and Undo check that the journal is readable BEFORE changing the
+//     system, so a corrupted or hand-edited journal can never lead to a change
+//     that is applied but not recorded (and therefore not undoable).
 package remediate
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -179,6 +183,8 @@ func describeUndoInfo(undoInfo string) string {
 	switch {
 	case undoInfo == absentSentinel:
 		return "value did not exist (undo will remove it)"
+	case undoInfo == absentKeySentinel:
+		return "key and value did not exist (undo will remove the value, and the key if it is otherwise empty)"
 	case undoInfo == "":
 		return "nothing (action has no state to restore)"
 	case strings.Contains(undoInfo, "\n"):
@@ -195,9 +201,11 @@ func describeUndoInfo(undoInfo string) string {
 // The method:
 //  1. Refuses (before running or journaling anything) if the action needs
 //     elevation and the process is not elevated
-//  2. Calls the platform-specific implementation
-//  3. Writes a ChangeJournalEntry to disk for audit/undo purposes
-//  4. Returns a RemediationResult with the outcome
+//  2. Refuses if the change journal exists but cannot be read, because a
+//     change that cannot be journaled cannot be undone
+//  3. Calls the platform-specific implementation
+//  4. Writes a ChangeJournalEntry to disk for audit/undo purposes
+//  5. Returns a RemediationResult with the outcome
 func (e *Engine) Apply(action types.RemediationAction) (*types.RemediationResult, error) {
 	result := &types.RemediationResult{
 		ActionID:  action.ID,
@@ -218,6 +226,14 @@ func (e *Engine) Apply(action types.RemediationAction) (*types.RemediationResult
 		return nil, errNotElevated
 	}
 
+	// Make sure the journal can take the entry before touching the system.
+	// Read is strict (it rejects malformed entries), so this is the point
+	// where a corrupted journal is caught, not after the change is applied.
+	journal := NewJournal(e.journalDir)
+	if _, err := journal.Read(); err != nil {
+		return nil, fmt.Errorf("refusing to apply: change journal is unreadable, fix or move it first: %w", err)
+	}
+
 	// Execute the platform-specific action via the dispatcher
 	output, undoInfo, err := e.applyAction(action.ID)
 	if err != nil {
@@ -232,7 +248,6 @@ func (e *Engine) Apply(action types.RemediationAction) (*types.RemediationResult
 
 	// Record in the change journal regardless of success/failure so the user
 	// has an audit trail of every attempt that actually ran commands.
-	journal := NewJournal(e.journalDir)
 	entry := types.ChangeJournalEntry{
 		ActionID:  action.ID,
 		Title:     action.Title,
@@ -283,16 +298,18 @@ func (e *Engine) Undo(entry types.ChangeJournalEntry) error {
 		return errNotElevated
 	}
 
-	undoErr := e.undoAction(entry.ActionID, entry.UndoInfo)
-
-	// Update the journal with undo status
+	// Read the journal before undoing so an unreadable journal stops us
+	// before any command runs, not after (the undo result must be recorded).
 	journal := NewJournal(e.journalDir)
 	entries, readErr := journal.Read()
 	if readErr != nil {
-		return fmt.Errorf("undo executed but failed to update journal: %w", readErr)
+		return fmt.Errorf("refusing to undo: change journal is unreadable, fix or move it first: %w", readErr)
 	}
 
-	// Find and update the matching entry by action ID and timestamp
+	undoErr := e.undoAction(entry.ActionID, entry.UndoInfo)
+
+	// Update the journal with the undo status: find the matching entry by
+	// action ID and timestamp.
 	for i := range entries {
 		if entries[i].ActionID == entry.ActionID && entries[i].AppliedAt.Equal(entry.AppliedAt) {
 			entries[i].UndoneAt = time.Now()
@@ -307,7 +324,8 @@ func (e *Engine) Undo(entry types.ChangeJournalEntry) error {
 	}
 
 	if writeErr := journal.Write(entries); writeErr != nil {
-		return fmt.Errorf("undo executed but failed to update journal: %w", writeErr)
+		// Keep the undo outcome visible alongside the journal failure.
+		return errors.Join(undoErr, fmt.Errorf("undo executed but failed to update journal: %w", writeErr))
 	}
 
 	return undoErr

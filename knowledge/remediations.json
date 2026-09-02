@@ -22,7 +22,7 @@
       "category": "registry",
       "description": "Sets HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\HwSchMode to 1 (off). HAGS can cause stutter or instability with some games and driver versions. Takes effect after a reboot.",
       "dry_run_desc": "Would run: reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers /v HwSchMode /t REG_DWORD /d 1 /f (after capturing the current value with reg query)",
-      "undo_desc": "Restore the captured HwSchMode value with reg add, or delete the value with reg delete if it did not exist before. Reboot required.",
+      "undo_desc": "Restore the captured HwSchMode value with reg add, or delete the value with reg delete if it did not exist before (removing the key too if apply had to create it and it is otherwise empty). Reboot required.",
       "needs_reboot": true,
       "needs_admin": true,
       "finding_ids": ["hags-enabled"]
@@ -35,7 +35,7 @@
       "category": "registry",
       "description": "Sets HKCU\\Software\\Microsoft\\GameBar\\AutoGameModeEnabled to 0. Game Mode can cause frame pacing issues in some titles.",
       "dry_run_desc": "Would run: reg add HKCU\\Software\\Microsoft\\GameBar /v AutoGameModeEnabled /t REG_DWORD /d 0 /f (after capturing the current value with reg query)",
-      "undo_desc": "Restore the captured AutoGameModeEnabled value with reg add, or delete the value with reg delete if it did not exist before.",
+      "undo_desc": "Restore the captured AutoGameModeEnabled value with reg add, or delete the value with reg delete if it did not exist before (removing the key too if apply had to create it and it is otherwise empty).",
       "needs_reboot": false,
       "needs_admin": false,
       "finding_ids": []
