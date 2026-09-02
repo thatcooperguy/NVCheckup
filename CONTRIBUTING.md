@@ -24,6 +24,9 @@ it must never surprise the user, and it must be testable without a GPU.
   go test ./...
   GOOS=linux   go vet ./... && GOOS=linux   go build ./cmd/nvcheckup
   GOOS=windows go vet ./... && GOOS=windows go build ./cmd/nvcheckup
+  GOOS=linux   GOARCH=arm64 go build ./...      # DGX Spark
+  GOOS=windows GOARCH=arm64 go build ./...      # RTX Spark
+  GOOS=darwin  GOARCH=arm64 go build ./...      # must keep building: use build tags or runtime.GOOS checks
   ```
 
 - One test runs the real collectors end to end
@@ -43,12 +46,15 @@ it must never surprise the user, and it must be testable without a GPU.
 cmd/nvcheckup/        CLI entry point and flag parsing
 internal/core/        7-phase pipeline: collect, analyze, redact, report
 internal/collector/   common, windows, linux, wsl, ai
-internal/analyzer/    rules that turn collected data into findings
+internal/analyzer/    rules that turn collected data into findings (analyzer.go, analyzer_spark.go, analyzer_cluster.go, analyzer_woa.go)
 internal/remediate/   opt-in fixes: preview, elevation check, journal, undo
 internal/redact/      PII redaction
 internal/report/      text, JSON, markdown output
+internal/llmplan/     nvcheckup llm-plan: sizing, model shapes, runtime templates, prerequisites, rendering
 pkg/types/            shared structs; append-only, other packages depend on them
-knowledge/            reference JSON (rules, Xid codes, remediations)
+knowledge/            reference JSON (rules, Xid codes, remediations, LLM model shapes)
+.github/fieldtest/    simulated-GPU scenarios and the shims that answer them
+docs/roadmap/         the Spark specification, rule catalogue and work packages
 ```
 
 ## Adding a collector
@@ -73,6 +79,17 @@ They must degrade gracefully: a missing tool or a rejected query is a
    machine.
 5. **Respect the timeout.** Use `util.RunCommand(timeout, ...)`; never call
    `exec.Command` directly.
+5b. **Honour `NVC_SIM_ROOT`.** Every absolute file path a collector reads
+   (`/etc/...`, `/proc/...`, `/sys/...`, `/var/...`, `/run/...`) goes through the
+   one small path helper that prefixes it with `NVC_SIM_ROOT` when the variable
+   is set. Commands are resolved through `PATH` as usual so the shims can answer.
+   See "The NVC_SIM_ROOT contract" below.
+5c. **Never guess hardware facts.** Everything about DGX Spark, RTX Spark, GB10,
+   N1X and unified memory comes from `docs/roadmap/spark-support.md` and
+   `docs/roadmap/spark-rules.json`. Put a comment naming the spec section next
+   to every threshold, string or command you take from it, and put values the
+   spec marks `unconfirmed` or `assumption` behind a clearly named constant with
+   a comment saying so.
 6. **Never interpolate untrusted values into a shell string.** Pass them as
    arguments. Environment variables such as `CUDA_PATH` are untrusted.
 7. **Think about redaction.** If the output can contain a username, hostname, or
@@ -84,7 +101,47 @@ They must degrade gracefully: a missing tool or a rejected query is a
 
 If you have a Linux machine with an NVIDIA GPU (or a Jetson), `scripts/linux-fieldtest.sh` does the whole run for you: it downloads the release binary for your CPU, verifies the checksum, runs `self-test`, `run`, `snapshot` and the `fix` catalog in `--dry-run` only, and tars a redacted bundle you can attach to [issue #2](https://github.com/thatcooperguy/NVCheckup/issues/2). Nothing it does changes your system.
 
-CI approximates this with `.github/workflows/linux-fieldtest-sim.yml`: shims in `.github/fieldtest/shims` answer the exact `nvidia-smi`, `lspci`, `lsmod`, `modinfo` and `dmesg` queries the collectors make from `.github/fieldtest/scenarios/rig3.json`. Add a scenario there to reproduce a machine you have seen.
+CI approximates this with `.github/workflows/linux-fieldtest-sim.yml`: shims in `.github/fieldtest/shims` answer the exact `nvidia-smi`, `lspci`, `lsmod`, `modinfo`, `dmesg`, `dpkg`, `dmidecode`, `lscpu`, `ibdev2netdev`, `fwupdmgr` and `nvidia-spark-ota-check` queries the collectors make from a scenario file such as `.github/fieldtest/scenarios/rig3.json` or `gb10.json`. Add a scenario there to reproduce a machine you have seen.
+
+## Testing on DGX Spark, OEM GB10 or RTX Spark hardware
+
+The whole Spark feature set was implemented from public documentation and community field reports and is exercised only against the simulated `gb10` scenario. Nothing has run on a GB10 or N1X yet, and the open questions in spec section 12 can only be answered by one. If you have the hardware, run `scripts/spark-capture.sh` (read-only, redacted) and attach the bundle to [issue #3](https://github.com/thatcooperguy/NVCheckup/issues/3). It captures exactly the fixture wish-list of spec section 12:
+
+```bash
+cat /etc/dgx-release /etc/fastos-release
+sudo dmidecode -s system-manufacturer -s system-product-name -s system-version -s bios-version
+lscpu
+grep -E 'MemTotal|MemAvailable|Swap' /proc/meminfo
+lspci -nn -d 10de: ; lspci -nn -d 15b3:
+dpkg -l 'nvidia-dkms*' 'nvidia-driver*'
+nvidia-smi -L
+# every query-field list the collectors use (GPUQueryFields, ThermalQueryFields, ThermalEventQueryFields,
+# PCIeQueryFields and GPUCapQueryFields = index,compute_cap), plus clocks.max.graphics
+nvidia-smi -q -d MEMORY,PERFORMANCE,CLOCK,POWER,TEMPERATURE
+sudo nvidia-spark-ota-check summary
+fwupdmgr get-devices
+ibdev2netdev ; ip -br addr
+ls /proc/device-tree/model
+# RTX Spark (PowerShell):
+# Get-CimInstance Win32_VideoController | fl Name,PNPDeviceID,DriverVersion,InfFilename,AdapterRAM
+# (Get-CimInstance Win32_Processor).Name ; nvidia-smi   # if present
+```
+
+The things we most want to see verbatim: the `nvidia-smi -L` line and the CSV value of every queried field on GB10 (`pstate` and clocks at idle, `pcie.link.gen.max` / `width.max`, `clocks_event_reasons.active` idle and under load, `compute_cap`, `power.draw` formatting); whether `/proc/device-tree/model` exists; the `fwupdmgr get-devices` names and version formats (to confirm `0x03000508` = 3.5.8); whether a stock DGX OS install carries `nvidia-dkms-580-open`; the default swap configuration; exact `ibstat` / `/sys/class/infiniband/*/ports/1/rate` strings; and on RTX Spark whether `nvidia-smi.exe` ships at all and what it prints for memory. The scenario file's `description` says which of its values are placeholders; a capture replaces them.
+
+## Adding a simulated scenario and shim
+
+Scenarios are JSON files under `.github/fieldtest/scenarios/`. A scenario describes one machine: the GPU rows (`index`, `name`, `uuid`, `driver_version`, `pci.bus_id`, the `memory.*`, `temperature.gpu`, `power.*`, `pstate`, `clocks.*`, `fan.speed`, `utilization.gpu`, `pcie.link.*`, `clocks_event_reasons.active`, `compute_cap` fields the shim answers per query field), plus line lists that the other shims replay verbatim (`lspci_lines`, `dpkg_lines`, `lsmod_lines`, `dmesg_lines`, `lscpu_lines`, `cpuinfo_lines`, `ibdev2netdev_lines`), structured blocks for `dmi`, `meminfo`, `fwupd_devices`, `spark_ota_check_summary`, and the file contents the job writes under `NVC_SIM_ROOT` (`dgx_release`, `fastos_release`, `os_release`, `device_tree_model`). Look at `gb10.json` for the full shape and at `rig3.json` for a plain multi-GPU rig.
+
+1. **Start from a capture.** Copy real command output into the line lists; use `[N/A]`, `Not Supported` and odd formatting exactly as the tool printed them. Mark anything you had to invent in the scenario's `description` so a later capture can replace it.
+2. **Shims answer only what the collectors ask.** Each shim in `.github/fieldtest/shims/` is a small script that reads the scenario named by the workflow and prints the answer for the exact arguments the collector passes (`nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits`, `lspci -nn`, `dpkg-query -W ...`, `fwupdmgr get-devices`, ...). When you add a collector that runs a new command, add a shim for it and a scenario key it reads; when you add a query field, teach the `nvidia-smi` shim to answer it and print `[N/A]` verbatim where the hardware would.
+3. **Files go under `NVC_SIM_ROOT`.** The workflow step creates a temporary root and writes `/etc/dgx-release`, `/etc/fastos-release`, `/etc/os-release`, `/sys/class/dmi/id/*`, `/proc/meminfo`, `/proc/cpuinfo` and `/sys/class/thermal/*` fixtures under it from the scenario, then exports `NVC_SIM_ROOT` for the run. Anything a collector reads from the filesystem must be provided this way; anything it runs is a shim on `PATH`.
+4. **Add a job with assertions.** Each scenario gets a workflow step that runs `self-test` and `run --json`, then asserts the exit code, the expected finding ids present, the forbidden ids absent, the summary lines and the `report.json` fields that prove the platform logic worked. The `gb10` job asserts, among others, `platform.class == "dgx-spark"`, `pcie.on_package == true`, `gpus[0].memory_reporting == "not-supported"`, `unified_memory.mem_total_kb == 125513944` and a non-empty `impact` on every finding; the `gb10-gsp-fail` variant asserts `dgx-spark-gsp-init-failure` and no `no-nvidia-gpu`.
+5. **Run it locally** before pushing: build the binary, put the shims first on `PATH`, point them at your scenario, create the fixture root and run `NVC_SIM_ROOT=/tmp/simroot ./nvcheckup run --mode full --json --out /tmp/out`. The workflow file shows the exact environment variable the shims read for the scenario path.
+
+### The NVC_SIM_ROOT contract
+
+When the environment variable `NVC_SIM_ROOT` is set, every absolute file path a collector reads (`/etc/...`, `/proc/...`, `/sys/...`, `/var/...`, `/run/...`) is prefixed with it; commands (`nvidia-smi`, `lspci`, `dmidecode`, `lscpu`, `dpkg-query`, `fwupdmgr`, `journalctl`, `systemctl`, ...) are resolved via `PATH` as today so shims can answer. One small helper does the prefixing and every collector uses it; do not open an absolute path directly. The variable is a test hook: it never changes what a collector does, only where it reads from, and collectors stay read-only with or without it. A collector that forgets the helper works on a developer's machine and silently reads the runner's real `/proc/meminfo` in CI, which is exactly the kind of bug the scenario assertions exist to catch (the `gb10` job's `mem_total_kb == 125513944` check is there for that reason).
 
 ## Testing against GPUs you do not own
 
@@ -174,7 +231,10 @@ request. Especially useful right now:
 
 ## Adding an analyzer rule
 
-Rules live in `internal/analyzer/analyzer.go` and produce `types.Finding`.
+Rules live in `internal/analyzer/` and produce `types.Finding`. General rules are in
+`analyzer.go`; Spark, cluster and Windows-on-Arm rules live in `analyzer_spark.go`,
+`analyzer_cluster.go` and `analyzer_woa.go`. The lockstep test scans every non-test
+`.go` file in the package, so a rule may live in whichever file fits.
 
 1. **Choose a stable id.** Kebab-case, descriptive, never reused for a different
    meaning (`pcie-downshift`, `whea-errors`). If `knowledge/rules.json` already
@@ -192,12 +252,71 @@ Rules live in `internal/analyzer/analyzer.go` and produce `types.Finding`.
    rule on it or emit an INFO finding that says so explicitly.
 6. **Next steps are safe and reversible**, and ordered from least to most
    invasive. If a `fix` action exists, set `Remediation` so the report can point
-   to it.
+   to it. A step that would change driver, firmware, kernel, swap, systemd,
+   firewall, Secure Boot, snap or netplan state is not something NVCheckup does;
+   if the user genuinely needs it, write it as an **Advisory step**: it starts
+   with the word `Advisory` (the renderers and the knowledge test match the
+   regex `^Advisory` followed by a word boundary, so `Advisory:` and
+   `Advisory: (data loss)` both qualify), names the exact command, and carries
+   the exact revert command or an explicit data-loss warning. Advisory steps
+   come after every read-only step, never before. Reimaging is a last resort
+   and must say that it erases the unit.
+6b. **Set `Impact`** to the most invasive of the finding's next steps: `none`,
+   `reversible`, `persistent`, `irreversible` or `data-loss`. A finding whose
+   steps are all read-only is `none`; one with an Advisory step is at least
+   `reversible`; a firmware flash or OTA is `irreversible`; anything that can
+   delete data (`snap remove docker`, the System Recovery image) is `data-loss`.
+   Every Spark finding must carry one; the renderers print it next to the
+   severity and `report.json` emits it as `findings[].impact` (`omitempty`, so
+   old reports are unchanged and `schema_version` stays `"1"`).
+6c. **Gate on the platform.** Rules that assume discrete VRAM, a fan, a power
+   limit or a PCIe link must not fire when `Platform.UnifiedMemory` or the GPU's
+   `OnPackage` flag is set; rules written for a platform class check
+   `Platform.Class`. Spark rule ids, triggers, evidence templates, impact values
+   and next steps come from `docs/roadmap/spark-rules.json`; implement them as
+   written and cite the spec section in a comment.
 7. **Add a test** in `internal/analyzer` that builds a `Snapshot` fixture,
    triggers the rule, and asserts id, severity, and that the normal case does not
    fire.
 8. **Update the docs**: the rule category summary in `PRODUCT.md`, and
    `knowledge/rules.json`; the drift test (`TestRulesJSON_MatchesAnalyzer`) fails until you do.
+   A `rules.json` entry carries `id`, `title`, `category`, `severity`,
+   `base_confidence`, `modes` (which of `gaming`, `ai`, `creator`, `streaming`,
+   `full` run it), `description`, and for platform rules `platforms` (a subset of
+   the closed set `dgx-spark`, `rtx-spark`, `jetson`, `grace-hopper`,
+   `arm64-dgpu`, `all`, matching the detector's class names) and `impact` (one
+   of the five values above). A knowledge test rejects any other `platforms`
+   value or `impact` spelling, and checks that steps beginning with `Advisory`
+   never precede a read-only step.
+
+## Adding a model shape to knowledge/models.json
+
+`nvcheckup llm-plan` sizes models from `knowledge/models.json`. Each entry is one
+model shape, taken from the model's Hugging Face `config.json` (spec section 7.3):
+the name and aliases the `--model` flag accepts, total and active parameters,
+`num_hidden_layers`, `num_key_value_heads`, `head_dim` (or `hidden_size /
+num_attention_heads`), `num_local_experts` / `num_experts_per_tok` for MoE models,
+`sliding_window` where some layers use one, a measured checkpoint size per
+quantization when one is published (the wizard prefers it to the bytes-per-
+parameter formula), and the source URL of every number. Mirror the keys of an
+existing entry exactly; the file is read by `internal/llmplan/models.go`.
+
+1. **Take the numbers from `config.json`**, not from a blog post. Record the
+   URL. If a value has a single source (as the Nemotron-3-Super Mamba state term
+   does), say so in the entry.
+2. **Compute the KV bytes per token by hand** (`2 x layers x kv_heads x head_dim x 2`
+   for f16) and check it against the table in spec section 7.3 before you trust
+   the entry; a wrong `head_dim` silently doubles the KV estimate.
+3. **Add a sizing test** in `internal/llmplan` that reproduces a worked example
+   for the new shape to +/-0.1 GiB, the way the existing tests reproduce the
+   three examples of spec section 7.5 and the 17 / 13.4 and 6.9 / 3.3 tok/s
+   ceilings.
+4. **Never encode a memory tier.** The pool is always the measured `MemTotal` /
+   `TotalVisibleMemorySize`; a model entry must not carry "fits on 128 GB"
+   style flags.
+5. **`--hf-config` is the escape hatch.** If a model is too niche for the
+   knowledge pack, users can size it from a local `config.json` offline; prefer
+   that to adding every model under the sun.
 
 ## Adding a remediation action
 
@@ -232,11 +351,16 @@ the project that changes the user's system, so they get the most scrutiny.
 ## Pull request checklist
 
 - [ ] `gofmt -l .` prints nothing; `go vet ./...` is clean for both GOOS values.
-- [ ] `go build ./...` and `go test ./...` pass.
+- [ ] `go build ./...` and `go test ./...` pass, and the cross-builds for
+      `linux/arm64`, `windows/arm64`, `linux/amd64` and `darwin/arm64` still build.
 - [ ] New parse logic is a pure function with a fixture test.
 - [ ] New `nvidia-smi` parsing handles every row, carries the `index`, and is
       tested against at least one GPU class other than the one you own.
-- [ ] New findings have a stable id, a severity you can defend, and a test.
+- [ ] New findings have a stable id, a severity you can defend, an `impact`, and a test;
+      state-changing next steps are `Advisory:` lines with a revert command, after the read-only steps.
+- [ ] New collectors read files through the `NVC_SIM_ROOT` helper and, if they run a
+      new command, come with a shim and a scenario key.
+- [ ] Spark / unified-memory facts cite a spec section; unconfirmed values sit behind a named constant.
 - [ ] Nothing new runs a network probe unless `--network` or `network-test` asked for it.
 - [ ] Nothing new writes to the system outside `internal/remediate`.
 - [ ] Untrusted strings (env vars, command output, journal contents) are never

@@ -25,7 +25,7 @@ We will acknowledge receipt within 48 hours and aim to provide a fix or mitigati
 
 NVCheckup is a diagnostic tool that runs locally and never uploads data. Security concerns most relevant to this project include:
 
-- **Information disclosure:** Ensuring redaction works correctly and PII is not leaked in reports or snapshots. Redaction is on by default for both `run` and `snapshot`; the `nvidia-smi` process list is stripped before storage.
+- **Information disclosure:** Ensuring redaction works correctly and PII is not leaked in reports or snapshots. Redaction is on by default for both `run` and `snapshot`; the `nvidia-smi` process list is stripped before storage. On DGX Spark and RTX Spark the collectors additionally read `/etc/dgx-release` (whose `DGX_SERIAL_NUMBER` is redacted to `<serial>`), DMI serials (redacted), ConnectX-7 fabric addresses (redacted as `<lan-ip>`), the `NCCL_*` / `UCX_NET_DEVICES` environment of the NVCheckup process only, and listening inference ports without process names. A serial number, fabric address or process name surviving redaction is in scope.
 - **Command injection:** Ensuring user-controlled or environment-controlled input (for example `CUDA_PATH`, command output, file names) cannot be injected into system commands. Values are passed as arguments, never interpolated into shell strings. Python probes run with `python -I`.
 - **Path traversal:** Ensuring output files are written only to intended directories.
 - **`nvcheckup fix` (privileged writes):** `fix` is the only command that writes to the system. It runs only after an interactive confirmation, checks elevation before prompting, and records every change in a journal. Bugs that let `fix` change something other than the previewed setting, skip confirmation, or run unelevated actions as elevated are in scope.
@@ -34,7 +34,7 @@ NVCheckup is a diagnostic tool that runs locally and never uploads data. Securit
 
 ## Design Principles
 
-- NVCheckup is **read-only by default**. `run`, `snapshot`, `compare`, and `doctor` never modify system state. `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in, confirmed, journaled, and undoable.
+- NVCheckup is **read-only by default**. `run`, `snapshot`, `compare`, `doctor` and `llm-plan` never modify system state. Next steps printed as `Advisory:` are advice with a revert command; NVCheckup never executes them, and a code path that did would be in scope. `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in, confirmed, journaled, and undoable.
 - All external commands are executed with timeouts and error handling.
 - No network calls are made at runtime unless you opt in with `run --network`, answer yes to the network question in `doctor`, or run `network-test`. In that case the only traffic is an ICMP ping and a traceroute to `1.1.1.1` and a DNS lookup of `google.com`, performed locally. Nothing is uploaded.
 - No telemetry, analytics, or data collection of any kind.
