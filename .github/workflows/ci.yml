@@ -38,15 +38,24 @@ jobs:
           go test ./... -v $RACE -timeout 120s
 
       - name: Build
-        run: go build -v ./cmd/nvcheckup
+        shell: bash
+        run: |
+          # go build does not append .exe when -o names a file without an extension, so add it ourselves.
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          go build -v -o "nvcheckup-ci${ext}" ./cmd/nvcheckup
 
       - name: Run self-test
         shell: bash
         run: |
+          # Run the built binary, not `go run`: go run collapses every non-zero exit code to 1,
+          # which would make a real failure (exit 2 or 3) look like the accepted "warnings" code.
           # self-test exits 1 for warnings (no GPU on a CI runner is expected), which is fine.
           # Any other non-zero code is a real failure. Capture rc with || because bash runs with -e here.
+          bin=./nvcheckup-ci
+          if [ "$RUNNER_OS" = "Windows" ]; then bin=./nvcheckup-ci.exe; fi
           rc=0
-          go run ./cmd/nvcheckup self-test || rc=$?
+          "$bin" self-test || rc=$?
           if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then exit $rc; fi
 
   lint:
@@ -72,6 +81,14 @@ jobs:
       - name: Cross-vet build-tagged files
         # Windows-only and Linux-only files are skipped by the host vet; check both explicitly.
         run: GOOS=linux go vet ./... && GOOS=windows go vet ./...
+
+      - name: Set up stable Go for govulncheck
+        # govulncheck reports against the standard library of the Go toolchain that runs it.
+        # Go 1.22 is end-of-life, so evaluate with the current stable release instead.
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
 
       - name: govulncheck
         # Advisory only: this needs network access to the vuln DB and should not block a PR.

@@ -5,10 +5,27 @@ on:
     tags:
       - 'v*'
 
+# Read-only by default; only the release job needs to write (to publish the GitHub Release).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    # A tag is released only from a commit that passes vet and the test suite.
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Vet and test
+        run: go vet ./... && go test ./... -timeout 120s
+
   changelog:
     # Refuse to publish a version that has no CHANGELOG entry.
     timeout-minutes: 5
@@ -26,7 +43,7 @@ jobs:
           echo "CHANGELOG.md has an entry for ${version}."
 
   build:
-    needs: changelog
+    needs: [test, changelog]
     timeout-minutes: 20
     strategy:
       matrix:
@@ -79,6 +96,8 @@ jobs:
     needs: build
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
