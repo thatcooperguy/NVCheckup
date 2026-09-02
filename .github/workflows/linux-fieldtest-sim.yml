@@ -387,6 +387,9 @@ jobs:
           assert {p["cage"] for p in ports} == {0, 1}, ports
           for p in active:
               assert p.get("speed_mbps") == 200000 and p.get("mtu") == 9000, p   # spec 9 healthy link
+              # Contract for internal/redact.redactCluster: cx7.go stores CIDRs ("192.168.100.10/24"),
+              # so the address part must be redacted and the "/24" prefix re-appended (RedactIP alone
+              # returns a CIDR unchanged because net.ParseIP rejects it). Fails until that lands.
               assert p.get("ipv4") and all(a.endswith("/24") for a in p["ipv4"]), p   # addresses redacted, prefix kept
               assert not any("192.168.10" in a for a in p["ipv4"]), p            # ... and really redacted
           assert cl.get("hotplug_file_enabled") is True and cl.get("ufw_enabled") is False and cl.get("avahi_active") is True, cl
@@ -407,7 +410,8 @@ jobs:
           # spec 5.1 / 10: the summary block replaces VRAM with a unified-memory line and adds a Platform line.
           grep -n "Unified memory" gb10/report.txt
           grep -n "Platform: DGX Spark" gb10/report.txt
-          ! grep -q "^\s*VRAM:" gb10/report.txt
+          # `! grep -q ...` never trips errexit, so test the inverse explicitly.
+          if grep -qE "^\s*VRAM:" gb10/report.txt; then echo "VRAM line present on a unified-memory platform (spec 5.1)"; exit 1; fi
           grep -q "Unified memory" gb10/report.md
           # spec 3.1 row 4: DGX_SERIAL_NUMBER is redacted (WP1).
           for f in gb10/report.txt gb10/report.json gb10/report.md; do
@@ -473,7 +477,7 @@ jobs:
           test -s gb10-plan/plan.json
           test -s gb10-plan/plan.txt
           grep -q "119.7" gb10-plan/plan.txt                            # spec 7.4: pool = measured MemTotal
-          ! grep -q "128 GB" gb10-plan/plan.txt                         # spec 7.9
+          if grep -q "128 GB" gb10-plan/plan.txt; then echo "plan.txt assumes 128 GB (spec 7.9)"; exit 1; fi
           python3 - <<'PY'
           import json
           p = json.load(open("gb10-plan/plan.json", encoding="utf-8"))
