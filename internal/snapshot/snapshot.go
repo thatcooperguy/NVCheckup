@@ -96,6 +96,10 @@ func collect(timeout int, redactEnabled bool) types.Snapshot {
 	return snap
 }
 
+// The DGX OS collectors are untagged pure-Go parsers shared with the runner
+// (which reaches them through the linux build tag); calling them here without
+// a runtime.GOOS gate is intentional so the parser-only tests run on every OS,
+// and dgx-spark is never classified off Linux.
 // collectDGXSpark fills the DGX OS facts of a dgx-spark snapshot so Diff can
 // compare them (spark-work-packages.md WP1 item 13): the release files
 // (/etc/dgx-release, /etc/fastos-release) merged with the OTA, package and
