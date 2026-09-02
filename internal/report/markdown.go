@@ -48,6 +48,9 @@ func GenerateMarkdown(report *types.Report) string {
 	}
 	w("\n")
 
+	// Platform, unified memory, DGX OS, firmware and cluster fabric (spec 5.1).
+	writePlatformSectionsMarkdown(&sb, report)
+
 	// GPUs
 	w("## GPUs\n\n")
 	if len(report.GPUs) == 0 {
@@ -59,8 +62,16 @@ func GenerateMarkdown(report *types.Report) string {
 		table()
 		row("Vendor", gpu.Vendor)
 		row("Driver", valueOrNA(gpu.DriverVersion))
-		if gpu.VRAMTotalMB > 0 {
+		if gpu.MemoryReporting == "not-supported" {
+			row("Memory", "unified pool (nvidia-smi reports [N/A]; see Platform)")
+		} else if gpu.VRAMTotalMB > 0 {
 			row("VRAM", fmt.Sprintf("%d MB total / %d MB free", gpu.VRAMTotalMB, gpu.VRAMFreeMB))
+		}
+		if gpu.ComputeCap != "" {
+			row("Compute capability", gpu.ComputeCap)
+		}
+		if gpu.OnPackage {
+			row("Package", "on-package GPU (NVLink-C2C to the CPU)")
 		}
 		if gpu.Temperature > 0 {
 			row("Temperature", fmt.Sprintf("%d°C", gpu.Temperature))
@@ -229,12 +240,13 @@ func GenerateMarkdown(report *types.Report) string {
 		w("| Severity | Finding | Evidence | Next Step |\n")
 		w("|----------|---------|----------|-----------|\n")
 		for _, f := range report.Findings {
+			steps := orderedSteps(f.NextSteps)
 			nextStep := "—"
-			if len(f.NextSteps) > 0 {
-				nextStep = f.NextSteps[0]
+			if len(steps) > 0 {
+				nextStep = markdownStep(steps[0])
 			}
-			w("| **%s** | %s | %s | %s |\n",
-				f.Severity, mdCell(f.Title),
+			w("| **%s**%s | %s | %s | %s |\n",
+				f.Severity, impactSuffix(f), mdCell(f.Title),
 				mdCell(truncate(f.Evidence, 80)),
 				mdCell(truncate(nextStep, 80)))
 		}
@@ -243,15 +255,16 @@ func GenerateMarkdown(report *types.Report) string {
 		// Detailed findings
 		w("### Details\n\n")
 		for i, f := range report.Findings {
-			w("<details>\n<summary><b>[%s] #%d: %s</b></summary>\n\n", f.Severity, i+1, f.Title)
+			w("<details>\n<summary><b>[%s]%s #%d: %s</b></summary>\n\n", f.Severity, impactSuffix(f), i+1, f.Title)
 			if f.ID != "" {
 				w("**ID:** `%s`\n\n", f.ID)
 			}
 			w("**Evidence:** %s\n\n", f.Evidence)
 			w("**Why it matters:** %s\n\n", f.WhyItMatters)
 			w("**Next steps:**\n")
-			for _, step := range f.NextSteps {
-				w("- %s\n", step)
+			// Read-only steps first, then the bold Advisory steps (spec 5).
+			for _, step := range orderedSteps(f.NextSteps) {
+				w("- %s\n", markdownStep(step))
 			}
 			if f.Remediation != nil {
 				w("\n**Fix:** `nvcheckup fix --id %s`\n", f.Remediation.ID)

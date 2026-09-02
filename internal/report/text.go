@@ -53,6 +53,11 @@ func pcieSummaryFor(findings []types.Finding, p *types.PCIeInfo) string {
 
 // pcieLine formats a PCIe sample; warned selects the DOWNSHIFTED annotation.
 func pcieLine(p *types.PCIeInfo, warned bool) string {
+	// Spec 5.1: on-package GPUs (GB10 / N1X, NVLink-C2C) misreport the link
+	// as GEN 1@ 1x; there is no slot, so nothing is printed about it.
+	if p.OnPackage {
+		return "n/a (on-package, NVLink-C2C)"
+	}
 	cur := strings.TrimSpace(valueOrNA(p.CurrentSpeed) + " " + p.CurrentWidth)
 	switch {
 	case warned:
@@ -209,6 +214,10 @@ func thermalSummary(t *types.ThermalInfo) string {
 	}
 	if t.PowerDrawW != "" && t.PowerLimitW != "" {
 		parts = append(parts, fmt.Sprintf("%s / %s W", t.PowerDrawW, t.PowerLimitW))
+	} else if t.PowerDrawW != "" && t.EventCounters != nil {
+		// A GB10-style sample: power draw is real but every limit is N/A
+		// (spec 2.1). EventCounters marks the Spark collector path.
+		parts = append(parts, fmt.Sprintf("%s W / limit N/A", t.PowerDrawW))
 	}
 	if t.SlowdownActive {
 		parts = append(parts, "SLOWDOWN: "+strings.Join(t.ThrottleReasons, ","))
@@ -266,6 +275,10 @@ func GenerateText(report *types.Report) string {
 	w("  Secure Boot:  %s\n", report.System.SecureBoot)
 	line()
 
+	// Platform block and unified-memory / DGX OS / firmware / cluster
+	// sections (spec 5.1); empty on machines without a platform class.
+	writePlatformSections(&sb, report, line)
+
 	// GPU Info
 	w("\n== GPU INVENTORY ==\n\n")
 	if len(report.GPUs) == 0 {
@@ -279,9 +292,17 @@ func GenerateText(report *types.Report) string {
 		if gpu.PCIBusID != "" {
 			w("    PCI Bus:   %s\n", gpu.PCIBusID)
 		}
-		if gpu.VRAMTotalMB > 0 {
+		if gpu.MemoryReporting == "not-supported" {
+			w("    Memory:    unified pool (nvidia-smi reports [N/A]; see PLATFORM)\n")
+		} else if gpu.VRAMTotalMB > 0 {
 			w("    VRAM:      %d MB total, %d MB used, %d MB free\n",
 				gpu.VRAMTotalMB, gpu.VRAMUsedMB, gpu.VRAMFreeMB)
+		}
+		if gpu.ComputeCap != "" {
+			w("    Compute:   CC %s\n", gpu.ComputeCap)
+		}
+		if gpu.OnPackage {
+			w("    Package:   on-package GPU (NVLink-C2C to the CPU)\n")
 		}
 		if gpu.Temperature > 0 {
 			w("    Temp:      %d°C\n", gpu.Temperature)
@@ -373,16 +394,24 @@ func GenerateText(report *types.Report) string {
 	w("  Total: %d CRITICAL, %d WARNING, %d INFO\n\n", critCount, warnCount, infoCount)
 
 	for i, f := range report.Findings {
+		// Spec 5: the impact of the most invasive step sits next to the
+		// severity of every WARN/CRIT finding.
 		if f.ID != "" {
-			w("  [%s] #%d: %s (%s)\n", f.Severity, i+1, f.Title, f.ID)
+			w("  [%s]%s #%d: %s (%s)\n", f.Severity, impactSuffix(f), i+1, f.Title, f.ID)
 		} else {
-			w("  [%s] #%d: %s\n", f.Severity, i+1, f.Title)
+			w("  [%s]%s #%d: %s\n", f.Severity, impactSuffix(f), i+1, f.Title)
 		}
 		w("    Evidence:     %s\n", f.Evidence)
 		w("    Why:          %s\n", f.WhyItMatters)
 		w("    Next Steps:\n")
-		for _, step := range f.NextSteps {
-			w("      • %s\n", step)
+		// Read-only steps first; Advisory steps (state-changing advice with
+		// the revert command, never applied by NVCheckup) carry the "!" marker.
+		for _, step := range orderedSteps(f.NextSteps) {
+			if isAdvisory(step) {
+				w("      ! %s\n", step)
+			} else {
+				w("      • %s\n", step)
+			}
 		}
 		if f.Remediation != nil {
 			w("    Fix:          nvcheckup fix --id %s\n", f.Remediation.ID)
