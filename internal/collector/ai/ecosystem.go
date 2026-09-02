@@ -111,6 +111,15 @@ try:
     import torch
     t = {"version": torch.__version__, "cuda": getattr(torch.version, "cuda", None) or "", "arch_list": []}
     try:
+        # get_arch_list() does not initialise CUDA; the capability warning of
+        # rule sm121-torch-capability-warning-benign ("Found GPU0 NVIDIA GB10
+        # which is of cuda capability 12.1 ...", spec 3.2) is emitted by
+        # _lazy_init/_check_capability, so initialise first (stderr keeps it).
+        if torch.cuda.is_available():
+            torch.cuda.init()
+    except Exception:
+        pass
+    try:
         t["arch_list"] = list(torch.cuda.get_arch_list())
     except Exception:
         pass
@@ -231,12 +240,17 @@ func collectPythonEcosystem(info *types.EcosystemInfo, errs *[]types.CollectorEr
 		return
 	}
 	applyEcosystemProbe(info, p, r.Stderr)
-	if p.Triton != nil && p.Triton.Ptxas != "" {
-		if info.TritonPtxasPath == "" {
-			// No override: report the bundled binary that Triton will use.
-			info.TritonPtxasPath = p.Triton.Ptxas
-		}
-		pr := util.RunCommand(timeout, p.Triton.Ptxas, "--version")
+	if p.Triton != nil && p.Triton.Ptxas != "" && info.TritonPtxasPath == "" {
+		// No override: report the bundled binary that Triton will use.
+		info.TritonPtxasPath = p.Triton.Ptxas
+	}
+	// TritonPtxasVersion is the version of the ptxas Triton will actually run:
+	// the TRITON_PTXAS_PATH override when set, otherwise the bundled binary.
+	// Rule sm121-triton-ptxas-stale ("bundled ptxas < 13.0 AND
+	// TRITON_PTXAS_PATH unset") therefore reduces to TritonPtxasVersion < 13.0:
+	// a user who exported a CUDA 13 ptxas reports that version here.
+	if p.Triton != nil && info.TritonPtxasPath != "" {
+		pr := util.RunCommand(timeout, info.TritonPtxasPath, "--version")
 		if pr.Err == nil {
 			info.TritonPtxasVersion = parseNvccVersion(pr.Stdout)
 		}
