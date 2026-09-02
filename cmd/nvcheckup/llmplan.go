@@ -181,12 +181,9 @@ func runLLMPlan(args []string, stdin io.Reader, stdout, stderr io.Writer, intera
 		fmt.Fprintln(stderr, llmPlanUsage)
 		return types.ExitError
 	}
-	plan.Notes = append(plan.Notes, notes...)
+	plan.Notes = append(plan.Notes, notes...) // rendered by RenderText/RenderMarkdown/RenderJSON, so stdout and plan.txt match
 
 	fmt.Fprint(stdout, llmplan.RenderText(plan))
-	for _, n := range plan.Notes {
-		fmt.Fprintf(stdout, "Note: %s\n", n)
-	}
 
 	if f.outSet || f.json || f.md {
 		files, err := llmplan.WriteFiles(f.out, plan, f.json, f.md)

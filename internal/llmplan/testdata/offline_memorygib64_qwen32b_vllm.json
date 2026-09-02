@@ -1,0 +1,186 @@
+{
+  "verdict": "DOES NOT FIT: Qwen3-32B / DeepSeek-R1-Distill-Qwen-32B BF16, 8K context x 1 stream, f16 KV, vLLM needs 83.1 GiB on this machine, pool is 64.0 GiB (short by 19.1 GiB).",
+  "exit_code": 2,
+  "platform": {
+    "label": "unknown",
+    "os": "linux",
+    "unified_memory": false,
+    "bandwidth_note": "unknown for this GPU (no figure in the spec)"
+  },
+  "memory": {
+    "total_gib": 64,
+    "available_gib": 0,
+    "headroom_gib": 8,
+    "headroom_reason": "8 GiB: headless Linux (spec 7.4)",
+    "swap_used_gib": 0,
+    "source": "--memory-gib 64.0 (user override)",
+    "nodes": 1,
+    "discrete_vram": false
+  },
+  "model": {
+    "id": "qwen3-32b",
+    "name": "Qwen3-32B / DeepSeek-R1-Distill-Qwen-32B",
+    "hf_repo": "Qwen/Qwen3-32B",
+    "params_b": 32.8,
+    "active_params_b": 32.8,
+    "layers": 64,
+    "attention_layers": 64,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "quant": "bf16",
+    "kv_dtype": "f16",
+    "kv_bytes_per_token": 262144,
+    "context": 8192,
+    "concurrency": 1,
+    "profile": "chat",
+    "license": "Apache-2.0 (R1-Distill: MIT)"
+  },
+  "fit": {
+    "weights_gib": 61.1,
+    "weights_measured": false,
+    "kv_gib": 2,
+    "runtime_gib": 12,
+    "floor_gib": 8,
+    "total_gib": 83.1,
+    "now_gib": 75.1,
+    "pool_gib": 64,
+    "margin_gib": -19.1,
+    "fits_total": false,
+    "fits_now": null,
+    "gpu_memory_utilization": 0.85,
+    "max_context_tokens": 0,
+    "per_node": false
+  },
+  "estimates": {
+    "decode_ceiling_tps": 0,
+    "decode_ceiling_weights_only_tps": 0,
+    "decode_band_tps": [
+      0,
+      0
+    ],
+    "prefill_ref_tps": "2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)",
+    "note": "memory bandwidth of this platform is not known to the wizard; no decode ceiling is printed"
+  },
+  "runtime": {
+    "name": "vllm",
+    "image": "nvcr.io/nvidia/vllm:26.05-py3",
+    "command": "docker run -d --name vllm --ipc=host --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface nvcr.io/nvidia/vllm:26.05-py3 Qwen/Qwen3-32B --gpu-memory-utilization 0.85 --max-model-len 8192 --max-num-seqs 1",
+    "env": [],
+    "notes": [
+      "Alternative image: vllm/vllm-openai:cu130-nightly (spec 7.6).",
+      "Leave --quantization unset for pre-quantized NVFP4 checkpoints (spec 7.6).",
+      "vLLM's Spark guidance is u \u003c= 0.85 and --max-num-seqs 4; the default 0.92 pre-allocates ~110 GiB (spec 7.4).",
+      "First request JIT ~25 s (spec 7.6). Re-check MemAvailable after startup: one report saw transient kernel-init allocations up to ~50 GB on vllm:26.07-py3 (S111)."
+    ]
+  },
+  "advice": {
+    "recommended_quant": "fp8",
+    "reason": "BF16 does not fit; FP8 is the smallest quantization step that fits (total 52.5 GiB, margin 11.5 GiB)",
+    "quants": [
+      {
+        "quant": "bf16",
+        "weights_gib": 61.1,
+        "total_gib": 83.1,
+        "fits_total": false,
+        "fits_now": null,
+        "margin_gib": -19.1
+      },
+      {
+        "quant": "fp8",
+        "weights_gib": 30.5,
+        "total_gib": 52.5,
+        "fits_total": true,
+        "fits_now": null,
+        "margin_gib": 11.5
+      },
+      {
+        "quant": "nvfp4",
+        "weights_gib": 17.1,
+        "total_gib": 39.1,
+        "fits_total": true,
+        "fits_now": null,
+        "margin_gib": 24.9
+      }
+    ],
+    "alternative_models": [
+      {
+        "id": "llama-3.1-8b-instruct",
+        "quant": "bf16",
+        "total_gib": 36
+      },
+      {
+        "id": "gpt-oss-20b",
+        "quant": "mxfp4",
+        "total_gib": 32.5
+      }
+    ],
+    "lines": [
+      "Consider FP8: BF16 does not fit; FP8 is the smallest quantization step that fits (total 52.5 GiB, margin 11.5 GiB).",
+      "u = ceil05((W + KV + R) / MemTotal) = 0.85, clamped to 0.30..0.85 (spec 7.4).",
+      "Catalogue models that fit at the same context and concurrency: llama-3.1-8b-instruct (bf16, 36.0 GiB); gpt-oss-20b (mxfp4, 32.5 GiB)."
+    ]
+  },
+  "prerequisites": [
+    {
+      "id": "driver-present",
+      "status": "FAIL",
+      "detail": "no NVIDIA driver version detected (nvidia-smi absent or failed)"
+    },
+    {
+      "id": "cuda-13",
+      "status": "SKIP",
+      "detail": "CUDA version not reported"
+    },
+    {
+      "id": "torch-cu130-sm120",
+      "status": "SKIP",
+      "detail": "torch not found in the probed python (container runtimes bring their own)"
+    },
+    {
+      "id": "triton-ptxas-path",
+      "status": "SKIP",
+      "detail": "Triton not installed in the probed python"
+    },
+    {
+      "id": "swap-in-use",
+      "status": "SKIP",
+      "detail": "swap usage not available"
+    },
+    {
+      "id": "page-cache",
+      "status": "SKIP",
+      "detail": "MemAvailable not available"
+    },
+    {
+      "id": "model-server-ports",
+      "status": "SKIP",
+      "detail": "listening ports not available"
+    },
+    {
+      "id": "container-image",
+      "status": "SKIP",
+      "detail": "local image inventory not collected; the template uses nvcr.io/nvidia/vllm:26.05-py3"
+    },
+    {
+      "id": "docker-gpu-runtime",
+      "status": "SKIP",
+      "detail": "container runtime not probed"
+    },
+    {
+      "id": "ipc-shm",
+      "status": "PASS",
+      "detail": "template uses --ipc=host (spec 7.6)"
+    },
+    {
+      "id": "memavailable-fits",
+      "status": "SKIP",
+      "detail": "MemAvailable unknown; only the design fit against the pool total was evaluated"
+    }
+  ],
+  "warnings": [
+    "FAIL driver-present: no NVIDIA driver version detected (nvidia-smi absent or failed)"
+  ],
+  "notes": [
+    "MemAvailable unknown: only the design fit (W + KV + R + F \u003c= pool) is evaluated."
+  ]
+}

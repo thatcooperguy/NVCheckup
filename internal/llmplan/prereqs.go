@@ -5,7 +5,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
+	"github.com/thatcooperguy/nvcheckup/internal/redact"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -45,6 +47,54 @@ const (
 	tritonPtxasPath   = "/usr/local/cuda/bin/ptxas"
 )
 
+// versionOrEmpty maps the placeholders nvidia-smi and the collectors print for
+// an absent value ("N/A", "[N/A]", "[Not Supported]", "Not Supported", any
+// bracketed token) to "", so they take the "not detected / not reported"
+// branches instead of being treated as a version (same rule as the common
+// collector's isNotAvailable, replicated because llmplan must not import
+// collector internals).
+func versionOrEmpty(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return ""
+	}
+	switch strings.ToLower(s) {
+	case "n/a", "not supported", "not available", "unknown":
+		return ""
+	}
+	return s
+}
+
+// Values that come from this process's environment (TRITON_PTXAS_PATH) bypass
+// core.Run's report redaction, so they are redacted here before they reach
+// plan.txt/plan.json/plan.md (the <home>/<user>/<host> token classes of
+// internal/redact). testRedactor lets tests use a deterministic identity.
+var (
+	defaultRedactor     *redact.Redactor
+	defaultRedactorOnce sync.Once
+	testRedactor        *redact.Redactor
+)
+
+func redactValue(s string) string {
+	if testRedactor != nil {
+		return testRedactor.Redact(s)
+	}
+	defaultRedactorOnce.Do(func() { defaultRedactor = redact.New(true) })
+	return defaultRedactor.Redact(s)
+}
+
+// availLabel names the "available now" figure: MemAvailable on a shared pool,
+// free VRAM on a discrete GPU.
+func availLabel(p MemoryPool) string {
+	if p.Discrete {
+		return "VRAM free"
+	}
+	return "MemAvailable"
+}
+
 func majorOf(v string) int {
 	v = strings.TrimSpace(v)
 	if i := strings.IndexAny(v, ". "); i > 0 {
@@ -65,15 +115,15 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 	driver := ""
 	cuda := ""
 	if r != nil {
-		driver = r.Driver.Version
-		cuda = r.Driver.CUDAVersion
+		driver = versionOrEmpty(r.Driver.Version)
+		cuda = versionOrEmpty(r.Driver.CUDAVersion)
 		for _, g := range r.GPUs {
-			if driver == "" && g.IsNVIDIA && g.DriverVersion != "" {
-				driver = g.DriverVersion
+			if driver == "" && g.IsNVIDIA {
+				driver = versionOrEmpty(g.DriverVersion)
 			}
 		}
 		if cuda == "" && r.AI != nil {
-			cuda = r.AI.CUDADriverVersion
+			cuda = versionOrEmpty(r.AI.CUDADriverVersion)
 		}
 	}
 	if driver == "" {
@@ -158,7 +208,9 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 	case !tritonPresent:
 		add("triton-ptxas-path", StatusSkip, "Triton not installed in the probed python")
 	case tritonEnv != "":
-		add("triton-ptxas-path", StatusPass, "TRITON_PTXAS_PATH="+tritonEnv)
+		// Privacy: the raw environment value may contain the user's home
+		// directory; it is redacted before it is printed anywhere.
+		add("triton-ptxas-path", StatusPass, "TRITON_PTXAS_PATH="+redactValue(tritonEnv))
 	default:
 		add("triton-ptxas-path", StatusWarn, "Triton is installed but TRITON_PTXAS_PATH is unset; export TRITON_PTXAS_PATH="+tritonPtxasPath+" (spec 7.7, sm121-triton-ptxas-stale)")
 	}
@@ -176,7 +228,9 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 	}
 
 	// Page cache vs MemAvailable.
-	if f.Pool.AvailableBytes > 0 && f.Pool.CachedBytes > 0 {
+	if f.Pool.Discrete {
+		add("page-cache", StatusSkip, "page cache vs MemAvailable is a unified-memory check; the pool here is dedicated VRAM")
+	} else if f.Pool.AvailableBytes > 0 && f.Pool.CachedBytes > 0 {
 		add("page-cache", StatusPass, fmt.Sprintf("page cache %s is reclaimable and already counted in MemAvailable %s (MemFree %s)", fmtGiB(f.Pool.CachedBytes), fmtGiB(f.Pool.AvailableBytes), fmtGiB(f.Pool.FreeBytes)))
 	} else if f.Pool.AvailableBytes > 0 {
 		add("page-cache", StatusPass, fmt.Sprintf("MemAvailable %s", fmtGiB(f.Pool.AvailableBytes)))
@@ -254,19 +308,20 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 		}
 	}
 
-	// MemAvailable >= W + KV + R.
+	// MemAvailable >= W + KV + R (free VRAM on a discrete GPU).
+	avail := availLabel(f.Pool)
 	switch {
 	case !s.FitsNowKnown:
-		add("memavailable-fits", StatusSkip, "MemAvailable unknown; only the design fit against MemTotal was evaluated")
+		add("memavailable-fits", StatusSkip, avail+" unknown; only the design fit against the pool total was evaluated")
 	case s.FitsNow:
 		after := f.Pool.AvailableBytes - s.NowBytes
 		if f.Pool.Unified && after < pressureWarnBytes {
 			add("memavailable-fits", StatusWarn, fmt.Sprintf("MemAvailable %s covers W + KV + R = %s, but only %s would remain (< 8 GiB unified-memory-pressure WARN, spec 7.4)", fmtGiB(f.Pool.AvailableBytes), fmtGiB(s.NowBytes), fmtGiB(after)))
 		} else {
-			add("memavailable-fits", StatusPass, fmt.Sprintf("MemAvailable %s >= W + KV + R = %s", fmtGiB(f.Pool.AvailableBytes), fmtGiB(s.NowBytes)))
+			add("memavailable-fits", StatusPass, fmt.Sprintf("%s %s >= W + KV + R = %s", avail, fmtGiB(f.Pool.AvailableBytes), fmtGiB(s.NowBytes)))
 		}
 	default:
-		add("memavailable-fits", StatusFail, fmt.Sprintf("MemAvailable %s < W + KV + R = %s right now; free memory (other servers, caches) before starting", fmtGiB(f.Pool.AvailableBytes), fmtGiB(s.NowBytes)))
+		add("memavailable-fits", StatusFail, fmt.Sprintf("%s %s < W + KV + R = %s right now; free memory (other servers, caches) before starting", avail, fmtGiB(f.Pool.AvailableBytes), fmtGiB(s.NowBytes)))
 	}
 
 	// Ollama q8_0 KV needs an FA-capable architecture (spec 7.6).

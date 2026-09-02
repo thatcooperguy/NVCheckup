@@ -119,28 +119,60 @@ func TestRenderCommand_Cluster(t *testing.T) {
 	if !strings.Contains(none.Env[0], "{rdma-devs-of-the-cabled-cage") {
 		t.Errorf("without ACTIVE twins NCCL_IB_HCA must stay a placeholder, got %s", none.Env[0])
 	}
+	// Ollama and llama.cpp have no NCCL/multi-node mode in the spec: no NCCL
+	// variables, and an unconfirmed line saying so.
+	for _, rt := range []Runtime{RuntimeOllama, RuntimeLlamaCpp} {
+		in.Runtime, in.KV = rt, rt.DefaultKV(in.Model)
+		c := RenderCommand(in, Compute(in), "chat", ClusterFacts{ActiveRDMADevs: []string{"roceP2p1s0f0", "rocep1s0f0"}})
+		if joined := strings.Join(c.Env, " "); strings.Contains(joined, "NCCL") {
+			t.Errorf("%s --nodes 2 must not emit NCCL env, got %v", rt, c.Env)
+		}
+		found := false
+		for _, u := range c.Unconfirmed {
+			if strings.Contains(u, "no two-node mode in the spec") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s --nodes 2 must say the NCCL settings do not apply: %v", rt, c.Unconfirmed)
+		}
+	}
 }
 
 func TestChooseRuntime(t *testing.T) {
 	in, _ := llama8BInputs(t, RuntimeAuto, KVF16)
-	if got := ChooseRuntime(in, "linux"); got != RuntimeVLLM {
+	if got := ChooseRuntime(in, KVAuto, "linux"); got != RuntimeVLLM {
 		t.Errorf("8B BF16 on Linux -> %s, want vllm", got)
 	}
-	if got := ChooseRuntime(in, "windows"); got != RuntimeLlamaCpp {
+	if got := ChooseRuntime(in, KVAuto, "windows"); got != RuntimeLlamaCpp {
 		t.Errorf("Windows -> %s, want llamacpp (spec 7.6)", got)
 	}
+	// An explicit GGUF-only KV dtype goes to llama.cpp even though vLLM would fit.
+	for _, kv := range []KVDtype{KVQ8_0, KVQ4_0} {
+		if got := ChooseRuntime(in, kv, "linux"); got != RuntimeLlamaCpp {
+			t.Errorf("8B BF16 --kv-dtype %s auto -> %s, want llamacpp", kv, got)
+		}
+	}
+	// An explicit fp8 KV keeps the container runtimes and is used in the fit check.
+	if got := ChooseRuntime(in, KVFP8, "linux"); got != RuntimeVLLM {
+		t.Errorf("8B BF16 --kv-dtype fp8 auto -> %s, want vllm", got)
+	}
 	in.Quant = QuantQ4KM
-	if got := ChooseRuntime(in, "linux"); got != RuntimeLlamaCpp {
+	if got := ChooseRuntime(in, KVAuto, "linux"); got != RuntimeLlamaCpp {
 		t.Errorf("GGUF quant -> %s, want llamacpp", got)
 	}
 	// 70B BF16 at 128K fits no runtime: fall back to llama.cpp.
 	big := Inputs{Model: mustModel(t, "llama-3.3-70b-instruct"), Quant: QuantBF16, KV: KVF16, Context: 131072, Concurrency: 1, PoolBytes: poolGB10Bytes, FloorBytes: floorLinux}
-	if got := ChooseRuntime(big, "linux"); got != RuntimeLlamaCpp {
+	if got := ChooseRuntime(big, KVAuto, "linux"); got != RuntimeLlamaCpp {
 		t.Errorf("nothing fits -> %s, want llamacpp", got)
+	}
+	// ... unless an explicit fp8 KV rules llama.cpp out: the lightest runtime that accepts fp8 (SGLang).
+	if got := ChooseRuntime(big, KVFP8, "linux"); got != RuntimeSGLang {
+		t.Errorf("nothing fits with fp8 KV -> %s, want sglang", got)
 	}
 	// 70B FP8 at 32K: vLLM (65.7 + 10 + 12 + 8 = 95.7) fits.
 	big.Quant, big.Context = QuantFP8, 32768
-	if got := ChooseRuntime(big, "linux"); got != RuntimeVLLM {
+	if got := ChooseRuntime(big, KVAuto, "linux"); got != RuntimeVLLM {
 		t.Errorf("70B FP8 32K -> %s, want vllm", got)
 	}
 }

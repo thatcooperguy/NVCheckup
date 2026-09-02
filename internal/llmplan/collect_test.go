@@ -130,8 +130,19 @@ func TestDerivePool_Sources(t *testing.T) {
 	if !pool.Discrete || pool.Unified || !strings.Contains(pool.Source, "RTX 4090") || pool.TotalBytes != 24564*1024*1024 {
 		t.Errorf("discrete pool = %+v", pool)
 	}
-	if len(notes) == 0 {
-		t.Error("discrete pool must note the F caveat")
+	if len(notes) == 0 || !strings.Contains(notes[0], "--headroom-gib") {
+		t.Errorf("discrete pool must note the F caveat, got %v", notes)
+	}
+	// F is a unified-memory host-OS reservation: on dedicated VRAM it defaults
+	// to 0 (labelled an assumption) and --headroom-gib still overrides it.
+	if f, why := PoolFloorBytes(pool, d, "windows", -1); f != 0 || !strings.Contains(why, "assumption") {
+		t.Errorf("discrete F = %v GiB (%s), want 0", GiBf(f), why)
+	}
+	if f, _ := PoolFloorBytes(pool, d, "windows", 4); f != 4*GiB {
+		t.Error("--headroom-gib must override the discrete default")
+	}
+	if f, _ := PoolFloorBytes(gb10Pool(), gb10Report(), "linux", -1); f != 8*GiB {
+		t.Error("unified pools keep the spec 7.4 F")
 	}
 
 	// 3. Unified platform without the struct and without /proc/meminfo (Windows N1X, no CIM here): system RAM fallback.

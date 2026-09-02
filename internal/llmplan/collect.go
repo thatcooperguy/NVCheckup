@@ -304,7 +304,7 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, of
 				}
 				pool.AllocatableBytes = pool.AvailableBytes
 				found = true
-				notes = append(notes, "Discrete GPU: the pool is dedicated VRAM; the OS floor F is the spec's unified-memory figure and can be lowered with --headroom-gib.")
+				notes = append(notes, "Discrete GPU: the pool is dedicated VRAM, not the shared pool spec 7.4 sizes; the OS floor F defaults to 0 here (F is a host-OS reservation out of unified memory) unless --headroom-gib is given, and the swap/page-cache checks are skipped.")
 				break
 			}
 		}
@@ -344,6 +344,21 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, of
 		notes = append(notes, "no memory source available; pass --memory-gib N to size against a pool.")
 	}
 	return pool, notes
+}
+
+// discreteFloorGiB is F for a dedicated-VRAM pool. Assumption, not from the
+// spec: spec 7.4 defines F (8/10 GiB) as the host OS's share of unified
+// memory, which does not come out of a discrete GPU's VRAM; the spec gives no
+// figure for discrete GPUs, so nothing is reserved unless --headroom-gib says so.
+const discreteFloorGiB = 0
+
+// PoolFloorBytes is OSFloorBytes with the pool kind taken into account: a
+// discrete-GPU pool gets discreteFloorGiB unless --headroom-gib overrides it.
+func PoolFloorBytes(pool MemoryPool, r *types.Report, goos string, headroomGiB float64) (float64, string) {
+	if pool.Discrete && headroomGiB < 0 {
+		return discreteFloorGiB * GiB, fmt.Sprintf("%d GiB: dedicated VRAM of a discrete GPU (assumption; spec 7.4 F is a unified-memory reservation; set --headroom-gib to reserve VRAM)", discreteFloorGiB)
+	}
+	return OSFloorBytes(r, goos, headroomGiB)
 }
 
 // OSFloorBytes is spec 7.4 F: 8 GiB headless DGX OS, 10 GiB with GNOME or on

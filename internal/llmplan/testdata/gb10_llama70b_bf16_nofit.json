@@ -19,7 +19,8 @@
     "allocatable_gib": 109.7,
     "swap_used_gib": 0,
     "source": "report.unified_memory (/proc/meminfo MemTotal, measured)",
-    "nodes": 1
+    "nodes": 1,
+    "discrete_vram": false
   },
   "model": {
     "id": "llama-3.3-70b-instruct",

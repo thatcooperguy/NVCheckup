@@ -1,6 +1,7 @@
 package llmplan
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
@@ -39,6 +40,38 @@ func goldenCases() []goldenCase {
 		{"gb10_nemotron_llamacpp_64k", func(o *Options) {
 			o.Model, o.Context, o.Concurrency, o.Runtime = "nemotron-3-super", 65536, 2, "llamacpp"
 		}, gb10Report},
+		// Discrete GPU (no UnifiedMemory): pool = dedicated VRAM, F = 0 by
+		// assumption, the "VRAM free" label and the pool note are exercised.
+		{"win_rtx3090_llama8b_chat_llamacpp", func(o *Options) {
+			o.GOOS = "windows"
+			o.Model, o.Profile, o.Runtime = "llama-3.1-8b-instruct", "chat", "llamacpp"
+		}, rtx3090Report},
+		// Saved report without any memory figure, sized with --memory-gib: the
+		// "MemAvailable unknown" note is exercised and no ceiling is printed.
+		{"offline_memorygib64_qwen32b_vllm", func(o *Options) {
+			o.Model, o.Runtime, o.MemoryGiB = "qwen3-32b", "vllm", 64
+		}, func() *types.Report { return &types.Report{Metadata: types.ReportMetadata{Platform: "linux"}} }},
+	}
+}
+
+// jsonEscaped is s exactly as encoding/json emits it inside a string (quotes
+// and backslashes escaped, <, > and & as unicode escapes).
+func jsonEscaped(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b[1 : len(b)-1])
+}
+
+// rtx3090Report is a Windows desktop with a discrete 24 GiB GPU (values as
+// nvidia-smi reports them on such a machine; nothing Spark-specific).
+func rtx3090Report() *types.Report {
+	return &types.Report{
+		Metadata: types.ReportMetadata{Platform: "windows"},
+		System:   types.SystemInfo{OSName: "Windows 11 Pro", Architecture: "x86_64", RAMTotalMB: 65536},
+		GPUs: []types.GPUInfo{{
+			Index: 0, Name: "NVIDIA GeForce RTX 3090", Vendor: "NVIDIA", IsNVIDIA: true,
+			DriverVersion: "591.86", VRAMTotalMB: 24576, VRAMFreeMB: 23000, MemoryReporting: "dedicated",
+		}},
+		Driver: types.DriverInfo{Version: "591.86", CUDAVersion: "13.0"},
 	}
 }
 
@@ -50,11 +83,13 @@ func buildGolden(t *testing.T, gc goldenCase) *Plan {
 	o.GOOS = "linux"
 	gc.opts(&o)
 	r := gc.rep()
-	pool := poolFromUnifiedMemory(r.UnifiedMemory)
-	p, err := Build(r, pool, nil, true, o)
+	// offline: the golden never reads this host's /proc/meminfo or CIM.
+	pool, notes := DerivePool(r, o.GOOS, o.Timeout, o.MemoryGiB, true)
+	p, err := Build(r, pool, nil, r.UnifiedMemory != nil, o)
 	if err != nil {
 		t.Fatalf("%s: %v", gc.name, err)
 	}
+	p.Notes = append(p.Notes, notes...)
 	return p
 }
 
@@ -111,6 +146,50 @@ func TestRender_Order(t *testing.T) {
 	}
 	if !strings.Contains(txt, "source: report.unified_memory") {
 		t.Error("the plan must say where the pool came from")
+	}
+	if strings.Contains(txt, "NOTES") {
+		t.Error("a plan without pool caveats prints no NOTES block")
+	}
+}
+
+// TestRender_Notes: the pool caveats (Plan.Notes) are part of every rendering,
+// so stdout, plan.txt, plan.md and plan.json all carry them.
+func TestRender_Notes(t *testing.T) {
+	for _, idx := range []int{4, 5} {
+		gc := goldenCases()[idx]
+		p := buildGolden(t, gc)
+		if len(p.Notes) == 0 {
+			t.Fatalf("%s: expected pool notes", gc.name)
+		}
+		js, err := RenderJSON(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, out := range map[string]string{"text": RenderText(p), "markdown": RenderMarkdown(p)} {
+			for _, n := range p.Notes {
+				if !strings.Contains(out, n) {
+					t.Errorf("%s %s lacks note %q", gc.name, name, n)
+				}
+			}
+		}
+		for _, n := range p.Notes {
+			if !strings.Contains(js, jsonEscaped(n)) {
+				t.Errorf("%s json lacks note %q", gc.name, n)
+			}
+		}
+		txt := RenderText(p)
+		if !strings.Contains(txt, "\nNOTES") || strings.Index(txt, "\nNOTES") > strings.Index(txt, "\nExit code") {
+			t.Errorf("%s: NOTES block must precede the exit-code line", gc.name)
+		}
+	}
+	// The discrete case: F = 0, "VRAM free" label, and the 8B model fits a 24 GiB card.
+	p := buildGolden(t, goldenCases()[4])
+	txt := RenderText(p)
+	if p.Fit.FloorGiB != 0 || !p.Memory.Discrete || !strings.Contains(txt, "VRAM free:") || strings.Contains(txt, "MemAvailable:") {
+		t.Errorf("discrete plan: floor %.1f discrete %v\n%s", p.Fit.FloorGiB, p.Memory.Discrete, txt)
+	}
+	if !p.Fit.FitsTotal || !strings.HasPrefix(p.Verdict, "FITS:") {
+		t.Errorf("8B Q8_0-KV chat on a 24 GiB card must fit: %s", p.Verdict)
 	}
 }
 

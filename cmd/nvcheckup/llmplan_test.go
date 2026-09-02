@@ -113,6 +113,10 @@ func TestRunLLMPlan_FromReport(t *testing.T) {
 			t.Errorf("%s not written: %v", name, err)
 		}
 	}
+	// stdout carries exactly the text written to plan.txt (notes included).
+	if txt, err := os.ReadFile(filepath.Join(out, "plan.txt")); err != nil || !strings.Contains(stdout.String(), string(txt)) {
+		t.Errorf("stdout must contain plan.txt verbatim (err %v)", err)
+	}
 	if _, err := os.Stat(filepath.Join(out, "plan.md")); err == nil {
 		t.Error("plan.md written without --md")
 	}

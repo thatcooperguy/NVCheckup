@@ -1,9 +1,11 @@
 package llmplan
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/thatcooperguy/nvcheckup/internal/redact"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -109,6 +111,68 @@ func TestEvaluate_MissingDriverAndUnknowns(t *testing.T) {
 	}
 	if _, ok := statusOf(ps, "docker-gpu-runtime"); ok {
 		t.Error("docker checks only for container runtimes")
+	}
+}
+
+// Placeholder version strings ("N/A", "[N/A]", "Not Supported") are not
+// versions: they take the "not detected / not reported" branches.
+func TestEvaluate_NAPlaceholders(t *testing.T) {
+	for _, s := range []string{"", "N/A", "[N/A]", "n/a", "[Not Supported]", "Not Supported", " [N/A] "} {
+		if versionOrEmpty(s) != "" {
+			t.Errorf("versionOrEmpty(%q) = %q, want empty", s, versionOrEmpty(s))
+		}
+	}
+	if versionOrEmpty("580.95.05") != "580.95.05" || versionOrEmpty(" 13.0 ") != "13.0" {
+		t.Error("real versions must pass through")
+	}
+	r := gb10Report()
+	r.Driver.Version, r.GPUs[0].DriverVersion = "N/A", "[N/A]"
+	r.Driver.CUDAVersion, r.AI.CUDADriverVersion = "[N/A]", "Not Supported"
+	ps := evalGB10(t, r, RuntimeVLLM, KVF16, 1, nil, true)
+	p := expect(t, ps, "driver-present", StatusFail)
+	if !strings.Contains(p.Detail, "no NVIDIA driver version detected") || strings.Contains(p.Detail, "N/A") {
+		t.Errorf("driver detail: %s", p.Detail)
+	}
+	p = expect(t, ps, "cuda-13", StatusWarn)
+	if !strings.Contains(p.Detail, "CUDA version not reported") || strings.Contains(p.Detail, "N/A") {
+		t.Errorf("cuda detail: %s", p.Detail)
+	}
+}
+
+// Privacy: the TRITON_PTXAS_PATH environment value bypasses core.Run's report
+// redaction, so llm-plan redacts it itself before it reaches any output.
+func TestEvaluate_TritonEnvRedacted(t *testing.T) {
+	fakeHome := filepath.Join(string(filepath.Separator)+"home", "alice")
+	ptxas := filepath.Join(fakeHome, ".venv", "lib", "python3.12", "site-packages", "triton", "backends", "nvidia", "bin", "ptxas")
+	t.Setenv("TRITON_PTXAS_PATH", ptxas)
+	old := testRedactor
+	testRedactor = redact.NewWithIdentity(true, "alice", "alice-spark", fakeHome)
+	defer func() { testRedactor = old }()
+
+	r := gb10Report()
+	r.AI.KeyPackages = []types.PackageInfo{{Name: "triton", Version: "3.5.0"}}
+	o := DefaultOptions()
+	o.GOOS = "linux"
+	o.Model, o.Runtime = "llama-3.1-8b-instruct", "vllm"
+	p, err := Build(r, poolFromUnifiedMemory(r.UnifiedMemory), nil, true, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := expect(t, p.Prerequisites, "triton-ptxas-path", StatusPass)
+	if !strings.Contains(pr.Detail, "<home>") || !strings.Contains(pr.Detail, "ptxas") {
+		t.Errorf("triton detail must keep the redacted path: %s", pr.Detail)
+	}
+	js, err := RenderJSON(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{"plan.txt": RenderText(p), "plan.json": js, "plan.md": RenderMarkdown(p)} {
+		if strings.Contains(out, fakeHome) || strings.Contains(out, filepath.ToSlash(fakeHome)) || strings.Contains(out, jsonEscaped(fakeHome)) || strings.Contains(out, "alice") {
+			t.Errorf("%s leaks the home directory of TRITON_PTXAS_PATH", name)
+		}
+		if !strings.Contains(out, "TRITON_PTXAS_PATH=<home>") && !strings.Contains(out, jsonEscaped("TRITON_PTXAS_PATH=<home>")) {
+			t.Errorf("%s lacks the redacted TRITON_PTXAS_PATH value", name)
+		}
 	}
 }
 

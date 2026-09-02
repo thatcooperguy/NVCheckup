@@ -56,8 +56,6 @@ COMMANDS (spec 7.6 template for Ollama)
     OLLAMA_NUM_PARALLEL=4
     OLLAMA_MAX_LOADED_MODELS=1
     OLLAMA_CONTEXT_LENGTH=32768
-    NCCL_IB_HCA=roceP2p1s0f0,rocep1s0f0
-    NCCL_NET_PLUGIN=none
   Notes:
     - q8_0 KV only for FA-capable architectures (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl); otherwise Ollama silently falls back to f16 (spec 7.6).
     - Verify 'ollama ps' shows 100% GPU; the default context 4096 is too small for agents (spec 7.6).
@@ -65,6 +63,7 @@ COMMANDS (spec 7.6 template for Ollama)
   Unconfirmed / not covered by the spec:
     - Two-node target: the spec has no verified multi-node launch template; the command above is the single-node form. NVIDIA lists Qwen3-235B-A22B as multi-node only via the TRT-LLM playbook (S91) and documents the fabric in the connect-two-sparks playbook (S18). Add your runtime's tensor/pipeline-parallel flags after verifying them against those sources.
     - Healthy fabric (spec 9): both twins of the cabled cage ACTIVE/LinkUp at 200000 Mb/s, distinct /24s, MTU 9000, NCCL_NET_PLUGIN=none, NCCL log shows NET/IB, ~22-24 GB/s busbw.
+    - Ollama has no two-node mode in the spec (spec 7.6 lists none for Ollama/llama.cpp); the NCCL settings of spec 9 do not apply to it. Use vLLM, TensorRT-LLM or SGLang for a cluster of two.
 
 WARNINGS: see the unconfirmed items above.
 

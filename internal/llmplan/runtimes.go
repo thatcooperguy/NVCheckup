@@ -295,11 +295,18 @@ func RenderCommand(in Inputs, s Sizing, profile string, cluster ClusterFacts) Co
 	}
 
 	if in.Nodes >= 2 {
-		c.Env = append(c.Env, clusterEnv(cluster)...)
+		if in.Runtime.IsContainer() {
+			// The spec 9 NCCL environment applies to the NCCL-based runtimes
+			// (vLLM, TRT-LLM, SGLang) only.
+			c.Env = append(c.Env, clusterEnv(cluster)...)
+		}
 		c.Unconfirmed = append(c.Unconfirmed,
 			"Two-node target: the spec has no verified multi-node launch template; the command above is the single-node form. NVIDIA lists Qwen3-235B-A22B as multi-node only via the TRT-LLM playbook (S91) and documents the fabric in the connect-two-sparks playbook (S18). Add your runtime's tensor/pipeline-parallel flags after verifying them against those sources.",
 			"Healthy fabric (spec 9): both twins of the cabled cage ACTIVE/LinkUp at 200000 Mb/s, distinct /24s, MTU 9000, NCCL_NET_PLUGIN=none, NCCL log shows NET/IB, ~22-24 GB/s busbw.",
 		)
+		if !in.Runtime.IsContainer() {
+			c.Unconfirmed = append(c.Unconfirmed, in.Runtime.Display()+" has no two-node mode in the spec (spec 7.6 lists none for Ollama/llama.cpp); the NCCL settings of spec 9 do not apply to it. Use vLLM, TensorRT-LLM or SGLang for a cluster of two.")
+		}
 	}
 	return c
 }
@@ -314,21 +321,36 @@ func clusterEnv(cf ClusterFacts) []string {
 	return []string{"NCCL_IB_HCA=" + hca, "NCCL_NET_PLUGIN=none"}
 }
 
-// ChooseRuntime implements --runtime auto: GGUF quants go to llama.cpp;
-// Windows on Arm only has llama.cpp (spec 7.6: no win_arm64 torch wheels as
-// of 2026-09-02, S93); otherwise vLLM when its 12 GiB reserve fits, then
-// SGLang (10 GiB), then llama.cpp (3 GiB).
-func ChooseRuntime(in Inputs, goos string) Runtime {
-	if in.Quant.IsGGUF() || goos == "windows" {
+// ChooseRuntime implements --runtime auto: GGUF quants and GGUF-only KV
+// dtypes (q8_0, q4_0) go to llama.cpp; Windows on Arm only has llama.cpp
+// (spec 7.6: no win_arm64 torch wheels as of 2026-09-02, S93); otherwise vLLM
+// when its 12 GiB reserve fits, then SGLang (10 GiB), then llama.cpp (3 GiB).
+// kv is the explicit --kv-dtype (KVAuto = unrestricted): candidates that do
+// not support it are skipped and it is used in the fit check instead of the
+// runtime's default.
+func ChooseRuntime(in Inputs, kv KVDtype, goos string) Runtime {
+	if in.Quant.IsGGUF() || goos == "windows" || kv == KVQ8_0 || kv == KVQ4_0 {
 		return RuntimeLlamaCpp
 	}
+	var candidates []Runtime
 	for _, r := range []Runtime{RuntimeVLLM, RuntimeSGLang, RuntimeLlamaCpp} {
+		if kv == KVAuto || r.SupportsKV(kv) {
+			candidates = append(candidates, r)
+		}
+	}
+	for _, r := range candidates {
 		try := in
 		try.Runtime = r
 		try.KV = r.DefaultKV(in.Model)
+		if kv != KVAuto {
+			try.KV = kv
+		}
 		if Compute(try).FitsTotal {
 			return r
 		}
+	}
+	if len(candidates) > 0 {
+		return candidates[len(candidates)-1] // nothing fits: the lightest runtime that accepts the KV dtype
 	}
 	return RuntimeLlamaCpp
 }

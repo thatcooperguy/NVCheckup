@@ -32,10 +32,14 @@ func RenderText(p *Plan) string {
 		pool += fmt.Sprintf(" per node x %d nodes", p.Memory.Nodes)
 	}
 	w("Pool:          %s (source: %s)", pool, p.Memory.Source)
-	if p.Memory.AvailableGiB > 0 {
+	avail := memAvailLabel(p)
+	switch {
+	case p.Memory.Discrete && p.Memory.AvailableGiB > 0:
+		w("VRAM free:     %.1f GiB   (nvidia-smi memory.free; no swap or page cache on a dedicated pool)", p.Memory.AvailableGiB)
+	case p.Memory.AvailableGiB > 0:
 		w("MemAvailable:  %.1f GiB   swap used %.1f GiB   allocatable (spec 3.3) %.1f GiB", p.Memory.AvailableGiB, p.Memory.SwapUsedGiB, p.Memory.AllocatableGiB)
-	} else {
-		w("MemAvailable:  unknown")
+	default:
+		w("%-14s unknown", avail+":")
 	}
 	w("Bandwidth:     %s", p.Platform.BandwidthNote)
 	w("OS floor F:    %s", p.Memory.HeadroomReason)
@@ -77,9 +81,9 @@ func RenderText(p *Plan) string {
 	}
 	w("  Total            %.1f GiB%s  vs pool %.1f GiB  ->  margin %.1f GiB  (fits: %s)", f.TotalGiB, per, f.PoolGiB, f.MarginGiB, yesNo(f.FitsTotal))
 	if f.FitsNow != nil {
-		w("  Now (W+KV+R)     %.1f GiB  vs MemAvailable %.1f GiB  (fits now: %s)", f.NowGiB, p.Memory.AvailableGiB, yesNo(*f.FitsNow))
+		w("  Now (W+KV+R)     %.1f GiB  vs %s %.1f GiB  (fits now: %s)", f.NowGiB, avail, p.Memory.AvailableGiB, yesNo(*f.FitsNow))
 	} else {
-		w("  Now (W+KV+R)     %.1f GiB  vs MemAvailable unknown", f.NowGiB)
+		w("  Now (W+KV+R)     %.1f GiB  vs %s unknown", f.NowGiB, avail)
 	}
 	if p.Runtime.Runtime.IsContainer() {
 		w("  Utilization u    %.2f  (vLLM --gpu-memory-utilization; TRT-LLM free_gpu_memory_fraction; SGLang --mem-fraction-static)", f.Utilization)
@@ -164,10 +168,25 @@ func RenderText(p *Plan) string {
 		w("WARNINGS: see the unconfirmed items above.")
 		w("")
 	}
+	if len(p.Notes) > 0 {
+		w("NOTES (pool source and caveats)")
+		for _, n := range p.Notes {
+			w("  - %s", n)
+		}
+		w("")
+	}
 	w("Exit code %d (0 fits, 1 fits with warnings, 2 does not fit, 3 error).", p.ExitCode)
 	w("%s", footerReadOnly)
 	w("%s", footerEstimates)
 	return b.String()
+}
+
+// memAvailLabel names the "available now" figure of the plan.
+func memAvailLabel(p *Plan) string {
+	if p.Memory.Discrete {
+		return "VRAM free"
+	}
+	return "MemAvailable"
 }
 
 // warningsNotIn drops the warnings already printed in the command block's
@@ -203,10 +222,14 @@ func RenderMarkdown(p *Plan) string {
 		w("| GPU | %s |", p.Platform.GPU)
 	}
 	w("| Pool | %.1f GiB (%s) |", p.Memory.TotalGiB, p.Memory.Source)
-	if p.Memory.AvailableGiB > 0 {
+	avail := memAvailLabel(p)
+	switch {
+	case p.Memory.Discrete && p.Memory.AvailableGiB > 0:
+		w("| VRAM free | %.1f GiB |", p.Memory.AvailableGiB)
+	case p.Memory.AvailableGiB > 0:
 		w("| MemAvailable | %.1f GiB (swap used %.1f GiB) |", p.Memory.AvailableGiB, p.Memory.SwapUsedGiB)
-	} else {
-		w("| MemAvailable | unknown |")
+	default:
+		w("| %s | unknown |", avail)
 	}
 	w("| Bandwidth | %s |", p.Platform.BandwidthNote)
 	w("| OS floor F | %s |", p.Memory.HeadroomReason)
@@ -236,9 +259,9 @@ func RenderMarkdown(p *Plan) string {
 	}
 	w("| **Total%s** | **%.1f** | pool %.1f GiB, margin %.1f GiB, fits: %s |", per, f.TotalGiB, f.PoolGiB, f.MarginGiB, yesNo(f.FitsTotal))
 	if f.FitsNow != nil {
-		w("| Now (W+KV+R) | %.1f | MemAvailable %.1f GiB, fits now: %s |", f.NowGiB, p.Memory.AvailableGiB, yesNo(*f.FitsNow))
+		w("| Now (W+KV+R) | %.1f | %s %.1f GiB, fits now: %s |", f.NowGiB, avail, p.Memory.AvailableGiB, yesNo(*f.FitsNow))
 	} else {
-		w("| Now (W+KV+R) | %.1f | MemAvailable unknown |", f.NowGiB)
+		w("| Now (W+KV+R) | %.1f | %s unknown |", f.NowGiB, avail)
 	}
 	if c.Runtime.IsContainer() {
 		w("| u | %.2f | gpu-memory-utilization / free_gpu_memory_fraction / mem-fraction-static |", f.Utilization)
@@ -325,6 +348,14 @@ func RenderMarkdown(p *Plan) string {
 		w("")
 		for _, x := range rest {
 			w("- %s", x)
+		}
+	}
+	if len(p.Notes) > 0 {
+		w("")
+		w("## Notes")
+		w("")
+		for _, n := range p.Notes {
+			w("- %s", n)
 		}
 	}
 	w("")

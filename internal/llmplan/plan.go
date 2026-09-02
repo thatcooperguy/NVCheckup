@@ -88,6 +88,7 @@ type PlanMemory struct {
 	SwapUsedGiB    float64 `json:"swap_used_gib"`
 	Source         string  `json:"source"`
 	Nodes          int     `json:"nodes"`
+	Discrete       bool    `json:"discrete_vram"` // the pool is dedicated VRAM; available_gib is free VRAM
 }
 
 // PlanModel is plan.json "model".
@@ -233,7 +234,7 @@ func resolveInputs(o Options, m ModelShape, pool MemoryPool, floor float64, bw f
 		if kv != KVAuto {
 			in.KV = kv
 		}
-		rt = ChooseRuntime(in, o.GOOS)
+		rt = ChooseRuntime(in, kv, o.GOOS)
 	}
 	in.Runtime = rt
 	if !rt.SupportsQuant(q) {
@@ -267,7 +268,7 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 	if pool.TotalBytes <= 0 {
 		return nil, fmt.Errorf("no memory pool: the report has no memory figure and --memory-gib was not given")
 	}
-	floor, floorReason := OSFloorBytes(report, o.GOOS, o.HeadroomGiB)
+	floor, floorReason := PoolFloorBytes(pool, report, o.GOOS, o.HeadroomGiB)
 	bw, bwNote := Bandwidth(report)
 
 	in, profile, warnings, err := resolveInputs(o, m, pool, floor, bw)
@@ -300,6 +301,7 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 			SwapUsedGiB:    round1(GiBf(pool.SwapUsedBytes())),
 			Source:         pool.Source,
 			Nodes:          in.Nodes,
+			Discrete:       pool.Discrete,
 		},
 		Model: PlanModel{
 			ID: m.ID, Name: m.Name, HFRepo: m.HFRepo,
@@ -349,7 +351,7 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 	if p.Warnings == nil {
 		p.Warnings = []string{} // spec 7.8: warnings[] is always present
 	}
-	p.Verdict = verdict(in, s)
+	p.Verdict = verdict(in, s, availLabel(pool))
 	p.ExitCode = exitCode(s, prereqs, p.Warnings)
 	return p, nil
 }
@@ -360,8 +362,9 @@ func DefaultOptions() Options {
 	return Options{HeadroomGiB: -1, Nodes: 1, Timeout: 30}
 }
 
-// verdict is the first line of the plan.
-func verdict(in Inputs, s Sizing) string {
+// verdict is the first line of the plan. avail names the "available now"
+// figure (MemAvailable, or VRAM free on a discrete GPU).
+func verdict(in Inputs, s Sizing, avail string) string {
 	where := "on this machine"
 	if in.Nodes > 1 {
 		where = fmt.Sprintf("per node across %d nodes", in.Nodes)
@@ -375,7 +378,7 @@ func verdict(in Inputs, s Sizing) string {
 	case !s.FitsTotal:
 		return fmt.Sprintf("DOES NOT FIT: %s needs %s %s, pool is %s (short by %s).", desc, fmtGiB(s.TotalBytes), where, fmtGiB(s.PoolBytes), fmtGiB(-s.MarginBytes))
 	case s.FitsNowKnown && !s.FitsNow:
-		return fmt.Sprintf("FITS BY DESIGN, NOT RIGHT NOW: %s needs %s %s (pool %s, margin %s) but MemAvailable is %s < %s.", desc, fmtGiB(s.TotalBytes), where, fmtGiB(s.PoolBytes), fmtGiB(s.MarginBytes), fmtGiB(s.AvailBytes), fmtGiB(s.NowBytes))
+		return fmt.Sprintf("FITS BY DESIGN, NOT RIGHT NOW: %s needs %s %s (pool %s, margin %s) but %s is %s < %s.", desc, fmtGiB(s.TotalBytes), where, fmtGiB(s.PoolBytes), fmtGiB(s.MarginBytes), avail, fmtGiB(s.AvailBytes), fmtGiB(s.NowBytes))
 	}
 	return fmt.Sprintf("FITS: %s needs %s %s (pool %s, margin %s).", desc, fmtGiB(s.TotalBytes), where, fmtGiB(s.PoolBytes), fmtGiB(s.MarginBytes))
 }
@@ -409,7 +412,7 @@ func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Co
 	}
 	w = append(w, cmd.Unconfirmed...)
 	if pool.Discrete {
-		w = append(w, "Discrete GPU: the spec's formulas target unified-memory Spark systems; the pool here is dedicated VRAM and the OS floor F (--headroom-gib) may be lowered.")
+		w = append(w, "Discrete GPU: the spec's formulas target unified-memory Spark systems; the pool here is dedicated VRAM, so the OS floor F defaults to 0 (an assumption, not a spec figure; --headroom-gib N reserves N GiB of VRAM for the desktop or other GPU work).")
 	}
 	if pool.Unified && pool.HugePagesTotal != 0 {
 		w = append(w, fmt.Sprintf("HugePages are configured: allocatable = HugePages_Free x Hugepagesize = %s and swap counts 0 (spec 3.3).", fmtGiB(pool.Allocatable())))
