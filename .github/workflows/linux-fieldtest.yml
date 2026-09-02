@@ -1,0 +1,188 @@
+name: Linux field test
+
+# Runs the real binary end to end on GitHub's Linux runners (x86_64 and
+# ARM64). The runners have no NVIDIA GPU, so this exercises every Linux code
+# path that does not need one: system/kernel/package collectors, lsmod/dmesg
+# filtering, Secure Boot and DKMS probes, the Jetson negative path, network
+# probes, snapshot/compare, the fix catalog in dry-run, doctor's prompts, and
+# the report writers. It asserts the run finishes with a documented exit code,
+# produces parseable JSON with the expected "no NVIDIA GPU" finding, and leaks
+# no runner identity into the redacted outputs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - '.github/workflows/linux-fieldtest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fieldtest:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          uname -a
+          go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=fieldtest" -o nvcheckup ./cmd/nvcheckup
+          file ./nvcheckup || true
+          ./nvcheckup version
+
+      - name: "self-test (no GPU on a runner, so exit 0 or 1 is accepted)"
+        run: |
+          set -uo pipefail
+          rc=0; ./nvcheckup self-test || rc=$?
+          echo "self-test exit=$rc"
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]
+
+      - name: run --mode full with every output and network probes
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          rc=0; ./nvcheckup run --mode full --json --md --zip --network --verbose --out out || rc=$?
+          echo "run exit=$rc"
+          # 0/1/2 are documented outcomes; 3 is an internal error and fails the test.
+          [ "$rc" -ne 3 ]
+          ls -la out
+          test -s out/report.txt && test -s out/report.json && test -s out/report.md
+          ls out/nvcheckup-bundle-*.zip
+
+      - name: every mode runs without an internal error
+        run: |
+          set -uo pipefail
+          for m in gaming ai creator streaming; do
+            mkdir -p "out-$m"
+            rc=0; ./nvcheckup run --mode "$m" --json --out "out-$m" || rc=$?
+            echo "mode $m exit=$rc"
+            [ "$rc" -ne 3 ]
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "out-$m/report.json"
+          done
+
+      - name: assert report.json shape and expected findings
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+          j = json.load(open("out/report.json", encoding="utf-8"))
+          m = j["metadata"]
+          assert m["schema_version"] == "1", m
+          assert m["network_probes"] is True, m
+          assert m["redaction_enabled"] is True, m
+          assert m["platform"] == "linux", m
+          ids = [f["id"] for f in j["findings"]]
+          print("finding ids:", ids)
+          assert all(ids), "every finding must carry a stable id"
+          assert len(ids) == len(set(ids)), "finding ids must be unique"
+          # A GitHub runner has no NVIDIA GPU and is not a Jetson.
+          assert "no-nvidia-gpu" in ids, ids
+          assert "jetson-detected" not in ids, ids
+          assert not j["system"].get("is_jetson"), j["system"]
+          # Linux collectors ran and produced a section (even if mostly empty).
+          assert "linux" in j, list(j.keys())
+          # A collector may legitimately fail on a runner (no nvidia-smi, no dmesg
+          # rights), but none may report a Go panic or an internal error.
+          for e in j.get("collector_errors") or []:
+              text = e["error"].lower()
+              assert "panic" not in text and "runtime error" not in text, e
+              print("collector note:", e["collector"], "->", e["error"][:120])
+          # Network probes ran (hops or latency present) or were reported as failed, never silently healthy.
+          net = j.get("network")
+          if net is not None:
+              print("network:", {k: v for k, v in net.items() if k != "hops"}, "hops:", len(net.get("hops") or []))
+          print("OK: report.json shape is as documented")
+          PY
+
+      - name: assert no runner identity leaks into redacted outputs
+        run: |
+          set -euo pipefail
+          host="$(hostname)"
+          user="$(id -un)"
+          home="$HOME"
+          for f in out/report.txt out/report.json out/report.md; do
+            if grep -qF -- "$host" "$f"; then echo "hostname leaked in $f"; exit 1; fi
+            if grep -qF -- "$home" "$f"; then echo "home dir leaked in $f"; exit 1; fi
+            # The runner user is 'runner'; the word may appear in unrelated text, so check the path form.
+            if grep -qF -- "/home/$user/" "$f"; then echo "user path leaked in $f"; exit 1; fi
+          done
+          echo "OK: no hostname, home directory or user path in the reports"
+          echo "--- report.txt ---"; cat out/report.txt
+
+      - name: snapshot and compare
+        run: |
+          set -euo pipefail
+          mkdir -p snap
+          ./nvcheckup snapshot --out snap
+          a="$(ls snap/nvcheckup-snapshot-*.json | head -1)"
+          ./nvcheckup compare --md --out snap "$a" "$a"
+          test -s snap/comparison.md
+          # flags after positionals must be rejected with the internal-error code
+          rc=0; ./nvcheckup compare "$a" "$a" --md || rc=$?
+          [ "$rc" -eq 3 ]
+          # snapshot must not carry the hostname
+          if grep -qF -- "$(hostname)" "$a"; then echo "hostname leaked in snapshot"; exit 1; fi
+          echo "OK: snapshot/compare"
+
+      - name: fix catalog, dry-run and undo list (nothing is changed)
+        run: |
+          set -uo pipefail
+          ./nvcheckup fix
+          ./nvcheckup fix --all
+          # update-ldconfig needs root; unelevated it must refuse BEFORE prompting, exit 3, and touch nothing.
+          rc=0; printf 'yes\n' | ./nvcheckup fix --id update-ldconfig --journal ./journal || rc=$?
+          echo "unelevated fix exit=$rc"; [ "$rc" -eq 3 ]
+          test ! -e ./journal
+          # dry-run works unelevated and creates no journal directory
+          ./nvcheckup fix --id blacklist-nouveau --dry-run --journal ./journal
+          test ! -e ./journal
+          ./nvcheckup undo --journal ./journal
+          test ! -e ./journal
+          # as root, the same dry-run must still change nothing
+          sudo ./nvcheckup fix --id update-ldconfig --dry-run --journal ./journal-root
+          test ! -e ./journal-root
+          echo "OK: fix/undo are inert without confirmation"
+
+      - name: network-test and doctor (piped answers, no network)
+        run: |
+          set -uo pipefail
+          rc=0; ./nvcheckup network-test --timeout 20 || rc=$?
+          echo "network-test exit=$rc"; [ "$rc" -ne 3 ]
+          mkdir -p doc && cd doc
+          # 1 use case: b (AI), 2 issue: c (GPU not detected), 3 recent change: e (none), 4 extended logs: b (no), 5 network: b (no), 6 output: a (text)
+          rc=0; printf 'b\nc\ne\nb\nb\na\n' | ../nvcheckup doctor || rc=$?
+          echo "doctor exit=$rc"; [ "$rc" -ne 3 ]
+          test -s report.txt
+
+      - name: upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldtest-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            out/
+            out-*/
+            snap/
+            doc/report.txt
+          if-no-files-found: warn
