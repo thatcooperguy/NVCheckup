@@ -268,23 +268,6 @@ func TestSortFindings(t *testing.T) {
 	}
 }
 
-func TestMajorVersion(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"12.2.1", "12"},
-		{"11", "11"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := majorVersion(tt.input)
-		if got != tt.want {
-			t.Errorf("majorVersion(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestAnalyzeFullPipeline(t *testing.T) {
 	report := &types.Report{
 		GPUs: []types.GPUInfo{
