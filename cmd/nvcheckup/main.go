@@ -3,9 +3,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -18,6 +22,8 @@ import (
 	"github.com/thatcooperguy/nvcheckup/internal/snapshot"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
+
+const compareUsage = "Usage: nvcheckup compare [--out DIR] [--md] <a.json> <b.json>"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -61,16 +67,20 @@ func runCmd(args []string) {
 	doZip := fs.Bool("zip", false, "Create a zip bundle of the report and logs")
 	doJSON := fs.Bool("json", false, "Generate report.json (structured output)")
 	doMD := fs.Bool("md", false, "Generate report.md (GitHub/Reddit-ready)")
-	verbose := fs.Bool("verbose", false, "Enable verbose output")
-	noAdmin := fs.Bool("no-admin", false, "Skip checks requiring admin/root")
+	verbose := fs.Bool("verbose", false, "Print per-phase timings and collector notes as they happen")
+	network := fs.Bool("network", false, "Run network probes (ping/traceroute to 1.1.1.1, DNS lookup of google.com); off by default")
 	timeout := fs.Int("timeout", 30, "Timeout in seconds for each system command")
 	redactFlag := fs.Bool("redact", true, "Enable PII redaction (default: true)")
 	noRedact := fs.Bool("no-redact", false, "Disable PII redaction (not recommended for sharing)")
 	includeLogs := fs.Bool("include-logs", false, "Include extended logs in the report/bundle")
 
 	fs.Parse(args)
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "Unexpected argument(s): %s\n", strings.Join(fs.Args(), " "))
+		fmt.Fprintln(os.Stderr, "Usage: nvcheckup run [--mode MODE] [--out DIR] [--json] [--md] [--zip] [--network] [--verbose] [--timeout N] [--no-redact] [--include-logs]")
+		os.Exit(types.ExitError)
+	}
 
-	// Validate mode
 	m := types.RunMode(strings.ToLower(*mode))
 	switch m {
 	case types.ModeGaming, types.ModeAI, types.ModeCreator, types.ModeStreaming, types.ModeFull:
@@ -80,7 +90,6 @@ func runCmd(args []string) {
 		os.Exit(types.ExitError)
 	}
 
-	// Handle redaction flags
 	redact := *redactFlag
 	if *noRedact {
 		redact = false
@@ -93,10 +102,10 @@ func runCmd(args []string) {
 		JSON:        *doJSON,
 		Markdown:    *doMD,
 		Verbose:     *verbose,
-		NoAdmin:     *noAdmin,
 		Timeout:     *timeout,
 		Redact:      redact,
 		IncludeLogs: *includeLogs,
+		NetworkTest: *network,
 	}
 
 	printBanner()
@@ -109,7 +118,6 @@ func runCmd(args []string) {
 		os.Exit(types.ExitError)
 	}
 
-	// Write outputs
 	files, err := core.WriteReport(report, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing report: %v\n", err)
@@ -121,7 +129,6 @@ func runCmd(args []string) {
 		fmt.Printf("  Written: %s\n", f)
 	}
 
-	// Zip if requested
 	if cfg.Zip {
 		zipPath, err := bundle.CreateZip(cfg.OutDir, files)
 		if err != nil {
@@ -132,8 +139,6 @@ func runCmd(args []string) {
 	}
 
 	fmt.Println()
-
-	// Print summary to console
 	fmt.Println(report.SummaryBlock)
 
 	if len(report.TopIssues) > 0 {
@@ -144,31 +149,24 @@ func runCmd(args []string) {
 		fmt.Println()
 	}
 
-	// Determine exit code
-	exitCode := types.ExitOK
-	for _, f := range report.Findings {
-		switch f.Severity {
-		case types.SeverityCrit:
-			exitCode = types.ExitCritical
-		case types.SeverityWarn:
-			if exitCode < types.ExitWarnings {
-				exitCode = types.ExitWarnings
-			}
-		}
-	}
-	os.Exit(exitCode)
+	os.Exit(core.ExitCodeFor(report))
 }
 
 func snapshotCmd(args []string) {
 	fs := flag.NewFlagSet("snapshot", flag.ExitOnError)
 	outDir := fs.String("out", ".", "Output directory")
 	timeout := fs.Int("timeout", 30, "Command timeout in seconds")
+	noRedact := fs.Bool("no-redact", false, "Disable PII redaction (hostname, username, home paths)")
 	fs.Parse(args)
 
 	printBanner()
-	fmt.Println("Creating snapshot...")
+	if *noRedact {
+		fmt.Println("Creating snapshot (redaction DISABLED; do not share publicly)...")
+	} else {
+		fmt.Println("Creating snapshot...")
+	}
 
-	path, err := snapshot.Create(*outDir, *timeout)
+	path, err := snapshot.CreateWithOptions(*outDir, *timeout, !*noRedact)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(types.ExitError)
@@ -176,21 +174,30 @@ func snapshotCmd(args []string) {
 	fmt.Printf("Snapshot saved: %s\n", path)
 }
 
+// compareCmd requires flags BEFORE the two positional paths: Go's flag package
+// stops parsing at the first non-flag argument, so "compare a.json b.json --md"
+// would silently treat --md as a third file. We reject that instead.
 func compareCmd(args []string) {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
-	outDir := fs.String("out", ".", "Output directory")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, compareUsage)
+		fs.PrintDefaults()
+	}
+	outDir := fs.String("out", ".", "Output directory for comparison.txt / comparison.md")
 	doMD := fs.Bool("md", false, "Output as markdown")
 	fs.Parse(args)
 
 	remaining := fs.Args()
-	if len(remaining) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: nvcheckup compare <snapshotA.json> <snapshotB.json> [--out DIR] [--md]")
+	if len(remaining) != 2 {
+		fmt.Fprintln(os.Stderr, compareUsage)
+		if len(remaining) > 2 {
+			fmt.Fprintln(os.Stderr, "Flags must come before the two snapshot paths.")
+		}
 		os.Exit(types.ExitError)
 	}
 
 	printBanner()
-	err := snapshot.Compare(remaining[0], remaining[1], *outDir, *doMD)
-	if err != nil {
+	if err := snapshot.Compare(remaining[0], remaining[1], *outDir, *doMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(types.ExitError)
 	}
@@ -198,26 +205,84 @@ func compareCmd(args []string) {
 
 func doctorCmd(args []string) {
 	printBanner()
-	doctor.RunInteractive()
+	os.Exit(doctor.RunInteractive())
 }
 
 func selfTestCmd(args []string) {
 	printBanner()
-	exitCode := selftest.Run()
-	os.Exit(exitCode)
+	os.Exit(selftest.Run())
+}
+
+// defaultJournalDir is <UserConfigDir>/nvcheckup, e.g. %APPDATA%\nvcheckup on
+// Windows or ~/.config/nvcheckup on Linux. It is per-user and survives the
+// report directory being deleted, which is what an undo journal needs.
+func defaultJournalDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base, _ = os.Getwd()
+	}
+	return filepath.Join(base, "nvcheckup")
+}
+
+// resolveJournalDir applies precedence --journal > --out (deprecated alias) >
+// default, and makes sure the directory exists with owner-only permissions.
+func resolveJournalDir(journalFlag, outFlag string) string {
+	dir := journalFlag
+	if dir == "" && outFlag != "" {
+		fmt.Fprintln(os.Stderr, "Note: --out is deprecated for fix/undo; use --journal DIR.")
+		dir = outFlag
+	}
+	if dir == "" {
+		dir = defaultJournalDir()
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create journal directory %s: %v\n", dir, err)
+		os.Exit(types.ExitError)
+	}
+	return dir
+}
+
+// isElevationError recognises the engine's "needs Administrator/root" failure
+// so the CLI can give a one-line hint instead of a raw error.
+func isElevationError(msg string) bool {
+	l := strings.ToLower(msg)
+	return strings.Contains(l, "elevat") || strings.Contains(l, "administrator") || strings.Contains(l, "root")
+}
+
+// isElevated reports whether the process already has admin/root rights. On
+// Windows, opening the raw disk device is denied to non-elevated processes;
+// any other error (device missing on a VM) is treated as "unknown" and we let
+// the engine make the final call.
+func isElevated() bool {
+	if runtime.GOOS != "windows" {
+		return os.Geteuid() == 0
+	}
+	f, err := os.Open(`\\.\PHYSICALDRIVE0`)
+	if err != nil {
+		return !errors.Is(err, fs.ErrPermission)
+	}
+	f.Close()
+	return true
+}
+
+func printElevationHint(msg string) {
+	fmt.Fprintf(os.Stderr, "Error: %s\n", msg)
+	fmt.Fprintln(os.Stderr, "Hint: Re-run from an elevated (Administrator) terminal.")
 }
 
 func fixCmd(args []string) {
 	fs := flag.NewFlagSet("fix", flag.ExitOnError)
 	id := fs.String("id", "", "Remediation action ID to apply")
 	dryRun := fs.Bool("dry-run", false, "Preview changes without applying")
-	outDir := fs.String("out", ".", "Directory for change journal")
-	all := fs.Bool("all", false, "Preview all available fixes")
+	journalDir := fs.String("journal", "", "Directory for the change journal (default: <UserConfigDir>/nvcheckup)")
+	outDir := fs.String("out", "", "Deprecated alias for --journal")
+	all := fs.Bool("all", false, "Describe every available fix")
 	fs.Parse(args)
 
 	printBanner()
 
-	engine := remediate.NewEngine(nil, *outDir, *dryRun)
+	dir := resolveJournalDir(*journalDir, *outDir)
+	engine := remediate.NewEngine(nil, dir, *dryRun)
 	actions := engine.ListAvailable()
 
 	if len(actions) == 0 {
@@ -242,6 +307,8 @@ func fixCmd(args []string) {
 				fmt.Println()
 			}
 		}
+		fmt.Println()
+		fmt.Printf("Journal: %s\n", remediate.NewJournal(dir).Path())
 		if !*all {
 			fmt.Println()
 			fmt.Println("Use: nvcheckup fix --id <action-id> to apply a fix")
@@ -250,16 +317,13 @@ func fixCmd(args []string) {
 		return
 	}
 
-	// Find the requested action
 	var target *types.RemediationAction
-	for _, a := range actions {
-		a := a
-		if a.ID == *id {
-			target = &a
+	for i := range actions {
+		if actions[i].ID == *id {
+			target = &actions[i]
 			break
 		}
 	}
-
 	if target == nil {
 		fmt.Fprintf(os.Stderr, "Unknown action ID: %s\n", *id)
 		fmt.Fprintln(os.Stderr, "Run 'nvcheckup fix' to see available actions.")
@@ -273,6 +337,13 @@ func fixCmd(args []string) {
 		return
 	}
 
+	// Check elevation BEFORE asking, so the user is not prompted for a fix
+	// that is guaranteed to fail.
+	if target.NeedsAdmin && !isElevated() {
+		printElevationHint(fmt.Sprintf("action %q requires elevated (Administrator/root) privileges", target.ID))
+		os.Exit(types.ExitError)
+	}
+
 	fmt.Print("Apply this fix? (yes/no): ")
 	var answer string
 	fmt.Scanln(&answer)
@@ -284,44 +355,62 @@ func fixCmd(args []string) {
 
 	result, err := engine.Apply(*target)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if isElevationError(err.Error()) {
+			printElevationHint(err.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(types.ExitError)
 	}
 
 	if result.Success {
 		fmt.Printf("Applied: %s\n", result.Output)
+		fmt.Printf("Journaled to: %s\n", remediate.NewJournal(dir).Path())
 		if target.NeedsReboot {
 			fmt.Println("  A reboot is required for this change to take effect.")
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "Failed: %s\n", result.Output)
-		os.Exit(types.ExitError)
+		fmt.Printf("  Undo with: nvcheckup undo --id %s\n", target.ID)
+		return
 	}
+
+	failure := result.Output
+	if result.Error != "" {
+		failure = result.Error
+	}
+	if isElevationError(failure) {
+		printElevationHint(failure)
+	} else {
+		fmt.Fprintf(os.Stderr, "Failed: %s\n", failure)
+	}
+	os.Exit(types.ExitError)
 }
 
 func undoCmd(args []string) {
 	fs := flag.NewFlagSet("undo", flag.ExitOnError)
-	id := fs.String("id", "", "Action ID to undo")
-	outDir := fs.String("out", ".", "Directory containing change journal")
+	id := fs.String("id", "", "Action ID to undo (omit to list journal entries)")
+	journalDir := fs.String("journal", "", "Directory containing the change journal (default: <UserConfigDir>/nvcheckup)")
+	outDir := fs.String("out", "", "Deprecated alias for --journal")
 	fs.Parse(args)
 
 	printBanner()
 
-	engine := remediate.NewEngine(nil, *outDir, false)
-	journal := remediate.NewJournal(*outDir)
+	dir := resolveJournalDir(*journalDir, *outDir)
+	engine := remediate.NewEngine(nil, dir, false)
+	journal := remediate.NewJournal(dir)
 	entries, err := journal.Read()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading change journal: %v\n", err)
 		os.Exit(types.ExitError)
 	}
 
-	if len(entries) == 0 {
-		fmt.Println("No changes recorded in the journal.")
-		return
-	}
-
 	// List mode
 	if *id == "" {
+		fmt.Printf("Journal: %s\n", journal.Path())
+		fmt.Println()
+		if len(entries) == 0 {
+			fmt.Println("No changes recorded in the journal.")
+			return
+		}
 		fmt.Println("Change journal entries:")
 		fmt.Println()
 		for i, e := range entries {
@@ -343,17 +432,10 @@ func undoCmd(args []string) {
 		return
 	}
 
-	// Find the entry to undo
-	var target *types.ChangeJournalEntry
-	for i := range entries {
-		if entries[i].ActionID == *id && entries[i].Success && entries[i].UndoneAt.IsZero() {
-			target = &entries[i]
-			break
-		}
-	}
-
+	target := newestUndoable(entries, *id)
 	if target == nil {
 		fmt.Fprintf(os.Stderr, "No undoable entry found for action: %s\n", *id)
+		fmt.Fprintf(os.Stderr, "Journal: %s\n", journal.Path())
 		os.Exit(types.ExitError)
 	}
 
@@ -368,11 +450,28 @@ func undoCmd(args []string) {
 	}
 
 	if err := engine.Undo(*target); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if isElevationError(err.Error()) {
+			printElevationHint(err.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(types.ExitError)
 	}
 
 	fmt.Println("Successfully undone.")
+}
+
+// newestUndoable returns the most recent successful, not-yet-undone journal
+// entry for id. Iterating from the end matters when the same fix was applied,
+// undone and applied again: the old (already undone) entry must not win.
+func newestUndoable(entries []types.ChangeJournalEntry, id string) *types.ChangeJournalEntry {
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.ActionID == id && e.Success && e.UndoneAt.IsZero() {
+			return &entries[i]
+		}
+	}
+	return nil
 }
 
 func networkTestCmd(args []string) {
@@ -381,7 +480,8 @@ func networkTestCmd(args []string) {
 	fs.Parse(args)
 
 	printBanner()
-	fmt.Println("Running network diagnostics...")
+	fmt.Println("Running network diagnostics (ping/traceroute to 1.1.1.1, DNS lookup of google.com)...")
+	fmt.Println("This takes 30-60 s.")
 	fmt.Println()
 
 	netInfo, netErrs := common.CollectNetworkInfo(*timeout)
@@ -464,35 +564,67 @@ Usage:
   nvcheckup <command> [flags]
 
 Commands:
-  run           Run diagnostics and generate a report
-  fix           List and apply safe remediation fixes
-  undo          Reverse a previously applied fix
-  network-test  Run standalone network diagnostics
-  snapshot      Create a timestamped JSON snapshot
+  run           Run read-only diagnostics and generate a report
+  snapshot      Create a timestamped JSON snapshot (redacted by default)
   compare       Compare two snapshots
   doctor        Interactive guided diagnostic mode
+  fix           List and apply safe, reversible fixes (asks for confirmation)
+  undo          Reverse a previously applied fix using the change journal
+  network-test  Run standalone network probes (ping/traceroute to 1.1.1.1, DNS)
   self-test     Verify environment, dependencies, and permissions
   version       Show version information
+  help          Show this help
 
-Run Flags:
-  --mode      Diagnostic mode: gaming, ai, creator, streaming, full (default: full)
-  --out       Output directory (default: current directory)
-  --zip       Create a zip bundle of reports and logs
-  --json      Generate structured JSON report
-  --md        Generate markdown report (GitHub/Reddit-ready)
-  --verbose   Enable verbose output
-  --no-admin  Skip checks requiring elevated permissions
-  --timeout   Command timeout in seconds (default: 30)
-  --redact    Enable PII redaction (default: true)
-  --no-redact Disable PII redaction
-  --include-logs  Include extended system logs in the bundle
+run [flags]
+  --mode MODE      gaming, ai, creator, streaming, full (default: full)
+  --out DIR        Output directory (default: current directory)
+  --json           Also write report.json (includes schema_version)
+  --md             Also write report.md (GitHub/Reddit-ready)
+  --zip            Bundle the report files into a zip
+  --network        Run network probes (off by default; takes 30-60 s)
+  --verbose        Print per-phase timings and collector notes
+  --timeout N      Per-command timeout in seconds (default: 30)
+  --redact         Enable PII redaction (default: true)
+  --no-redact      Disable PII redaction (not recommended for sharing)
+  --include-logs   Include extended system logs in the report/bundle
+
+snapshot [flags]
+  --out DIR        Output directory (default: current directory)
+  --timeout N      Per-command timeout in seconds (default: 30)
+  --no-redact      Disable PII redaction
+
+compare [--out DIR] [--md] <a.json> <b.json>
+  Flags must come before the two snapshot paths.
+  --out DIR        Write comparison.txt / comparison.md to DIR
+  --md             Output as markdown
+
+fix [flags]
+  (no flags)       List available fixes
+  --id ID          Apply the fix with this ID (asks yes/no first)
+  --dry-run        Preview what --id would change without applying it
+  --all            Describe every available fix
+  --journal DIR    Change journal directory (default: <UserConfigDir>/nvcheckup)
+  --out DIR        Deprecated alias for --journal
+
+undo [flags]
+  (no flags)       List change journal entries
+  --id ID          Undo the newest successful, not-yet-undone entry for ID
+  --journal DIR    Change journal directory (default: <UserConfigDir>/nvcheckup)
+  --out DIR        Deprecated alias for --journal
+
+network-test [--timeout N]
+
+Exit codes: 0 no issues, 1 warnings, 2 critical findings, 3 tool error.
 
 Examples:
   nvcheckup run --mode gaming --zip
   nvcheckup run --mode ai --json --md
-  nvcheckup run --mode full --zip --json --out ./reports
+  nvcheckup run --mode full --network --json --out ./reports
   nvcheckup snapshot --out ./snapshots
-  nvcheckup compare snap1.json snap2.json
+  nvcheckup compare --md before.json after.json
+  nvcheckup fix
+  nvcheckup fix --id set-high-performance --dry-run
+  nvcheckup undo --id set-high-performance
   nvcheckup doctor
   nvcheckup self-test
 `, types.Version, types.Disclaimer)

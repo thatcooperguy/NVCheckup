@@ -1,9 +1,11 @@
 package report
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -40,11 +42,13 @@ func TestGenerateText_FindingsPresent(t *testing.T) {
 	report := createTestReport()
 	report.Findings = []types.Finding{
 		{
+			ID:           "test-critical",
 			Severity:     types.SeverityCrit,
 			Title:        "Test Critical Finding",
 			Evidence:     "Test evidence",
 			WhyItMatters: "Test reason",
 			NextSteps:    []string{"Step 1", "Step 2"},
+			Remediation:  &types.RemediationAction{ID: "do-thing"},
 		},
 	}
 	output := GenerateText(report)
@@ -52,11 +56,14 @@ func TestGenerateText_FindingsPresent(t *testing.T) {
 	if !strings.Contains(output, "[CRIT]") {
 		t.Error("missing CRIT severity marker")
 	}
-	if !strings.Contains(output, "Test Critical Finding") {
-		t.Error("missing finding title")
+	if !strings.Contains(output, "Test Critical Finding (test-critical)") {
+		t.Error("missing finding title with id")
 	}
 	if !strings.Contains(output, "Step 1") {
 		t.Error("missing next step")
+	}
+	if !strings.Contains(output, "nvcheckup fix --id do-thing") {
+		t.Error("missing remediation hint")
 	}
 }
 
@@ -70,14 +77,81 @@ func TestGenerateText_RedactionNote(t *testing.T) {
 	}
 }
 
+func TestFooter_WithoutNetworkProbes(t *testing.T) {
+	report := createTestReport()
+	report.Metadata.NetworkProbes = false
+	for name, out := range map[string]string{"text": GenerateText(report), "markdown": GenerateMarkdown(report)} {
+		if !strings.Contains(out, footerLocal) {
+			t.Errorf("%s: missing local-generation sentence", name)
+		}
+		if !strings.Contains(out, footerReadOnly) {
+			t.Errorf("%s: missing read-only sentence", name)
+		}
+		if strings.Contains(out, footerProbes) {
+			t.Errorf("%s: network probe sentence present although no probes ran", name)
+		}
+		if strings.Contains(out, "does not modify your system, drivers, or settings") {
+			t.Errorf("%s: stale footer wording present", name)
+		}
+	}
+}
+
+func TestFooter_WithNetworkProbes(t *testing.T) {
+	report := createTestReport()
+	report.Metadata.NetworkProbes = true
+	for name, out := range map[string]string{"text": GenerateText(report), "markdown": GenerateMarkdown(report)} {
+		if !strings.Contains(out, footerProbes) {
+			t.Errorf("%s: missing network probe sentence", name)
+		}
+	}
+}
+
+func TestGenerateText_PCIeIdleLine(t *testing.T) {
+	report := createTestReport()
+	report.PCIe = &types.PCIeInfo{
+		CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16",
+		Downshifted: false, IdleLikely: true, PowerState: "P8",
+	}
+	out := GenerateText(report)
+	if !strings.Contains(out, "PCIe:          Gen1 x16 (idle, max Gen4)") {
+		t.Errorf("idle PCIe line missing:\n%s", out)
+	}
+
+	report.PCIe.Downshifted = true
+	report.PCIe.IdleLikely = false
+	out = GenerateText(report)
+	if !strings.Contains(out, "Gen1 x16 (DOWNSHIFTED, max Gen4 x16)") {
+		t.Errorf("downshift PCIe line missing:\n%s", out)
+	}
+}
+
+func TestGenerateText_MonitorsWithoutResolutionSkipped(t *testing.T) {
+	report := createTestReport()
+	report.Windows = &types.WindowsInfo{
+		Monitors: []types.MonitorInfo{
+			{Name: "Generic PnP", Resolution: "", RefreshRate: ""},
+			{Name: "DELL U2723QE", Resolution: "3840x2160", RefreshRate: "60 Hz"},
+		},
+	}
+	out := GenerateText(report)
+	if strings.Contains(out, "Generic PnP") {
+		t.Error("monitor without resolution should be skipped")
+	}
+	if !strings.Contains(out, "DELL U2723QE: 3840x2160 @ 60 Hz") {
+		t.Error("real monitor missing")
+	}
+	md := GenerateMarkdown(report)
+	if strings.Contains(md, "Generic PnP") {
+		t.Error("markdown: monitor without resolution should be skipped")
+	}
+}
+
 func TestGenerateJSON(t *testing.T) {
 	report := createTestReport()
+	report.Metadata.SchemaVersion = ""
 	jsonStr, err := GenerateJSON(report)
 	if err != nil {
 		t.Fatalf("GenerateJSON failed: %v", err)
-	}
-	if jsonStr == "" {
-		t.Error("expected non-empty JSON output")
 	}
 	if !strings.Contains(jsonStr, `"tool_version"`) {
 		t.Error("missing tool_version in JSON")
@@ -85,23 +159,49 @@ func TestGenerateJSON(t *testing.T) {
 	if !strings.Contains(jsonStr, `"gpus"`) {
 		t.Error("missing gpus in JSON")
 	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &decoded); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	meta := decoded["metadata"].(map[string]interface{})
+	if meta["schema_version"] != types.SchemaVersion {
+		t.Errorf("schema_version = %v, want %q", meta["schema_version"], types.SchemaVersion)
+	}
+	if _, ok := meta["network_probes"]; !ok {
+		t.Error("missing network_probes in metadata")
+	}
 }
 
 func TestGenerateMarkdown_Structure(t *testing.T) {
 	report := createTestReport()
+	report.Windows = &types.WindowsInfo{HAGSEnabled: "Enabled", GameMode: "On", PowerPlan: "Balanced", OverlaySoftware: []string{"Discord"}}
+	report.AI = &types.AIInfo{CUDAToolkitVersion: "12.4", CuDNNVersion: "9.1",
+		PyTorchInfo: &types.PyTorchInfo{Version: "2.4.0", CUDAVersion: "12.4", CUDAAvailable: true, DeviceName: "RTX 4090"},
+		KeyPackages: []types.PackageInfo{{Name: "numpy", Version: "2.0"}}}
+	report.PCIe = &types.PCIeInfo{CurrentSpeed: "Gen4", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16"}
+	report.Network = &types.NetworkInfo{InterfaceName: "Ethernet", InterfaceType: "ethernet", LatencyMs: 8.2}
+	report.CollectorErrors = []types.CollectorError{{Collector: "dxdiag", Error: "timed out"}}
 	output := GenerateMarkdown(report)
 
-	if !strings.Contains(output, "# NVCheckup Diagnostic Report") {
-		t.Error("missing markdown title")
+	for _, want := range []string{
+		"# NVCheckup Diagnostic Report", "## Summary", "## GPUs", "## Findings",
+		"## Windows", "| HAGS | Enabled |", "| Overlays | Discord |",
+		"## AI / CUDA Environment", "| PyTorch | 2.4.0 (CUDA 12.4, available=true, device=RTX 4090) |", "| numpy | 2.0 |",
+		"**PCIe:** Gen4 x16 (max Gen4 x16)",
+		"## Network", "| Interface | Ethernet (ethernet) |",
+		"## Collector Notes", "- **dxdiag:** timed out",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("markdown missing %q", want)
+		}
 	}
-	if !strings.Contains(output, "## Summary") {
-		t.Error("missing summary heading")
-	}
-	if !strings.Contains(output, "## GPUs") {
-		t.Error("missing GPUs heading")
-	}
-	if !strings.Contains(output, "## Findings") {
-		t.Error("missing findings heading")
+}
+
+func TestMdCell(t *testing.T) {
+	got := mdCell("a | b\nc\r\nd")
+	if got != `a \| b c d` {
+		t.Errorf("mdCell = %q", got)
 	}
 }
 
@@ -119,11 +219,26 @@ func TestTruncate(t *testing.T) {
 		t.Error("short string should not be truncated")
 	}
 	result := truncate("this is a very long string", 10)
-	if len(result) > 10 {
+	if utf8.RuneCountInString(result) > 10 {
 		t.Errorf("truncated string too long: %d", len(result))
 	}
 	if !strings.HasSuffix(result, "...") {
 		t.Error("truncated string should end with ...")
+	}
+}
+
+func TestTruncate_RuneSafe(t *testing.T) {
+	// Every character is multi-byte; a byte-based slice would cut mid-rune.
+	in := strings.Repeat("°", 20)
+	got := truncate(in, 10)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncate produced invalid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) != 10 {
+		t.Errorf("rune count = %d, want 10", utf8.RuneCountInString(got))
+	}
+	if got != strings.Repeat("°", 7)+"..." {
+		t.Errorf("unexpected result %q", got)
 	}
 }
 
@@ -136,6 +251,7 @@ func createTestReport() *types.Report {
 			RuntimeSeconds:   2.5,
 			RedactionEnabled: true,
 			Platform:         "windows",
+			SchemaVersion:    types.SchemaVersion,
 		},
 		System: types.SystemInfo{
 			OSName:       "Windows 11",
