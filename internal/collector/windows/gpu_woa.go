@@ -228,6 +228,9 @@ func findNvcc() string {
 
 // collectNvccMachine records the PE machine of nvcc.exe (rule
 // woa-cuda-toolkit-not-native: AMD64 means the toolkit runs under Prism).
+// Only the machine name is stored: the path may lie under a user profile and
+// Platform.WoA is not covered by the redactor, while AIInfo.NvccPath already
+// carries the same path through RedactPath.
 func collectNvccMachine(p *types.PlatformInfo) {
 	path := findNvcc()
 	if path == "" {
@@ -240,7 +243,6 @@ func collectNvccMachine(p *types.PlatformInfo) {
 	if p.WoA == nil {
 		p.WoA = &types.WoAInfo{}
 	}
-	p.WoA.NvccPath = path
 	p.WoA.NvccMachine = machineName(m)
 }
 

@@ -90,9 +90,15 @@ func TestParseTornScore(t *testing.T) {
 		// The OTA name must never be read as the score (would be 2607).
 		{"OTA2607 torn-score: 0", 0, true},
 		{"detected_ota OTA2607\ntorn_score 2\n", 2, true},
-		{"detected_ota OTA2607\n1\n", 1, true},
+		// An unlabelled integer is only a score when it is the whole output.
+		{"detected_ota OTA2607\n1\n", 0, false},
 		{"OTA2607", 0, false},
 		{"Torn score for OTA2607: 4", 4, true},
+		{" 2\n", 2, true},
+		// Unprivileged run and usage banner: no guessed score (would have
+		// been 1000 and 1 with a last-integer fallback).
+		{"Error: nvidia-spark-ota-check must be run as root (uid 1000)\n", 0, false},
+		{"Usage: nvidia-spark-ota-check <summary|torn-score|installed-name>\nnvidia-spark-ota-check version 1.2.3\n", 0, false},
 	}
 	for _, c := range cases {
 		n, ok := parseTornScore(c.in)
@@ -397,10 +403,22 @@ func TestParseBootListAndClassify(t *testing.T) {
 		"Kernel panic - not syncing: Fatal exception\n",
 		"Out of memory: Killed process 4242 (python3) total-vm:120000000kB\n",
 		"thermal thermal_zone0: critical temperature reached (105 C), shutting down\n",
+		"thermal_zone2: critical trip point crossed\n",
 	} {
 		b = classifyBootTail(tail)
 		if b.Clean || !b.LoggedFailure || b.Logless() {
 			t.Errorf("logged-failure tail %q: %+v", tail, b)
+		}
+	}
+	// Ordinary lines that merely contain "thermal" are not failures: a boot
+	// whose tail is thermald starting and then nothing is still log-less.
+	for _, tail := range []string{
+		"Started thermald.service - Thermal Daemon Service.\n",
+		"thermal_zone0: cooling device registered\n",
+	} {
+		b = classifyBootTail(tail)
+		if b.Clean || b.LoggedFailure || !b.Logless() {
+			t.Errorf("benign thermal tail %q: %+v", tail, b)
 		}
 	}
 }
@@ -441,7 +459,17 @@ func TestCollectDGXOSFromSimRoot(t *testing.T) {
 	writeFixture(t, root, "proc/sys/kernel/osrelease", "6.17.0-1026-nvidia\n")
 	writeFixture(t, root, "lib/modules/6.17.0-1026-nvidia/kernel/nvidia-580/nvidia.ko.zst", "")
 
+	// No tools on PATH: systemctl cannot answer, so the unit states are
+	// unknown rather than "inactive" (UnitsQueried false); the kernel comes
+	// from the sim-root osrelease file.
+	t.Setenv("PATH", "")
 	info, _ := CollectDGXOS(5)
+	if info.UnitsQueried {
+		t.Error("UnitsQueried must be false when systemctl is unavailable")
+	}
+	if info.DashboardActive || info.DashboardAdminActive || info.FwupdActive || info.PersistencedActive {
+		t.Errorf("unit booleans must stay false without systemctl: %+v", info)
+	}
 	if info.Name != "DGX Spark" || info.OTAVersion != "7.5.0" || info.SerialNumber != "1234567890123" {
 		t.Errorf("dgx-release fields not read through NVC_SIM_ROOT: %+v", info)
 	}

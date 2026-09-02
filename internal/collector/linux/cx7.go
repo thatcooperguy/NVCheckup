@@ -213,7 +213,11 @@ func discoverFabricPorts(timeout int) []types.FabricPort {
 	}
 
 	// 3. ibdev2netdev fills the mapping when sysfs lacks it (and answers in
-	//    the simulated scenario, spec section 10).
+	//    the simulated scenario, spec section 10). State vocabulary: sysfs
+	//    ports/1/state gives "4: ACTIVE" / "1: DOWN"; ibdev2netdev gives
+	//    "Up" / "Down"; a twin without an RDMA device falls back to the
+	//    netdev operstate "up" / "down" (step 4). Consumers must therefore
+	//    treat a case-insensitive "UP" as link-up alongside "ACTIVE".
 	if util.CommandExists("ibdev2netdev") {
 		r := util.RunCommand(timeout, "ibdev2netdev")
 		for _, m := range parseIbdev2netdev(r.Stdout) {
@@ -237,6 +241,7 @@ func discoverFabricPorts(timeout int) []types.FabricPort {
 		if p.Netdev != "" {
 			base := filepath.Join(netRoot, p.Netdev)
 			if p.State == "" {
+				// operstate vocabulary ("up"/"down"/"unknown"), see step 3.
 				p.State = readSysAttr(filepath.Join(base, "operstate"))
 			}
 			if speed, err := strconv.Atoi(readSysAttr(filepath.Join(base, "speed"))); err == nil && speed > 0 {
