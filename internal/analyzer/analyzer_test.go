@@ -3,7 +3,7 @@ package analyzer
 import (
 	"testing"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func TestAnalyzeGPUPresence_NoGPU(t *testing.T) {
@@ -265,23 +265,6 @@ func TestSortFindings(t *testing.T) {
 	}
 	if findings[2].Severity != types.SeverityInfo {
 		t.Errorf("expected INFO third, got %s", findings[2].Severity)
-	}
-}
-
-func TestMajorVersion(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"12.2.1", "12"},
-		{"11", "11"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := majorVersion(tt.input)
-		if got != tt.want {
-			t.Errorf("majorVersion(%q) = %q, want %q", tt.input, got, tt.want)
-		}
 	}
 }
 

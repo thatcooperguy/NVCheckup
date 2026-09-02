@@ -1,6 +1,6 @@
 {
-  "description": "Diagnostic rules for NVCheckup. Shared between Go and Rust implementations.",
-  "version": "0.2.0",
+  "description": "Reference knowledge pack. The Go analyzer defines its rules in internal/analyzer; TestRulesJSON_MatchesAnalyzer keeps the ids, categories and remediation ids here identical to the analyzer. The experimental Rust companion embeds this file.",
+  "version": "0.2.1",
   "rules": [
     {
       "id": "no-nvidia-gpu",
@@ -44,11 +44,11 @@
       "category": "driver",
       "severity": "WARN",
       "severity_escalation": {"threshold": 3, "escalated": "CRIT"},
-      "base_confidence": 90,
+      "base_confidence": 85,
       "modes": ["gaming", "streaming", "creator", "full"],
       "platform": "windows",
-      "description": "Event ID 4101 indicates the display driver stopped responding.",
-      "remediation_id": null
+      "remediation_id": null,
+      "description": "Event ID 4101 indicates the display driver stopped responding and was recovered by Windows (confidence 92 and CRIT at 3+ events in 30 days)."
     },
     {
       "id": "nvlddmkm-errors",
@@ -56,20 +56,32 @@
       "category": "driver",
       "severity": "WARN",
       "severity_escalation": {"threshold": 5, "escalated": "CRIT"},
-      "base_confidence": 90,
+      "base_confidence": 85,
       "modes": ["gaming", "streaming", "creator", "full"],
       "platform": "windows",
-      "description": "nvlddmkm kernel-mode driver errors detected."
+      "description": "nvlddmkm kernel-mode driver errors detected (confidence 92 and CRIT at 5+ events in 30 days)."
+    },
+    {
+      "id": "whea-corrected",
+      "title": "Corrected Hardware Errors Logged (WHEA)",
+      "category": "hardware",
+      "severity": "INFO",
+      "severity_escalation": {"threshold": 50, "escalated": "WARN"},
+      "base_confidence": 60,
+      "modes": ["gaming", "streaming", "creator", "full"],
+      "platform": "windows",
+      "description": "Corrected WHEA events (ECC, PCIe retry) in the last 30 days. Escalates to WARN when an event names the NVIDIA GPU or its bus (confidence 75) or at 50+ events (confidence 70)."
     },
     {
       "id": "whea-errors",
-      "title": "Hardware Errors (WHEA) Detected",
+      "title": "Uncorrected Hardware Errors (WHEA)",
       "category": "hardware",
       "severity": "WARN",
-      "base_confidence": 75,
+      "severity_escalation": {"threshold": 3, "escalated": "CRIT"},
+      "base_confidence": 80,
       "modes": ["gaming", "streaming", "creator", "full"],
       "platform": "windows",
-      "description": "WHEA hardware errors indicate hardware-level issues."
+      "description": "Uncorrected WHEA events (fatal machine check, PCIe or memory errors) were logged in the last 30 days; these cause bugchecks, freezes and data corruption."
     },
     {
       "id": "power-plan-suboptimal",
@@ -77,7 +89,7 @@
       "category": "performance",
       "severity": "INFO",
       "base_confidence": 40,
-      "modes": ["gaming", "streaming", "creator", "full"],
+      "modes": ["gaming", "streaming", "full"],
       "platform": "windows",
       "remediation_id": "set-high-performance",
       "description": "Balanced or Power Saver plans may throttle performance."
@@ -91,7 +103,7 @@
       "modes": ["gaming", "streaming", "full"],
       "platform": "windows",
       "remediation_id": "disable-hags",
-      "description": "HAGS can cause stuttering in certain games or driver versions."
+      "description": "HAGS is explicitly enabled; it can cause stuttering in certain games or driver versions."
     },
     {
       "id": "recent-windows-updates",
@@ -99,9 +111,9 @@
       "category": "updates",
       "severity": "INFO",
       "base_confidence": 35,
-      "modes": ["gaming", "full"],
+      "modes": ["gaming", "streaming", "creator", "full"],
       "platform": "windows",
-      "description": "Windows Updates can occasionally introduce driver compatibility issues."
+      "description": "Windows Updates installed in the last 60 days while driver resets were also logged; updates can occasionally introduce driver compatibility issues."
     },
     {
       "id": "nvidia-app-detected",
@@ -136,7 +148,7 @@
       "category": "driver",
       "severity": "CRIT",
       "base_confidence": 95,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
       "remediation_id": "blacklist-nouveau",
       "description": "The open-source nouveau driver is loaded instead of proprietary NVIDIA."
@@ -147,9 +159,9 @@
       "category": "driver",
       "severity": "CRIT",
       "base_confidence": 95,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
-      "description": "The nvidia kernel module is not loaded."
+      "description": "The nvidia kernel module is not loaded and nvidia-smi reports no driver version."
     },
     {
       "id": "no-dev-nvidia",
@@ -157,7 +169,7 @@
       "category": "driver",
       "severity": "WARN",
       "base_confidence": 85,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
       "description": "NVIDIA module loaded but device nodes are missing."
     },
@@ -167,7 +179,7 @@
       "category": "cuda",
       "severity": "WARN",
       "base_confidence": 85,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
       "remediation_id": "update-ldconfig",
       "description": "libcuda.so could not be located."
@@ -178,7 +190,7 @@
       "category": "driver",
       "severity": "CRIT",
       "base_confidence": 90,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
       "description": "DKMS failed to build NVIDIA modules for current kernel."
     },
@@ -188,28 +200,55 @@
       "category": "secureboot",
       "severity": "CRIT",
       "base_confidence": 85,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
       "description": "Secure Boot is on and NVIDIA module is not loaded."
     },
     {
       "id": "secureboot-ok",
-      "title": "Secure Boot Enabled — NVIDIA Module Loading Successfully",
+      "title": "Secure Boot Enabled — NVIDIA Module is Loading Successfully",
       "category": "secureboot",
       "severity": "INFO",
       "base_confidence": 95,
-      "modes": ["ai", "full"],
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
       "platform": "linux",
       "description": "Secure Boot is on and module signing is configured correctly."
     },
     {
       "id": "cuda-mismatch",
-      "title": "CUDA Toolkit / Driver Version Mismatch",
+      "title": "CUDA Toolkit Newer Than Driver Supports",
       "category": "cuda",
       "severity": "WARN",
       "base_confidence": 80,
       "modes": ["ai", "creator", "full"],
-      "description": "Major version difference between CUDA toolkit and driver."
+      "description": "The CUDA toolkit's major version is newer than the driver's CUDA runtime; programs built with it fail with 'CUDA driver version is insufficient'."
+    },
+    {
+      "id": "cuda-toolkit-minor-newer",
+      "title": "CUDA Toolkit Minor Version Newer Than Driver",
+      "category": "cuda",
+      "severity": "INFO",
+      "base_confidence": 50,
+      "modes": ["ai", "creator", "full"],
+      "description": "The CUDA toolkit is a newer minor release than the driver's CUDA runtime within the same major; minor-version compatibility usually makes this work."
+    },
+    {
+      "id": "pytorch-cuda-newer-than-driver",
+      "title": "PyTorch CUDA Build Newer Than Driver",
+      "category": "ai",
+      "severity": "WARN",
+      "base_confidence": 80,
+      "modes": ["ai", "creator", "full"],
+      "description": "The PyTorch wheel's CUDA runtime is newer than the driver supports and torch.cuda.is_available() is False; suggests the nearest published wheel tag."
+    },
+    {
+      "id": "pytorch-cuda-newer-but-working",
+      "title": "PyTorch CUDA Build Newer Than Driver (working)",
+      "category": "ai",
+      "severity": "INFO",
+      "base_confidence": 40,
+      "modes": ["ai", "creator", "full"],
+      "description": "The PyTorch wheel's CUDA major is ahead of the driver's but torch.cuda.is_available() is True, most likely via a forward-compatibility package."
     },
     {
       "id": "pytorch-import-error",
@@ -217,7 +256,7 @@
       "category": "ai",
       "severity": "WARN",
       "base_confidence": 90,
-      "modes": ["ai", "full"],
+      "modes": ["ai", "creator", "full"],
       "description": "PyTorch could not be imported."
     },
     {
@@ -226,7 +265,7 @@
       "category": "ai",
       "severity": "WARN",
       "base_confidence": 95,
-      "modes": ["ai", "full"],
+      "modes": ["ai", "creator", "full"],
       "description": "CPU-only PyTorch build detected."
     },
     {
@@ -235,8 +274,8 @@
       "category": "ai",
       "severity": "WARN",
       "base_confidence": 80,
-      "modes": ["ai", "full"],
-      "description": "PyTorch has CUDA but cannot access the GPU."
+      "modes": ["ai", "creator", "full"],
+      "description": "PyTorch has CUDA compiled in but torch.cuda.is_available() is False for a reason other than a CUDA build newer than the driver."
     },
     {
       "id": "pytorch-cuda-ok",
@@ -244,7 +283,7 @@
       "category": "ai",
       "severity": "INFO",
       "base_confidence": 95,
-      "modes": ["ai", "full"],
+      "modes": ["ai", "creator", "full"],
       "description": "PyTorch GPU acceleration is functional."
     },
     {
@@ -253,7 +292,7 @@
       "category": "ai",
       "severity": "WARN",
       "base_confidence": 90,
-      "modes": ["ai", "full"],
+      "modes": ["ai", "creator", "full"],
       "description": "TensorFlow could not be imported."
     },
     {
@@ -262,7 +301,7 @@
       "category": "ai",
       "severity": "WARN",
       "base_confidence": 85,
-      "modes": ["ai", "full"],
+      "modes": ["ai", "creator", "full"],
       "description": "TensorFlow detected no GPU devices."
     },
     {
@@ -271,7 +310,7 @@
       "category": "ai",
       "severity": "INFO",
       "base_confidence": 95,
-      "modes": ["ai", "full"],
+      "modes": ["ai", "creator", "full"],
       "description": "TensorFlow GPU acceleration is functional."
     },
     {
@@ -299,7 +338,7 @@
       "severity": "INFO",
       "base_confidence": 90,
       "modes": ["full"],
-      "description": "GPU has less than 4 GB VRAM."
+      "description": "An NVIDIA GPU has less than 4 GB VRAM (one aggregated finding for all such GPUs)."
     },
     {
       "id": "thermal-throttling",
@@ -308,7 +347,16 @@
       "severity": "CRIT",
       "base_confidence": 95,
       "modes": ["gaming", "ai", "creator", "streaming", "full"],
-      "description": "GPU is actively thermal throttling — temperature exceeds safe limits or slowdown is active."
+      "description": "A thermal slowdown bit (sw_thermal_slowdown / hw_thermal_slowdown) is active in clocks_event_reasons."
+    },
+    {
+      "id": "gpu-clock-slowdown",
+      "title": "GPU Clock Slowdown Active",
+      "category": "performance",
+      "severity": "WARN",
+      "base_confidence": 70,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "A non-thermal slowdown reason (sw_power_cap, hw_slowdown, hw_power_brake_slowdown) is active; the fix is power limits and cabling, not cooling."
     },
     {
       "id": "gpu-running-hot",
@@ -317,7 +365,7 @@
       "severity": "WARN",
       "base_confidence": 80,
       "modes": ["gaming", "ai", "creator", "streaming", "full"],
-      "description": "GPU temperature is elevated (75-85°C)."
+      "description": "GPU temperature is 85°C or higher without an active thermal slowdown (WARN); 93°C or higher is CRIT with confidence 90."
     },
     {
       "id": "fan-not-spinning",
@@ -325,26 +373,35 @@
       "category": "hardware",
       "severity": "WARN",
       "base_confidence": 70,
-      "modes": ["gaming", "ai", "full"],
-      "description": "Fan speed is 0% while GPU temperature exceeds 60°C."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Fan speed is 0% while GPU temperature exceeds 60°C on a card that reports a fan."
     },
     {
       "id": "pcie-downshift",
-      "title": "PCIe Link Downshifted",
+      "title": "PCIe Link Speed Downshifted Under Load",
       "category": "performance",
       "severity": "WARN",
-      "base_confidence": 90,
-      "modes": ["gaming", "ai", "full"],
-      "description": "PCIe link is running below maximum capability."
+      "base_confidence": 85,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "PCIe link generation is below maximum while the GPU shows evidence of load (active P-state or utilization)."
     },
     {
-      "id": "pcie-legacy-speed",
-      "title": "PCIe Running at Legacy Speed",
+      "id": "pcie-width-reduced",
+      "title": "PCIe Link Width Reduced",
+      "category": "performance",
+      "severity": "WARN",
+      "base_confidence": 85,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "The PCIe link negotiated fewer lanes than the slot and card support. Lane width does not drop at idle, so this points at seating, slot or riser problems."
+    },
+    {
+      "id": "pcie-idle-power-saving",
+      "title": "PCIe Link Power-Saving at Idle (expected)",
       "category": "performance",
       "severity": "INFO",
-      "base_confidence": 85,
-      "modes": ["gaming", "ai", "full"],
-      "description": "PCIe link is Gen1 or Gen2 — significantly below modern GPU capability."
+      "base_confidence": 40,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "PCIe link generation is below maximum but the GPU was idle (or showed no evidence of load); link power management is expected, re-check under load."
     },
     {
       "id": "mixed-refresh-rate",
@@ -352,7 +409,7 @@
       "category": "display",
       "severity": "INFO",
       "base_confidence": 65,
-      "modes": ["gaming", "full"],
+      "modes": ["gaming", "streaming", "full"],
       "description": "Monitors with different refresh rates detected — can cause frame pacing issues."
     },
     {
@@ -361,7 +418,7 @@
       "category": "display",
       "severity": "INFO",
       "base_confidence": 50,
-      "modes": ["gaming", "full"],
+      "modes": ["gaming", "streaming", "full"],
       "description": "3+ monitors on the same GPU may affect gaming performance."
     },
     {
@@ -370,8 +427,8 @@
       "category": "network",
       "severity": "WARN",
       "base_confidence": 85,
-      "modes": ["gaming", "streaming", "full"],
-      "description": "Network jitter exceeds 15ms — may cause lag and stutter in online applications."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Network jitter exceeds 15ms — may cause lag and stutter in online applications. Only evaluated when --network was passed."
     },
     {
       "id": "packet-loss",
@@ -380,8 +437,8 @@
       "severity": "WARN",
       "severity_escalation": {"threshold": 5, "escalated": "CRIT"},
       "base_confidence": 90,
-      "modes": ["gaming", "streaming", "full"],
-      "description": "Network packet loss detected."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Network packet loss detected (CRIT above 5%). Only evaluated when --network was passed."
     },
     {
       "id": "wifi-congestion",
@@ -389,8 +446,8 @@
       "category": "network",
       "severity": "INFO",
       "base_confidence": 60,
-      "modes": ["gaming", "streaming", "full"],
-      "description": "Connected on 2.4GHz Wi-Fi with weak signal."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Connected on 2.4GHz Wi-Fi (confidence 75 when the signal is below -70 dBm). Only evaluated when --network was passed."
     },
     {
       "id": "dns-slow",
@@ -398,8 +455,8 @@
       "category": "network",
       "severity": "INFO",
       "base_confidence": 70,
-      "modes": ["gaming", "streaming", "full"],
-      "description": "DNS resolution exceeds 100ms."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "DNS resolution exceeds 100ms. Only evaluated when --network was passed."
     },
     {
       "id": "xid-errors",
@@ -427,18 +484,27 @@
       "category": "driver",
       "severity": "WARN",
       "base_confidence": 70,
-      "modes": ["gaming", "full"],
+      "modes": ["gaming", "ai", "full"],
       "platform": "linux",
       "description": "Wayland + NVIDIA can cause screen tearing, window glitches, and application crashes."
     },
     {
       "id": "gpu-power-state-stuck",
-      "title": "GPU Power State Not Reaching Maximum Performance",
+      "title": "GPU Stuck in Low Power State Under Load",
       "category": "performance",
       "severity": "WARN",
       "base_confidence": 75,
-      "modes": ["gaming", "ai", "full"],
-      "description": "GPU power state is stuck above P0 — not reaching full performance."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "GPU is in P5 or lower while utilization is 60% or higher — the driver or power management is holding clocks down."
+    },
+    {
+      "id": "network-ping-unavailable",
+      "title": "Ping Produced No Samples",
+      "category": "network",
+      "severity": "INFO",
+      "base_confidence": 70,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Traceroute produced hops but ping returned no samples, so latency, jitter and packet loss could not be measured and no network-quality verdict is possible. ICMP echo is often blocked by firewalls or security software. Only evaluated when --network was passed."
     },
     {
       "id": "network-healthy",
@@ -446,8 +512,8 @@
       "category": "network",
       "severity": "INFO",
       "base_confidence": 80,
-      "modes": ["gaming", "streaming", "full"],
-      "description": "Local network and LAN appear healthy. If experiencing online issues, they may be upstream or service-side."
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Local network and LAN appear healthy. If experiencing online issues, they may be upstream or service-side. Only evaluated when --network was passed."
     }
   ]
 }

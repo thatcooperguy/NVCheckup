@@ -1,5 +1,5 @@
 {
-  "description": "NVIDIA Xid error code reference. Used by Linux Xid error collector and analyzer.",
+  "description": "Reference knowledge pack of NVIDIA Xid error codes. The Go analyzer currently defines its rules in internal/analyzer; the experimental Rust companion embeds this file.",
   "codes": {
     "8":   {"severity": "WARN", "summary": "GPU stopped processing", "detail": "The GPU stopped processing requests. May indicate driver bug or hardware issue."},
     "13":  {"severity": "CRIT", "summary": "Graphics engine fault", "detail": "The GPU graphics engine experienced a fault. Commonly caused by overclocking, overheating, or driver bugs."},

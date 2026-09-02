@@ -3,13 +3,14 @@
 package linux
 
 import (
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // knownXidDescriptions maps NVIDIA Xid error codes to human-readable descriptions.
@@ -26,6 +27,19 @@ var knownXidDescriptions = map[int]string{
 	79:  "GPU has fallen off the bus",
 	119: "GSP firmware error",
 }
+
+var (
+	// xidCodeRe matches lines like:
+	//   [ 1234.567890] NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
+	//   Jan 15 10:30:45 hostname kernel: NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
+	xidCodeRe = regexp.MustCompile(`NVRM:\s*Xid\s*\([^)]*\):\s*(\d+)`)
+
+	// xidDmesgTsRe matches dmesg-style "[ 1234.567890]" (seconds since boot).
+	xidDmesgTsRe = regexp.MustCompile(`\[\s*([\d.]+)\]`)
+
+	// xidJournalTsRe matches journalctl-style "Jan 15 10:30:45" (local time, no year).
+	xidJournalTsRe = regexp.MustCompile(`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`)
+)
 
 // CollectXidErrors parses NVIDIA Xid errors from kernel logs using dmesg
 // and journalctl. Errors are grouped by Xid code with occurrence counts.
@@ -44,78 +58,137 @@ func CollectXidErrors(timeout int) ([]types.XidError, []types.CollectorError) {
 		return nil, errs
 	}
 
-	// Parse and group the Xid errors
-	xidErrors := parseAndGroupXidErrors(xidLines)
-
-	return xidErrors, errs
+	return parseAndGroupXidErrors(xidLines, readBootTime(), time.Now()), errs
 }
 
-// collectXidFromDmesg attempts to extract Xid error lines from dmesg output.
+// xidMarker is the kernel log text that identifies an NVIDIA Xid report.
+const xidMarker = "nvrm: xid"
+
+// filterXidLines returns the lines of kernel log output that carry an NVIDIA
+// Xid report (case-insensitive "NVRM: Xid"), replacing the former
+// "| grep -i" pipeline. No matching lines is a normal, healthy result and is
+// returned as an empty slice, never as an error.
+func filterXidLines(output string) []string {
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(strings.ToLower(line), xidMarker) {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+	}
+	return lines
+}
+
+// collectXidFromDmesg extracts Xid error lines from dmesg. dmesg is run
+// directly (no shell, no grep) so that "no Xid lines" is simply empty output;
+// only a failure of dmesg itself is reported, and an unprivileged read
+// (kernel.dmesg_restrict=1) keeps its "may need root" wording.
 func collectXidFromDmesg(timeout int, errs *[]types.CollectorError) []string {
 	if !util.CommandExists("dmesg") {
 		return nil
 	}
 
-	r := util.RunCommand(timeout, "sh", "-c", `dmesg 2>/dev/null | grep -i "NVRM: Xid"`)
-	if r.Err != nil {
-		// dmesg may require root; this is non-fatal
-		*errs = append(*errs, types.CollectorError{
-			Collector: "linux.xid.dmesg",
-			Error:     "dmesg Xid grep failed (may need root): " + r.Err.Error(),
-		})
+	r := util.RunCommand(timeout, "dmesg")
+	if detail := toolFailure(r); detail != "" {
+		msg := "dmesg failed: " + detail
+		if isPermissionDenied(r) {
+			msg = "dmesg failed (may need root): " + detail
+		}
+		*errs = append(*errs, types.CollectorError{Collector: "linux.xid.dmesg", Error: msg})
 		return nil
 	}
 
-	output := strings.TrimSpace(r.Stdout)
-	if output == "" {
-		return nil
-	}
-
-	return strings.Split(output, "\n")
+	return filterXidLines(r.Stdout)
 }
 
-// collectXidFromJournalctl attempts to extract Xid error lines from journalctl.
+// collectXidFromJournalctl extracts Xid error lines from the kernel journal of
+// the current boot. Like collectXidFromDmesg it filters in Go so an empty
+// result is not mistaken for a failure.
 func collectXidFromJournalctl(timeout int, errs *[]types.CollectorError) []string {
 	if !util.CommandExists("journalctl") {
 		return nil
 	}
 
-	r := util.RunCommand(timeout, "sh", "-c", `journalctl -k -b --no-pager 2>/dev/null | grep -i "NVRM: Xid"`)
-	if r.Err != nil {
+	r := util.RunCommand(timeout, "journalctl", "-k", "-b", "--no-pager")
+	if detail := toolFailure(r); detail != "" {
 		*errs = append(*errs, types.CollectorError{
 			Collector: "linux.xid.journalctl",
-			Error:     "journalctl Xid grep failed: " + r.Err.Error(),
+			Error:     "journalctl failed: " + detail,
 		})
 		return nil
 	}
 
-	output := strings.TrimSpace(r.Stdout)
-	if output == "" {
-		return nil
-	}
+	return filterXidLines(r.Stdout)
+}
 
-	return strings.Split(output, "\n")
+// toolFailure returns a description of why a command failed, or "" when it
+// succeeded. A non-zero exit that produced neither stderr nor a Go-level
+// error detail (a timeout or a failure to start) is not treated as a failure
+// worth reporting, mirroring how grep's exit 1 "no match" used to be
+// misreported. stderr is preferred over the bare "exit status N".
+func toolFailure(r util.CommandResult) string {
+	if r.Err == nil {
+		return ""
+	}
+	if stderr := strings.TrimSpace(r.Stderr); stderr != "" {
+		return firstLineOf(stderr)
+	}
+	if r.TimedOut || r.ExitCode < 0 {
+		return r.Err.Error()
+	}
+	return ""
+}
+
+// isPermissionDenied reports whether a failed command's stderr indicates an
+// unprivileged caller (dmesg under kernel.dmesg_restrict, journal ACLs).
+func isPermissionDenied(r util.CommandResult) bool {
+	e := strings.ToLower(r.Stderr)
+	return strings.Contains(e, "operation not permitted") || strings.Contains(e, "permission denied")
+}
+
+// firstLineOf returns the first line of s, trimmed.
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// readBootTime returns the kernel boot time. /proc/stat "btime" is seconds
+// since the epoch and is the anchor that turns dmesg's seconds-since-boot
+// into wall-clock time; now minus /proc/uptime is the fallback. A zero time
+// means the anchor is unknown and dmesg timestamps are left unset.
+func readBootTime() time.Time {
+	if data, err := os.ReadFile("/proc/stat"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "btime" {
+				if secs, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return time.Unix(secs, 0)
+				}
+			}
+		}
+	}
+	if data, err := os.ReadFile("/proc/uptime"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 {
+			if up, err := strconv.ParseFloat(fields[0], 64); err == nil {
+				return time.Now().Add(-time.Duration(up * float64(time.Second)))
+			}
+		}
+	}
+	return time.Time{}
 }
 
 // parseAndGroupXidErrors parses raw kernel log lines containing Xid errors,
 // extracts the Xid code and timestamp, and groups by code with counts.
-func parseAndGroupXidErrors(lines []string) []types.XidError {
-	// Pattern matches lines like:
-	//   [ 1234.567890] NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
-	//   Jan 15 10:30:45 hostname kernel: NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
-	xidCodeRe := regexp.MustCompile(`NVRM:\s*Xid\s*\([^)]*\):\s*(\d+)`)
-
-	// For dmesg-style timestamps: [ 1234.567890]
-	dmesgTsRe := regexp.MustCompile(`\[\s*([\d.]+)\]`)
-
-	// For journalctl-style timestamps: Jan 15 10:30:45
-	journalTsRe := regexp.MustCompile(`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`)
-
+// bootTime anchors dmesg timestamps; now supplies the year for journalctl
+// timestamps. Both are parameters so the parser is deterministic in tests.
+func parseAndGroupXidErrors(lines []string, bootTime, now time.Time) []types.XidError {
 	// Group by Xid code: track count and last seen timestamp
 	type xidGroup struct {
-		code      int
-		count     int
-		lastSeen  time.Time
+		code     int
+		count    int
+		lastSeen time.Time
 	}
 	groups := make(map[int]*xidGroup)
 	var seenOrder []int // preserve order of first occurrence
@@ -137,8 +210,7 @@ func parseAndGroupXidErrors(lines []string) []types.XidError {
 			continue
 		}
 
-		// Try to parse timestamp
-		ts := parseXidTimestamp(line, dmesgTsRe, journalTsRe)
+		ts := parseXidTimestamp(line, bootTime, now)
 
 		if g, ok := groups[code]; ok {
 			g.count++
@@ -176,21 +248,19 @@ func parseAndGroupXidErrors(lines []string) []types.XidError {
 	return result
 }
 
-// parseXidTimestamp attempts to extract a timestamp from a kernel log line.
-// It tries dmesg-style (seconds since boot) and journalctl-style formats.
-func parseXidTimestamp(line string, dmesgTsRe, journalTsRe *regexp.Regexp) time.Time {
-	// Try journalctl-style timestamp first (more precise)
-	if m := journalTsRe.FindStringSubmatch(line); m != nil {
-		// Parse "Jan 15 10:30:45" — year is not included, use current year
-		now := time.Now()
+// parseXidTimestamp converts a kernel log timestamp to wall-clock time.
+//
+// dmesg prints "[ 1234.567890]", seconds since boot, so the wall time is
+// bootTime + offset. (The previous code computed now - offset, which is only
+// right for an event that happened exactly "offset" ago and is otherwise off
+// by the whole uptime.) journalctl prints a local time without a year; the
+// year is taken from now and rolled back by one if the result would be in
+// the future. A zero time is returned when no timestamp can be recovered.
+func parseXidTimestamp(line string, bootTime, now time.Time) time.Time {
+	if m := xidJournalTsRe.FindStringSubmatch(line); m != nil {
+		// "_2" accepts both "Jan  5" and "Jan 15".
 		tsStr := m[1] + " " + strconv.Itoa(now.Year())
-		t, err := time.Parse("Jan  2 15:04:05 2006", tsStr)
-		if err != nil {
-			// Try single-digit day format
-			t, err = time.Parse("Jan 2 15:04:05 2006", tsStr)
-		}
-		if err == nil {
-			// If the parsed time is in the future, it's from last year
+		if t, err := time.ParseInLocation("Jan _2 15:04:05 2006", tsStr, now.Location()); err == nil {
 			if t.After(now) {
 				t = t.AddDate(-1, 0, 0)
 			}
@@ -198,15 +268,10 @@ func parseXidTimestamp(line string, dmesgTsRe, journalTsRe *regexp.Regexp) time.
 		}
 	}
 
-	// Try dmesg-style timestamp: [ 1234.567890]
-	// This is seconds since boot; convert to approximate wall clock time
-	if m := dmesgTsRe.FindStringSubmatch(line); m != nil {
+	if m := xidDmesgTsRe.FindStringSubmatch(line); m != nil {
 		secsSinceBoot, err := strconv.ParseFloat(m[1], 64)
-		if err == nil {
-			bootDuration := time.Duration(secsSinceBoot * float64(time.Second))
-			// Approximate: current time minus uptime plus log offset
-			approxTime := time.Now().Add(-bootDuration)
-			return approxTime
+		if err == nil && !bootTime.IsZero() {
+			return bootTime.Add(time.Duration(secsSinceBoot * float64(time.Second)))
 		}
 	}
 

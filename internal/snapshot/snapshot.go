@@ -6,61 +6,80 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/collector/ai"
-	"github.com/nicholasgasior/nvcheckup/internal/collector/common"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/ai"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
+	"github.com/thatcooperguy/nvcheckup/internal/redact"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// Create generates a timestamped JSON snapshot of the current system state.
+// Create generates a timestamped, redacted JSON snapshot of the current
+// system state. It is equivalent to CreateWithOptions(outDir, timeout, true).
 func Create(outDir string, timeout int) (string, error) {
+	return CreateWithOptions(outDir, timeout, true)
+}
+
+// CreateWithOptions generates a timestamped JSON snapshot. When redactEnabled
+// is true the hostname, username and home-directory paths are replaced with
+// the standard redaction tokens before the file is written, so a snapshot is
+// safe to attach to a forum post by default.
+func CreateWithOptions(outDir string, timeout int, redactEnabled bool) (string, error) {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return "", fmt.Errorf("cannot create output directory: %w", err)
 	}
 
-	snap := types.Snapshot{
-		Metadata: types.ReportMetadata{
-			ToolVersion: types.Version,
-			Timestamp:   time.Now(),
-			Mode:        types.ModeFull,
-		},
-	}
+	snap := collect(timeout, redactEnabled)
 
-	// Collect system info
-	sysInfo, _ := common.CollectSystemInfo(timeout)
-	snap.System = sysInfo
-
-	// Collect GPU info
-	gpus, driver, _ := common.CollectGPUInfo(timeout)
-	snap.GPUs = gpus
-	snap.Driver = driver
-
-	// Collect AI info
-	aiInfo, _ := ai.CollectAIInfo(timeout)
-	snap.AI = &aiInfo
-
-	snap.Metadata.RuntimeSeconds = time.Since(snap.Metadata.Timestamp).Seconds()
-
-	// Write snapshot
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("cannot marshal snapshot: %w", err)
 	}
 
-	timestamp := time.Now().Format("20060102-150405")
-	filename := fmt.Sprintf("nvcheckup-snapshot-%s.json", timestamp)
+	filename := fmt.Sprintf("nvcheckup-snapshot-%s.json", snap.Metadata.Timestamp.Format("20060102-150405"))
 	path := filepath.Join(outDir, filename)
-
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return "", fmt.Errorf("cannot write snapshot: %w", err)
 	}
-
 	return path, nil
 }
 
-// Compare reads two snapshot files and outputs their differences.
+// collect runs the snapshot collectors and applies redaction. Collector errors
+// are deliberately dropped: a snapshot is a best-effort record for later
+// comparison, not a diagnostic report.
+func collect(timeout int, redactEnabled bool) types.Snapshot {
+	start := time.Now()
+	snap := types.Snapshot{
+		Metadata: types.ReportMetadata{
+			ToolVersion:      types.Version,
+			Timestamp:        start,
+			Mode:             types.ModeFull,
+			Platform:         runtime.GOOS,
+			RedactionEnabled: redactEnabled,
+			SchemaVersion:    types.SchemaVersion,
+		},
+	}
+
+	sysInfo, _ := common.CollectSystemInfo(timeout)
+	snap.System = sysInfo
+
+	gpus, driver, _ := common.CollectGPUInfo(timeout)
+	snap.GPUs = gpus
+	snap.Driver = driver
+
+	aiInfo, _ := ai.CollectAIInfo(timeout)
+	snap.AI = &aiInfo
+
+	snap.Metadata.RuntimeSeconds = time.Since(start).Seconds()
+
+	redact.ApplyToSnapshot(&snap, redact.New(redactEnabled))
+	return snap
+}
+
+// Compare reads two snapshot files, prints their differences and optionally
+// writes them to outDir as comparison.txt or comparison.md.
 func Compare(pathA, pathB, outDir string, markdown bool) error {
 	snapA, err := loadSnapshot(pathA)
 	if err != nil {
@@ -72,78 +91,102 @@ func Compare(pathA, pathB, outDir string, markdown bool) error {
 	}
 
 	result := types.ComparisonResult{
-		SnapshotA:  filepath.Base(pathA),
-		SnapshotB:  filepath.Base(pathB),
-		TimestampA: snapA.Metadata.Timestamp,
-		TimestampB: snapB.Metadata.Timestamp,
+		SnapshotA:   filepath.Base(pathA),
+		SnapshotB:   filepath.Base(pathB),
+		TimestampA:  snapA.Metadata.Timestamp,
+		TimestampB:  snapB.Metadata.Timestamp,
+		Differences: Diff(snapA, snapB),
 	}
 
-	// Compare fields
-	addDiff := func(field, a, b, sev string) {
-		if a != b {
-			result.Differences = append(result.Differences, types.Difference{
-				Field:    field,
-				ValueA:   a,
-				ValueB:   b,
-				Severity: sev,
-			})
-		}
-	}
-
-	addDiff("OS Version", snapA.System.OSVersion, snapB.System.OSVersion, "INFO")
-	addDiff("Kernel", snapA.System.KernelVersion, snapB.System.KernelVersion, "WARN")
-	addDiff("Driver Version", snapA.Driver.Version, snapB.Driver.Version, "WARN")
-	addDiff("CUDA Version", snapA.Driver.CUDAVersion, snapB.Driver.CUDAVersion, "WARN")
-
-	// Compare GPU count
-	addDiff("GPU Count", fmt.Sprintf("%d", len(snapA.GPUs)), fmt.Sprintf("%d", len(snapB.GPUs)), "CRIT")
-
-	// Compare each GPU
-	minGPUs := len(snapA.GPUs)
-	if len(snapB.GPUs) < minGPUs {
-		minGPUs = len(snapB.GPUs)
-	}
-	for i := 0; i < minGPUs; i++ {
-		prefix := fmt.Sprintf("GPU[%d]", i)
-		addDiff(prefix+" Name", snapA.GPUs[i].Name, snapB.GPUs[i].Name, "WARN")
-		addDiff(prefix+" Driver", snapA.GPUs[i].DriverVersion, snapB.GPUs[i].DriverVersion, "WARN")
-		addDiff(prefix+" VRAM Total",
-			fmt.Sprintf("%d MB", snapA.GPUs[i].VRAMTotalMB),
-			fmt.Sprintf("%d MB", snapB.GPUs[i].VRAMTotalMB), "INFO")
-	}
-
-	// AI info comparison
-	if snapA.AI != nil && snapB.AI != nil {
-		addDiff("CUDA Toolkit", snapA.AI.CUDAToolkitVersion, snapB.AI.CUDAToolkitVersion, "WARN")
-		addDiff("cuDNN", snapA.AI.CuDNNVersion, snapB.AI.CuDNNVersion, "INFO")
-
-		if snapA.AI.PyTorchInfo != nil && snapB.AI.PyTorchInfo != nil {
-			addDiff("PyTorch Version", snapA.AI.PyTorchInfo.Version, snapB.AI.PyTorchInfo.Version, "INFO")
-			addDiff("PyTorch CUDA", snapA.AI.PyTorchInfo.CUDAVersion, snapB.AI.PyTorchInfo.CUDAVersion, "WARN")
-			addDiff("PyTorch CUDA Available",
-				fmt.Sprintf("%v", snapA.AI.PyTorchInfo.CUDAAvailable),
-				fmt.Sprintf("%v", snapB.AI.PyTorchInfo.CUDAAvailable), "CRIT")
-		}
-	}
-
-	// Output results
 	output := formatComparison(result, markdown)
 	fmt.Println(output)
 
-	// Optionally write to file
-	if outDir != "" && outDir != "." {
-		if err := os.MkdirAll(outDir, 0755); err == nil {
-			ext := ".txt"
-			if markdown {
-				ext = ".md"
-			}
-			outPath := filepath.Join(outDir, "comparison"+ext)
-			os.WriteFile(outPath, []byte(output), 0644)
-			fmt.Printf("\nComparison written to: %s\n", outPath)
+	// An empty outDir means console only; "." is the current directory and
+	// is a real destination, not "write nothing".
+	if outDir != "" {
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			return fmt.Errorf("cannot create output directory: %w", err)
 		}
+		ext := ".txt"
+		if markdown {
+			ext = ".md"
+		}
+		outPath := filepath.Join(outDir, "comparison"+ext)
+		if err := os.WriteFile(outPath, []byte(output), 0644); err != nil {
+			return fmt.Errorf("cannot write comparison: %w", err)
+		}
+		if abs, err := filepath.Abs(outPath); err == nil {
+			outPath = abs
+		}
+		fmt.Printf("\nComparison written to: %s\n", outPath)
 	}
 
 	return nil
+}
+
+// Diff returns the scalar differences between two snapshots. Field names are
+// stable snake_case identifiers so scripts can key on them. A driver version
+// change is reported once as "driver_version"; per-GPU driver strings are only
+// compared when the top-level driver did not change, to avoid reporting the
+// same upgrade N+1 times on multi-GPU machines.
+func Diff(a, b *types.Snapshot) []types.Difference {
+	var diffs []types.Difference
+	add := func(field, va, vb, sev string) {
+		if va != vb {
+			diffs = append(diffs, types.Difference{Field: field, ValueA: va, ValueB: vb, Severity: sev})
+		}
+	}
+	itoa := func(n int64) string { return fmt.Sprintf("%d", n) }
+	btoa := func(v bool) string { return fmt.Sprintf("%v", v) }
+
+	add("os_version", a.System.OSVersion, b.System.OSVersion, "INFO")
+	add("os_build", a.System.OSBuild, b.System.OSBuild, "INFO")
+	add("kernel_version", a.System.KernelVersion, b.System.KernelVersion, "WARN")
+	add("architecture", a.System.Architecture, b.System.Architecture, "WARN")
+	add("cpu_model", a.System.CPUModel, b.System.CPUModel, "INFO")
+	add("ram_total_mb", itoa(a.System.RAMTotalMB), itoa(b.System.RAMTotalMB), "INFO")
+	add("boot_mode", a.System.BootMode, b.System.BootMode, "INFO")
+	add("secure_boot", a.System.SecureBoot, b.System.SecureBoot, "WARN")
+
+	driverChanged := a.Driver.Version != b.Driver.Version
+	add("driver_version", a.Driver.Version, b.Driver.Version, "WARN")
+	add("cuda_driver_version", a.Driver.CUDAVersion, b.Driver.CUDAVersion, "WARN")
+
+	add("gpu_count", fmt.Sprintf("%d", len(a.GPUs)), fmt.Sprintf("%d", len(b.GPUs)), "CRIT")
+
+	n := len(a.GPUs)
+	if len(b.GPUs) < n {
+		n = len(b.GPUs)
+	}
+	for i := 0; i < n; i++ {
+		p := fmt.Sprintf("gpu[%d].", i)
+		add(p+"name", a.GPUs[i].Name, b.GPUs[i].Name, "WARN")
+		if !driverChanged {
+			add(p+"driver_version", a.GPUs[i].DriverVersion, b.GPUs[i].DriverVersion, "WARN")
+		}
+		add(p+"vram_total_mb", itoa(a.GPUs[i].VRAMTotalMB), itoa(b.GPUs[i].VRAMTotalMB), "INFO")
+		add(p+"wddm_version", a.GPUs[i].WDDMVersion, b.GPUs[i].WDDMVersion, "INFO")
+		add(p+"pcie_link_speed", a.GPUs[i].PCIeLinkSpeed, b.GPUs[i].PCIeLinkSpeed, "INFO")
+		add(p+"pcie_link_width", a.GPUs[i].PCIeLinkWidth, b.GPUs[i].PCIeLinkWidth, "INFO")
+	}
+
+	if a.AI != nil && b.AI != nil {
+		add("cuda_toolkit_version", a.AI.CUDAToolkitVersion, b.AI.CUDAToolkitVersion, "WARN")
+		add("cudnn_version", a.AI.CuDNNVersion, b.AI.CuDNNVersion, "INFO")
+		add("conda_present", btoa(a.AI.CondaPresent), btoa(b.AI.CondaPresent), "INFO")
+
+		if a.AI.PyTorchInfo != nil && b.AI.PyTorchInfo != nil {
+			add("pytorch.version", a.AI.PyTorchInfo.Version, b.AI.PyTorchInfo.Version, "INFO")
+			add("pytorch.cuda_version", a.AI.PyTorchInfo.CUDAVersion, b.AI.PyTorchInfo.CUDAVersion, "WARN")
+			add("pytorch.cuda_available", btoa(a.AI.PyTorchInfo.CUDAAvailable), btoa(b.AI.PyTorchInfo.CUDAAvailable), "CRIT")
+		}
+		if a.AI.TensorFlowInfo != nil && b.AI.TensorFlowInfo != nil {
+			add("tensorflow.version", a.AI.TensorFlowInfo.Version, b.AI.TensorFlowInfo.Version, "INFO")
+			add("tensorflow.gpu_count", fmt.Sprintf("%d", len(a.AI.TensorFlowInfo.GPUs)), fmt.Sprintf("%d", len(b.AI.TensorFlowInfo.GPUs)), "WARN")
+		}
+	}
+
+	return diffs
 }
 
 func loadSnapshot(path string) (*types.Snapshot, error) {
@@ -160,6 +203,12 @@ func loadSnapshot(path string) (*types.Snapshot, error) {
 
 func formatComparison(result types.ComparisonResult, markdown bool) string {
 	var sb strings.Builder
+	na := func(s string) string {
+		if s == "" {
+			return "(none)"
+		}
+		return s
+	}
 
 	if markdown {
 		sb.WriteString("# NVCheckup Snapshot Comparison\n\n")
@@ -172,27 +221,27 @@ func formatComparison(result types.ComparisonResult, markdown bool) string {
 			sb.WriteString("| Field | Snapshot A | Snapshot B | Severity |\n")
 			sb.WriteString("|-------|-----------|-----------|----------|\n")
 			for _, d := range result.Differences {
-				sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", d.Field, d.ValueA, d.ValueB, d.Severity))
+				sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s |\n", d.Field, na(d.ValueA), na(d.ValueB), d.Severity))
 			}
 		}
-	} else {
-		sb.WriteString("NVCheckup Snapshot Comparison\n")
-		sb.WriteString(strings.Repeat("─", 60) + "\n")
-		sb.WriteString(fmt.Sprintf("Snapshot A: %s (%s)\n", result.SnapshotA, result.TimestampA.Format("2006-01-02 15:04:05")))
-		sb.WriteString(fmt.Sprintf("Snapshot B: %s (%s)\n", result.SnapshotB, result.TimestampB.Format("2006-01-02 15:04:05")))
-		sb.WriteString(strings.Repeat("─", 60) + "\n\n")
-
-		if len(result.Differences) == 0 {
-			sb.WriteString("No differences found.\n")
-		} else {
-			sb.WriteString(fmt.Sprintf("Found %d difference(s):\n\n", len(result.Differences)))
-			for _, d := range result.Differences {
-				sb.WriteString(fmt.Sprintf("  [%s] %s\n", d.Severity, d.Field))
-				sb.WriteString(fmt.Sprintf("    A: %s\n", d.ValueA))
-				sb.WriteString(fmt.Sprintf("    B: %s\n\n", d.ValueB))
-			}
-		}
+		return sb.String()
 	}
 
+	sb.WriteString("NVCheckup Snapshot Comparison\n")
+	sb.WriteString(strings.Repeat("─", 60) + "\n")
+	sb.WriteString(fmt.Sprintf("Snapshot A: %s (%s)\n", result.SnapshotA, result.TimestampA.Format("2006-01-02 15:04:05")))
+	sb.WriteString(fmt.Sprintf("Snapshot B: %s (%s)\n", result.SnapshotB, result.TimestampB.Format("2006-01-02 15:04:05")))
+	sb.WriteString(strings.Repeat("─", 60) + "\n\n")
+
+	if len(result.Differences) == 0 {
+		sb.WriteString("No differences found.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Found %d difference(s):\n\n", len(result.Differences)))
+		for _, d := range result.Differences {
+			sb.WriteString(fmt.Sprintf("  [%s] %s\n", d.Severity, d.Field))
+			sb.WriteString(fmt.Sprintf("    A: %s\n", na(d.ValueA)))
+			sb.WriteString(fmt.Sprintf("    B: %s\n\n", na(d.ValueB)))
+		}
+	}
 	return sb.String()
 }

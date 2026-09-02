@@ -5,11 +5,11 @@ package remediate
 import (
 	"fmt"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// getAvailableActions returns nil on unsupported platforms. Remediation actions
-// are only available on Windows and Linux.
+// getAvailableActions returns nil on unsupported platforms. Every catalog
+// entry (see catalog.go) targets Windows or Linux.
 func getAvailableActions() []types.RemediationAction {
 	return nil
 }
@@ -22,4 +22,9 @@ func (e *Engine) applyAction(id string) (output string, undoInfo string, err err
 // undoAction is a no-op on unsupported platforms. All action IDs are unknown.
 func (e *Engine) undoAction(id string, undoInfo string) error {
 	return fmt.Errorf("remediation undo is not supported on this platform (action: %q)", id)
+}
+
+// inspectAction is a no-op on unsupported platforms.
+func (e *Engine) inspectAction(id string) (inspection, error) {
+	return inspection{}, fmt.Errorf("remediation actions are not supported on this platform (action: %q)", id)
 }

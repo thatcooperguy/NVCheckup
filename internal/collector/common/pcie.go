@@ -5,9 +5,18 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
+
+// PCIeQueryFields is the exact --query-gpu field list used by CollectPCIeInfo.
+// Exported so self-test can verify the driver accepts it.
+const PCIeQueryFields = "pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,pstate,utilization.gpu"
+
+// idleUtilizationPct is the utilization below which the GPU is considered idle
+// for PCIe purposes. An idle GPU is allowed (expected, even) to drop its link
+// generation to save power, so a Gen1 link at 5% load is not a fault.
+const idleUtilizationPct = 20
 
 // CollectPCIeInfo gathers PCIe link state data via nvidia-smi.
 func CollectPCIeInfo(timeout int) (types.PCIeInfo, []types.CollectorError) {
@@ -24,18 +33,19 @@ func CollectPCIeInfo(timeout int) (types.PCIeInfo, []types.CollectorError) {
 	}
 
 	r := util.RunCommand(timeout, "nvidia-smi",
-		"--query-gpu=pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max",
+		"--query-gpu="+PCIeQueryFields,
 		"--format=csv,noheader,nounits")
 	if r.Err != nil {
 		errs = append(errs, types.CollectorError{
 			Collector: "pcie.query",
-			Error:     fmt.Sprintf("nvidia-smi PCIe query failed: %v", r.Err),
+			Error:     "nvidia-smi PCIe query failed: " + commandFailureDetail(r),
 			Fatal:     true,
 		})
 		return info, errs
 	}
 
-	line := strings.TrimSpace(r.Stdout)
+	// One CSV row per GPU; report the first GPU only.
+	line := firstLine(r.Stdout)
 	if line == "" {
 		errs = append(errs, types.CollectorError{
 			Collector: "pcie.parse",
@@ -45,67 +55,117 @@ func CollectPCIeInfo(timeout int) (types.PCIeInfo, []types.CollectorError) {
 		return info, errs
 	}
 
-	// Take only the first GPU line if there are multiple
-	lines := strings.Split(line, "\n")
-	fields := strings.Split(lines[0], ", ")
+	return parsePCIeCSV(line)
+}
 
-	var currentGen, maxGen, currentWidth, maxWidth int
+// parsePCIeCSV parses one nvidia-smi CSV line produced by PCIeQueryFields
+// (current gen, max gen, current width, max width, pstate, utilization).
+// "[N/A]" fields are left empty rather than recorded as 0. It is a pure
+// function so it can be unit-tested with captured output.
+func parsePCIeCSV(line string) (types.PCIeInfo, []types.CollectorError) {
+	var info types.PCIeInfo
+	var errs []types.CollectorError
 
-	if len(fields) >= 1 {
-		if v, err := strconv.Atoi(strings.TrimSpace(fields[0])); err == nil {
-			currentGen = v
-			info.CurrentSpeed = formatPCIeGen(v)
-		} else {
-			errs = append(errs, types.CollectorError{
-				Collector: "pcie.current_gen",
-				Error:     fmt.Sprintf("failed to parse current PCIe gen: %s", fields[0]),
-			})
+	fields := splitCSV(line)
+	get := func(i int) string {
+		if i < len(fields) {
+			return fields[i]
 		}
+		return ""
 	}
-
-	if len(fields) >= 2 {
-		if v, err := strconv.Atoi(strings.TrimSpace(fields[1])); err == nil {
-			maxGen = v
-			info.MaxSpeed = formatPCIeGen(v)
-		} else {
-			errs = append(errs, types.CollectorError{
-				Collector: "pcie.max_gen",
-				Error:     fmt.Sprintf("failed to parse max PCIe gen: %s", fields[1]),
-			})
+	// parseInt returns ok=false for missing or "[N/A]" fields without an error,
+	// and records a CollectorError for values that are present but malformed.
+	parseInt := func(i int, collector, label string) (int, bool) {
+		s := get(i)
+		if s == "" || isNotAvailable(s) {
+			return 0, false
 		}
-	}
-
-	if len(fields) >= 3 {
-		if v, err := strconv.Atoi(strings.TrimSpace(fields[2])); err == nil {
-			currentWidth = v
-			info.CurrentWidth = formatPCIeWidth(v)
-		} else {
+		v, err := strconv.Atoi(s)
+		if err != nil {
 			errs = append(errs, types.CollectorError{
-				Collector: "pcie.current_width",
-				Error:     fmt.Sprintf("failed to parse current PCIe width: %s", fields[2]),
+				Collector: collector,
+				Error:     fmt.Sprintf("failed to parse %s: %s", label, s),
 			})
+			return 0, false
 		}
+		return v, true
 	}
 
-	if len(fields) >= 4 {
-		if v, err := strconv.Atoi(strings.TrimSpace(fields[3])); err == nil {
-			maxWidth = v
-			info.MaxWidth = formatPCIeWidth(v)
-		} else {
-			errs = append(errs, types.CollectorError{
-				Collector: "pcie.max_width",
-				Error:     fmt.Sprintf("failed to parse max PCIe width: %s", fields[3]),
-			})
-		}
+	currentGen, haveCurrentGen := parseInt(0, "pcie.current_gen", "current PCIe gen")
+	if haveCurrentGen {
+		info.CurrentSpeed = formatPCIeGen(currentGen)
+	}
+	maxGen, haveMaxGen := parseInt(1, "pcie.max_gen", "max PCIe gen")
+	if haveMaxGen {
+		info.MaxSpeed = formatPCIeGen(maxGen)
+	}
+	currentWidth, haveCurrentWidth := parseInt(2, "pcie.current_width", "current PCIe width")
+	if haveCurrentWidth {
+		info.CurrentWidth = formatPCIeWidth(currentWidth)
+	}
+	maxWidth, haveMaxWidth := parseInt(3, "pcie.max_width", "max PCIe width")
+	if haveMaxWidth {
+		info.MaxWidth = formatPCIeWidth(maxWidth)
 	}
 
-	// Downshifted if current < max on either speed or width
-	if (currentGen > 0 && maxGen > 0 && currentGen < maxGen) ||
-		(currentWidth > 0 && maxWidth > 0 && currentWidth < maxWidth) {
-		info.Downshifted = true
+	if s := get(4); s != "" && !isNotAvailable(s) {
+		info.PowerState = s
 	}
+	utilPct, haveUtil := parseInt(5, "pcie.utilization", "utilization")
+	if haveUtil {
+		info.UtilizationPct = utilPct
+	}
+
+	// Idle detection: P5..P12 are power-saving states, and low utilization
+	// means the driver may have negotiated the link down on purpose. Only a
+	// parsed utilization counts; an unknown value must not read as "0% = idle".
+	info.IdleLikely = isIdlePState(info.PowerState) || (haveUtil && utilPct < idleUtilizationPct)
+
+	// Load detection needs positive evidence: an active P-state (P0..P4) or a
+	// parsed utilization at or above the idle threshold. When both fields are
+	// [N/A] we know nothing about load, and "not idle" must not be read as
+	// "busy". This mirrors the analyzer's pcieUnderLoad rule.
+	underLoad := isActivePState(info.PowerState) || (haveUtil && utilPct >= idleUtilizationPct)
+
+	// Width below max is always a fault (a bent pin, bad riser, or wrong slot
+	// cannot be explained by power saving). Gen below max only matters when the
+	// GPU is demonstrably busy; idle GPUs routinely sit at Gen1, and an unknown
+	// state is not evidence either way.
+	widthDownshift := haveCurrentWidth && haveMaxWidth && currentWidth > 0 && maxWidth > 0 && currentWidth < maxWidth
+	genDownshift := haveCurrentGen && haveMaxGen && currentGen > 0 && maxGen > 0 && currentGen < maxGen
+	info.Downshifted = widthDownshift || (genDownshift && underLoad && !info.IdleLikely)
 
 	return info, errs
+}
+
+// parsePState parses an nvidia-smi pstate string (P0..P12) into its number.
+// ok is false for empty, "[N/A]", or malformed values.
+func parsePState(pstate string) (int, bool) {
+	p := strings.ToUpper(strings.TrimSpace(pstate))
+	if !strings.HasPrefix(p, "P") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(p[1:])
+	if err != nil || n < 0 || n > 12 {
+		return 0, false
+	}
+	return n, true
+}
+
+// isIdlePState reports whether an nvidia-smi pstate string (P0..P12) is one of
+// the power-saving states P5 and above.
+func isIdlePState(pstate string) bool {
+	n, ok := parsePState(pstate)
+	return ok && n >= 5
+}
+
+// isActivePState reports whether an nvidia-smi pstate string is one of the
+// performance states P0..P4, which is positive evidence that the GPU was
+// busy when the link was sampled (some mobile parts and video workloads sit
+// in P3/P4 under load).
+func isActivePState(pstate string) bool {
+	n, ok := parsePState(pstate)
+	return ok && n <= 4
 }
 
 // formatPCIeGen formats a PCIe generation number as "GenN".

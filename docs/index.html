@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NVCheckup — Cross-platform NVIDIA Diagnostics</title>
-<meta name="description" content="Open-source NVIDIA GPU diagnostic tool for gaming, AI, and creators. Windows + Linux. Safe, private, read-only.">
+<meta name="description" content="Open-source NVIDIA GPU diagnostic tool for gaming, AI, and creators. Windows + Linux. Safe, private, read-only by default.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -582,17 +582,18 @@ body {
   </div>
 
   <p class="hero-subtitle">Cross-platform NVIDIA diagnostics for gaming, AI, and creators.</p>
-  <p class="hero-tagline">Read-only &middot; Privacy-first &middot; Open Source</p>
+  <p class="hero-tagline">Read-only by default &middot; Privacy-first &middot; Open Source</p>
 
   <div class="hero-actions">
     <a href="https://github.com/thatcooperguy/NVCheckup/releases" class="btn btn-primary">Download</a>
     <a href="https://github.com/thatcooperguy/NVCheckup" class="btn btn-secondary">View on GitHub</a>
+    <a href="https://github.com/thatcooperguy/NVCheckup#building-from-source" class="btn btn-secondary">Build from source</a>
   </div>
 
   <div class="status-bar">
     <div class="status-item">
       <span class="status-dot"></span>
-      v0.1.0
+      v0.2.1
     </div>
     <div class="status-item">
       <span class="status-dot"></span>
@@ -620,24 +621,28 @@ body {
     </div>
     <div class="terminal-body">
       <span class="prompt">$</span> <span class="cmd">nvcheckup run --mode full --zip</span><br><br>
-      <span class="dim">[1/5] Collecting system information...</span><br>
-      <span class="dim">[2/5] Detecting GPUs and drivers...</span><br>
-      <span class="dim">[3/5] Running platform-specific checks...</span><br>
-      <span class="dim">[4/5] Checking AI/CUDA environment...</span><br>
-      <span class="dim">[5/5] Analyzing results...</span><br><br>
-      <span class="output">NVCheckup v0.1.0 | 2025-01-15 14:32:10 UTC</span><br>
-      <span class="output">OS: Windows 11 23H2 | Arch: amd64</span><br>
-      <span class="output">GPU: <span class="highlight">NVIDIA GeForce RTX 4070</span> | Driver: <span class="highlight">566.36</span> | VRAM: 12288 MB</span><br>
-      <span class="output">CUDA (driver): <span class="highlight">12.7</span></span><br>
-      <span class="output">Findings: <span class="crit">1 CRITICAL</span>, <span class="warn">2 WARNING</span>, 5 total</span><br><br>
+      <span class="dim">[1/7] Collecting system information...</span><br>
+      <span class="dim">[2/7] Detecting GPUs and drivers...</span><br>
+      <span class="dim">[3/7] Collecting GPU thermal and PCIe data...</span><br>
+      <span class="dim">[4/7] Running platform-specific checks...</span><br>
+      <span class="dim">[5/7] Checking AI/CUDA environment...</span><br>
+      <span class="dim">[6/7] Skipping network probes (use --network to enable)...</span><br>
+      <span class="dim">[7/7] Analyzing results...</span><br><br>
+      <span class="dim">&nbsp;&nbsp;Written: report.txt</span><br>
+      <span class="dim">&nbsp;&nbsp;Bundle:&nbsp;&nbsp;nvcheckup-bundle-20260901-143210.zip</span><br><br>
+      <span class="output">NVCheckup v0.2.1 | 2026-09-01 14:32:10</span><br>
+      <span class="output">OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64</span><br>
+      <span class="output">GPU: <span class="highlight">NVIDIA GeForce RTX 4070</span> | Driver: <span class="highlight">591.86</span> | VRAM: 12282 MB</span><br>
+      <span class="output">CUDA (driver): <span class="highlight">13.1</span> | CUDA Toolkit: 12.8</span><br>
+      <span class="output">PyTorch: 2.8.0+cpu (CUDA NOT available)</span><br>
+      <span class="output">Temp: 86&deg;C | P-State: P0 | Util: 98%</span><br>
+      <span class="output">PCIe: Gen4 x16</span><br>
+      <span class="output">Findings: <span class="crit">1 CRITICAL</span>, <span class="warn">2 WARNING</span>, 5 total | 1 auto-fixable</span><br>
+      <span class="output">Top: Display Driver Resets Detected (Event ID 4101); PyTorch Installe...</span><br><br>
       <span class="output">Top Issues:</span><br>
-      <span class="output">&nbsp;&nbsp;1. <span class="crit">[CRIT]</span> Display Driver Resets Detected (Event ID 4101)</span><br>
-      <span class="output">&nbsp;&nbsp;2. <span class="warn">[WARN]</span> PyTorch Installed Without CUDA Support</span><br>
-      <span class="output">&nbsp;&nbsp;3. <span class="warn">[WARN]</span> HAGS is Enabled</span><br>
-      <span class="output">&nbsp;&nbsp;4. <span class="info-label">[INFO]</span> Overlay Software Detected</span><br>
-      <span class="output">&nbsp;&nbsp;5. <span class="info-label">[INFO]</span> Hybrid GPU Configuration</span><br><br>
-      <span class="dim">Written: report.txt, report.json, report.md</span><br>
-      <span class="dim">Bundle:  nvcheckup-bundle-20250115-143210.zip</span>
+      <span class="output">&nbsp;&nbsp;1. <span class="crit">[CRIT]</span> Display Driver Resets Detected (Event ID 4101) (92% confidence)</span><br>
+      <span class="output">&nbsp;&nbsp;2. <span class="warn">[WARN]</span> PyTorch Installed Without CUDA Support (95% confidence)</span><br>
+      <span class="output">&nbsp;&nbsp;3. <span class="warn">[WARN]</span> GPU Running Hot (80% confidence)</span>
     </div>
   </div>
 </section>
@@ -685,7 +690,7 @@ body {
   <div class="safety-grid">
     <div class="safety-item">
       <span class="safety-icon safety-check">&#x2714;</span>
-      <span>Read-only by default</span>
+      <span>Read-only by default; opt-in fixes are confirmed and undoable</span>
     </div>
     <div class="safety-item">
       <span class="safety-icon safety-check">&#x2714;</span>
@@ -693,7 +698,7 @@ body {
     </div>
     <div class="safety-item">
       <span class="safety-icon safety-check">&#x2714;</span>
-      <span>Zero network calls</span>
+      <span>No network calls unless you opt in with --network</span>
     </div>
     <div class="safety-item">
       <span class="safety-icon safety-check">&#x2714;</span>
@@ -709,7 +714,7 @@ body {
     </div>
     <div class="safety-item">
       <span class="safety-icon safety-x">&#x2718;</span>
-      <span>No registry edits</span>
+      <span>No silent registry edits</span>
     </div>
     <div class="safety-item">
       <span class="safety-icon safety-x">&#x2718;</span>

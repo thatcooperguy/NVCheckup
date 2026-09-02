@@ -3,8 +3,8 @@
 package core
 
 import (
-	winCollector "github.com/nicholasgasior/nvcheckup/internal/collector/windows"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	winCollector "github.com/thatcooperguy/nvcheckup/internal/collector/windows"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func collectPlatformSpecific(r *types.Report, cfg types.RunConfig) []types.CollectorError {

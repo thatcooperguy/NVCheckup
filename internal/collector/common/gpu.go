@@ -4,9 +4,13 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
+
+// GPUQueryFields is the exact --query-gpu field list used by CollectGPUInfo.
+// Exported so self-test can verify the driver accepts it.
+const GPUQueryFields = "driver_version,pci.bus_id,memory.total,memory.free,memory.used,temperature.gpu,power.draw"
 
 // CollectGPUInfo gathers GPU and NVIDIA driver information.
 func CollectGPUInfo(timeout int) ([]types.GPUInfo, types.DriverInfo, []types.CollectorError) {
@@ -64,7 +68,7 @@ func collectFromNvidiaSmi(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs 
 
 	// nvidia-smi summary for driver version, CUDA version, memory
 	r = util.RunCommand(timeout, "nvidia-smi",
-		"--query-gpu=driver_version,pci.bus_id,memory.total,memory.free,memory.used,temperature.gpu,power.draw",
+		"--query-gpu="+GPUQueryFields,
 		"--format=csv,noheader,nounits")
 	if r.Err == nil {
 		lines := strings.Split(r.Stdout, "\n")
@@ -102,7 +106,9 @@ func collectFromNvidiaSmi(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs 
 	// Get CUDA version from nvidia-smi header
 	r = util.RunCommand(timeout, "nvidia-smi")
 	if r.Err == nil {
-		driver.NvidiaSmiOutput = r.Stdout
+		// The Processes section lists every program using the GPU by name,
+		// which is private information; keep only the GPU table above it.
+		driver.NvidiaSmiOutput = stripProcessSection(r.Stdout)
 		cudaRe := regexp.MustCompile(`CUDA Version:\s*([\d.]+)`)
 		if m := cudaRe.FindStringSubmatch(r.Stdout); m != nil {
 			driver.CUDAVersion = m[1]
@@ -241,4 +247,49 @@ func collectGPUsLinux(gpus *[]types.GPUInfo, errs *[]types.CollectorError, timeo
 
 		*gpus = append(*gpus, gpu)
 	}
+}
+
+// processSectionOmittedNote replaces the Processes table in stored nvidia-smi output.
+const processSectionOmittedNote = "(Processes section omitted: process names are private)"
+
+// stripProcessSection returns the nvidia-smi table with everything from the
+// "Processes:" section onward removed, including the box border that opens
+// that section. Output without a Processes section is returned unchanged.
+func stripProcessSection(output string) string {
+	lines := strings.Split(output, "\n")
+	cut := -1
+	for i, l := range lines {
+		if strings.Contains(l, "Processes:") {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		return output
+	}
+	kept := lines[:cut]
+	// The Processes box opens with a "+----+" border on the line before the
+	// header; drop it (and any blank lines) so the kept table ends cleanly.
+	kept = trimTrailingBlank(kept)
+	if len(kept) >= 2 && isTableBorder(kept[len(kept)-1]) && strings.TrimSpace(kept[len(kept)-2]) == "" {
+		kept = trimTrailingBlank(kept[:len(kept)-1])
+	}
+	return strings.Join(kept, "\n") + "\n" + processSectionOmittedNote
+}
+
+// trimTrailingBlank drops trailing whitespace-only lines.
+func trimTrailingBlank(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// isTableBorder reports whether a line is an nvidia-smi box border like "+-----+".
+func isTableBorder(line string) bool {
+	t := strings.TrimSpace(line)
+	if len(t) < 2 || t[0] != '+' {
+		return false
+	}
+	return strings.Trim(t, "+-=") == ""
 }

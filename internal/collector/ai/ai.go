@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectAIInfo gathers AI framework and CUDA environment information.
@@ -18,45 +18,83 @@ func CollectAIInfo(timeout int) (types.AIInfo, []types.CollectorError) {
 	var errs []types.CollectorError
 
 	collectCUDAToolkit(&info, &errs, timeout)
-	collectCuDNN(&info, &errs, timeout)
+	collectCuDNN(&info)
 	collectPythonEnvs(&info, &errs, timeout)
-	collectConda(&info, &errs, timeout)
-	collectPyTorch(&info, &errs, timeout)
-	collectTensorFlow(&info, &errs, timeout)
-	collectKeyPackages(&info, &errs, timeout)
+	info.CondaPresent = util.CommandExists("conda")
+
+	// One interpreter is chosen once and shared by every framework probe so
+	// the report never mixes results from different Pythons.
+	python := findPython(timeout, &errs)
+	if python == "" {
+		return info, errs
+	}
+	collectPyTorch(&info, &errs, timeout, python)
+	collectTensorFlow(&info, &errs, timeout, python)
+	collectKeyPackages(&info, &errs, timeout, python)
 
 	return info, errs
 }
 
+// nvccReleaseRe matches the release field of "nvcc --version":
+//
+//	Cuda compilation tools, release 12.4, V12.4.131
+var nvccReleaseRe = regexp.MustCompile(`release\s+(\d+(?:\.\d+)*)`)
+
+// cudaDirVersionRe extracts the version from an install directory such as
+// /usr/local/cuda-12.4 or /opt/cuda-12.4.
+var cudaDirVersionRe = regexp.MustCompile(`cuda[- ]?(\d+(?:\.\d+)*)`)
+
+// parseNvccVersion returns the toolkit release ("12.4") from nvcc --version
+// output, or "" when the release line is missing.
+func parseNvccVersion(output string) string {
+	if m := nvccReleaseRe.FindStringSubmatch(output); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// cudaVersionFromPath extracts a toolkit version embedded in an install path
+// ("/usr/local/cuda-12.4" -> "12.4"), or "" when the path carries none.
+func cudaVersionFromPath(path string) string {
+	if m := cudaDirVersionRe.FindStringSubmatch(path); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// linuxCudaHome is the conventional toolkit location on Linux. It is usually a
+// symlink, and on Debian/Ubuntu often a symlink to /etc/alternatives/cuda
+// which in turn points at the versioned directory, so it must be resolved
+// fully before the version can be read from the path.
+const linuxCudaHome = "/usr/local/cuda"
+
 func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	// Check nvcc
+	// Check nvcc on PATH
 	if util.CommandExists("nvcc") {
 		r := util.RunCommand(timeout, "nvcc", "--version")
 		if r.Err == nil {
 			info.NvccPath = "nvcc"
-			// Parse version: "Cuda compilation tools, release 12.2, V12.2.140"
-			re := regexp.MustCompile(`release\s+([\d.]+)`)
-			if m := re.FindStringSubmatch(r.Stdout); m != nil {
-				info.CUDAToolkitVersion = m[1]
-			}
+			info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
 		}
 	}
 
-	// On Linux, check /usr/local/cuda symlink
+	// On Linux, follow /usr/local/cuda (through /etc/alternatives when present)
 	if runtime.GOOS == "linux" {
-		if target, err := os.Readlink("/usr/local/cuda"); err == nil {
-			if info.CUDAToolkitVersion == "" {
-				// Extract version from path like /usr/local/cuda-12.2
-				re := regexp.MustCompile(`cuda[- ]?([\d.]+)`)
-				if m := re.FindStringSubmatch(target); m != nil {
-					info.CUDAToolkitVersion = m[1]
-				}
-			}
-			if info.NvccPath == "" {
-				nvccPath := filepath.Join(target, "bin", "nvcc")
-				if _, err := os.Stat(nvccPath); err == nil {
+		if target, err := filepath.EvalSymlinks(linuxCudaHome); err == nil {
+			nvccPath := filepath.Join(target, "bin", "nvcc")
+			if _, err := os.Stat(nvccPath); err == nil {
+				if info.NvccPath == "" {
 					info.NvccPath = nvccPath
 				}
+				if info.CUDAToolkitVersion == "" {
+					r := util.RunCommand(timeout, nvccPath, "--version")
+					if r.Err == nil {
+						info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
+					}
+				}
+			}
+			if info.CUDAToolkitVersion == "" {
+				info.CUDAToolkitVersion = cudaVersionFromPath(target)
 			}
 		}
 	}
@@ -70,11 +108,10 @@ func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeou
 				if info.NvccPath == "" {
 					info.NvccPath = nvccPath
 				}
-				r := util.RunCommand(timeout, nvccPath, "--version")
-				if r.Err == nil && info.CUDAToolkitVersion == "" {
-					re := regexp.MustCompile(`release\s+([\d.]+)`)
-					if m := re.FindStringSubmatch(r.Stdout); m != nil {
-						info.CUDAToolkitVersion = m[1]
+				if info.CUDAToolkitVersion == "" {
+					r := util.RunCommand(timeout, nvccPath, "--version")
+					if r.Err == nil {
+						info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
 					}
 				}
 			}
@@ -82,84 +119,92 @@ func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeou
 	}
 }
 
-func collectCuDNN(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	if runtime.GOOS == "linux" {
-		// Check for cuDNN header
-		for _, path := range []string{
-			"/usr/include/cudnn_version.h",
-			"/usr/local/cuda/include/cudnn_version.h",
-			"/usr/include/cudnn.h",
-			"/usr/local/cuda/include/cudnn.h",
-		} {
-			r := util.RunCommand(timeout, "sh", "-c", `grep -E "CUDNN_MAJOR|CUDNN_MINOR|CUDNN_PATCHLEVEL" `+path+` 2>/dev/null | head -3`)
-			if r.Err == nil && r.Stdout != "" {
-				major, minor, patch := "", "", ""
-				for _, line := range strings.Split(r.Stdout, "\n") {
-					if strings.Contains(line, "CUDNN_MAJOR") && !strings.Contains(line, "MINOR") && !strings.Contains(line, "PATCH") {
-						parts := strings.Fields(line)
-						if len(parts) >= 3 {
-							major = parts[len(parts)-1]
-						}
-					} else if strings.Contains(line, "CUDNN_MINOR") {
-						parts := strings.Fields(line)
-						if len(parts) >= 3 {
-							minor = parts[len(parts)-1]
-						}
-					} else if strings.Contains(line, "CUDNN_PATCHLEVEL") {
-						parts := strings.Fields(line)
-						if len(parts) >= 3 {
-							patch = parts[len(parts)-1]
-						}
-					}
-				}
-				if major != "" {
-					info.CuDNNVersion = major
-					if minor != "" {
-						info.CuDNNVersion += "." + minor
-					}
-					if patch != "" {
-						info.CuDNNVersion += "." + patch
-					}
-				}
-				break
-			}
+// cudnnDefineRe matches "#define CUDNN_MAJOR 9" style lines. Anchoring on the
+// #define keyword keeps "#define CUDNN_VERSION (CUDNN_MAJOR * 1000 + ...)"
+// from matching.
+var cudnnDefineRe = regexp.MustCompile(`(?m)^\s*#\s*define\s+CUDNN_(MAJOR|MINOR|PATCHLEVEL)\s+(\d+)\b`)
+
+// parseCudnnHeader extracts "major.minor.patch" from the contents of
+// cudnn_version.h (cuDNN 8+) or cudnn.h (cuDNN 7 and older). It returns ""
+// when the header defines no CUDNN_MAJOR.
+func parseCudnnHeader(content string) string {
+	found := map[string]string{}
+	for _, m := range cudnnDefineRe.FindAllStringSubmatch(content, -1) {
+		if _, dup := found[m[1]]; !dup {
+			found[m[1]] = m[2]
 		}
+	}
+	major, ok := found["MAJOR"]
+	if !ok {
+		return ""
+	}
+	version := major
+	minor, ok := found["MINOR"]
+	if !ok {
+		return version
+	}
+	version += "." + minor
+	if patch, ok := found["PATCHLEVEL"]; ok {
+		version += "." + patch
+	}
+	return version
+}
+
+// collectCuDNN reads the cuDNN header directly with os.ReadFile. The previous
+// implementation interpolated CUDA_PATH into a PowerShell command line, which
+// let a crafted environment variable ($(...) or a stray quote) run arbitrary
+// commands; reading the file from Go involves no shell at all.
+func collectCuDNN(info *types.AIInfo) {
+	for _, path := range cudnnHeaderCandidates() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if v := parseCudnnHeader(string(data)); v != "" {
+			info.CuDNNVersion = v
+			return
+		}
+	}
+}
+
+// cudnnHeaderCandidates lists header files in priority order: CUDA_PATH
+// first, then the standard toolkit and standalone cuDNN install locations.
+func cudnnHeaderCandidates() []string {
+	var dirs []string
+	if p := os.Getenv("CUDA_PATH"); p != "" {
+		dirs = append(dirs, filepath.Join(p, "include"))
+	}
+	if runtime.GOOS == "windows" {
+		programFiles := os.Getenv("ProgramFiles")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		dirs = append(dirs, globPaths(filepath.Join(programFiles, "NVIDIA GPU Computing Toolkit", "CUDA", "v*", "include"))...)
+		// Standalone cuDNN installs; cuDNN 9 adds a per-CUDA-version
+		// subfolder (include\12.x\cudnn_version.h).
+		dirs = append(dirs, globPaths(filepath.Join(programFiles, "NVIDIA", "CUDNN", "v*", "include"))...)
+		dirs = append(dirs, globPaths(filepath.Join(programFiles, "NVIDIA", "CUDNN", "v*", "include", "*"))...)
+	} else {
+		dirs = append(dirs, "/usr/include", "/usr/local/cuda/include")
+		dirs = append(dirs, globPaths("/usr/local/cuda-*/include")...)
+		dirs = append(dirs, "/usr/include/x86_64-linux-gnu", "/usr/include/aarch64-linux-gnu")
 	}
 
-	if runtime.GOOS == "windows" {
-		cudaPath := os.Getenv("CUDA_PATH")
-		if cudaPath != "" {
-			headerPath := filepath.Join(cudaPath, "include", "cudnn_version.h")
-			r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
-				`Select-String -Path "`+headerPath+`" -Pattern "CUDNN_MAJOR|CUDNN_MINOR|CUDNN_PATCHLEVEL" -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }`)
-			if r.Err == nil && r.Stdout != "" {
-				major, minor, patch := "", "", ""
-				for _, line := range strings.Split(r.Stdout, "\n") {
-					parts := strings.Fields(line)
-					if len(parts) < 3 {
-						continue
-					}
-					lastVal := parts[len(parts)-1]
-					if strings.Contains(line, "CUDNN_MAJOR") && !strings.Contains(line, "MINOR") {
-						major = lastVal
-					} else if strings.Contains(line, "CUDNN_MINOR") {
-						minor = lastVal
-					} else if strings.Contains(line, "CUDNN_PATCHLEVEL") {
-						patch = lastVal
-					}
-				}
-				if major != "" {
-					info.CuDNNVersion = major
-					if minor != "" {
-						info.CuDNNVersion += "." + minor
-					}
-					if patch != "" {
-						info.CuDNNVersion += "." + patch
-					}
-				}
-			}
-		}
+	var files []string
+	for _, d := range dirs {
+		files = append(files, filepath.Join(d, "cudnn_version.h"), filepath.Join(d, "cudnn.h"))
+		// Debian/Ubuntu packages install versioned names such as cudnn_version_v9.h.
+		files = append(files, globPaths(filepath.Join(d, "cudnn_version_v*.h"))...)
 	}
+	return files
+}
+
+func globPaths(pattern string) []string {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+	return matches
 }
 
 func collectPythonEnvs(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
@@ -203,17 +248,91 @@ func collectPythonEnvs(info *types.AIInfo, errs *[]types.CollectorError, timeout
 	}
 }
 
-func collectConda(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	info.CondaPresent = util.CommandExists("conda")
+// pythonCandidates lists the interpreter names tried, in order of preference.
+func pythonCandidates() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"python", "python3", "py"}
+	}
+	return []string{"python3", "python"}
 }
 
-func collectPyTorch(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	// Find a working python
-	pythonCmd := findPython(timeout)
-	if pythonCmd == "" {
-		return
-	}
+// pythonProbe reports whether cmd exists on PATH and, if so, whether it runs
+// Python 3 in isolated mode.
+type pythonProbe func(cmd string) (exists, works bool)
 
+// findPython returns the first interpreter that actually runs Python 3 in
+// isolated mode. util.CommandExists alone is not enough: on Windows the
+// Microsoft Store "python3" alias is a stub that only prints an install hint,
+// and Python 2 does not accept -I, which every probe relies on. When at least
+// one candidate exists on PATH but none of them works, a CollectorError is
+// recorded so the empty PyTorch/TensorFlow sections are explained instead of
+// silently blank.
+func findPython(timeout int, errs *[]types.CollectorError) string {
+	probe := func(cmd string) (bool, bool) {
+		if !util.CommandExists(cmd) {
+			return false, false
+		}
+		r := util.RunCommand(timeout, cmd, "-I", "-c", "import sys; print(sys.version_info[0])")
+		return true, r.Err == nil && strings.TrimSpace(r.Stdout) == "3"
+	}
+	python, tried := selectPython(pythonCandidates(), probe)
+	if python == "" && len(tried) > 0 {
+		*errs = append(*errs, noWorkingPythonError(tried))
+	}
+	return python
+}
+
+// noWorkingPythonError describes candidates that exist on PATH but do not run
+// Python 3 (Microsoft Store stubs, Python 2), so the report explains why the
+// framework sections are empty.
+func noWorkingPythonError(tried []string) types.CollectorError {
+	return types.CollectorError{
+		Collector: "ai.python",
+		Error:     "no working Python 3 interpreter (tried: " + strings.Join(tried, ", ") + "); PyTorch/TensorFlow checks skipped",
+	}
+}
+
+// selectPython returns the first candidate that probe reports as working,
+// together with the candidates that existed on PATH but failed the probe
+// (Microsoft Store stubs, Python 2). It is pure so it can be unit-tested.
+func selectPython(candidates []string, probe pythonProbe) (python string, tried []string) {
+	for _, cmd := range candidates {
+		exists, works := probe(cmd)
+		if !exists {
+			continue
+		}
+		if works {
+			return cmd, tried
+		}
+		tried = append(tried, cmd)
+	}
+	return "", tried
+}
+
+// runProbe executes a Python snippet in isolated mode (-I). Isolated mode
+// ignores PYTHONPATH, user site-packages and, crucially, the current working
+// directory, so a stray torch.py or json.py next to the user cannot be
+// imported in place of the real module. A probe that fails to run at all (as
+// opposed to reporting an ImportError inside its own JSON) is recorded as a
+// CollectorError naming the interpreter, so empty fields are never silent.
+func runProbe(timeout int, python, collector, script string, errs *[]types.CollectorError) (string, bool) {
+	r := util.RunCommand(timeout, python, "-I", "-c", script)
+	out := strings.TrimSpace(r.Stdout)
+	if r.Err == nil && out != "" {
+		return out, true
+	}
+	msg := "probe did not run using interpreter " + python
+	if r.Err != nil {
+		msg += ": " + r.Err.Error()
+	}
+	if s := lastLine(r.Stderr); s != "" {
+		msg += " (" + s + ")"
+	}
+	*errs = append(*errs, types.CollectorError{Collector: collector, Error: msg})
+	return "", false
+}
+
+func collectPyTorch(info *types.AIInfo, errs *[]types.CollectorError, timeout int, python string) {
 	script := `
 import json, sys
 try:
@@ -236,34 +355,27 @@ except Exception as e:
     print(json.dumps({"error": str(e)}))
 `
 
-	r := util.RunCommand(timeout, pythonCmd, "-c", script)
-	if r.Err == nil && r.Stdout != "" {
-		ptInfo := &types.PyTorchInfo{}
-		stdout := strings.TrimSpace(r.Stdout)
-		// Simple JSON parsing without encoding/json import dependency
-		// Actually, let's just parse it properly
-		if strings.Contains(stdout, `"error"`) {
-			if strings.Contains(stdout, "not_installed") {
-				// PyTorch not installed, skip
-				return
-			}
-			ptInfo.Error = extractJSONValue(stdout, "error")
-		} else {
-			ptInfo.Version = extractJSONValue(stdout, "version")
-			ptInfo.CUDAVersion = extractJSONValue(stdout, "cuda_version")
-			ptInfo.CUDAAvailable = strings.Contains(stdout, `"cuda_available": true`)
-			ptInfo.DeviceName = extractJSONValue(stdout, "device_name")
-		}
-		info.PyTorchInfo = ptInfo
-	}
-}
-
-func collectTensorFlow(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	pythonCmd := findPython(timeout)
-	if pythonCmd == "" {
+	stdout, ok := runProbe(timeout, python, "ai.pytorch", script, errs)
+	if !ok {
 		return
 	}
+	ptInfo := &types.PyTorchInfo{}
+	if strings.Contains(stdout, `"error"`) {
+		if strings.Contains(stdout, "not_installed") {
+			// PyTorch not installed: a normal state, not an error.
+			return
+		}
+		ptInfo.Error = extractJSONValue(stdout, "error")
+	} else {
+		ptInfo.Version = extractJSONValue(stdout, "version")
+		ptInfo.CUDAVersion = extractJSONValue(stdout, "cuda_version")
+		ptInfo.CUDAAvailable = strings.Contains(stdout, `"cuda_available": true`)
+		ptInfo.DeviceName = extractJSONValue(stdout, "device_name")
+	}
+	info.PyTorchInfo = ptInfo
+}
 
+func collectTensorFlow(info *types.AIInfo, errs *[]types.CollectorError, timeout int, python string) {
 	script := `
 import json, sys
 try:
@@ -281,37 +393,31 @@ except Exception as e:
     print(json.dumps({"error": str(e)}))
 `
 
-	r := util.RunCommand(timeout+10, pythonCmd, "-c", script) // TF import can be slow
-	if r.Err == nil && r.Stdout != "" {
-		tfInfo := &types.TFInfo{}
-		stdout := strings.TrimSpace(r.Stdout)
-		if strings.Contains(stdout, `"error"`) {
-			if strings.Contains(stdout, "not_installed") {
-				return
-			}
-			tfInfo.Error = extractJSONValue(stdout, "error")
-		} else {
-			tfInfo.Version = extractJSONValue(stdout, "version")
-			// Parse GPUs list
-			gpuRe := regexp.MustCompile(`"gpus":\s*\[([^\]]*)\]`)
-			if m := gpuRe.FindStringSubmatch(stdout); m != nil {
-				gpuStr := m[1]
-				itemRe := regexp.MustCompile(`"([^"]+)"`)
-				for _, gm := range itemRe.FindAllStringSubmatch(gpuStr, -1) {
-					tfInfo.GPUs = append(tfInfo.GPUs, gm[1])
-				}
-			}
-		}
-		info.TensorFlowInfo = tfInfo
-	}
-}
-
-func collectKeyPackages(info *types.AIInfo, errs *[]types.CollectorError, timeout int) {
-	pythonCmd := findPython(timeout)
-	if pythonCmd == "" {
+	// Importing TensorFlow is slow; allow extra time.
+	stdout, ok := runProbe(timeout+10, python, "ai.tensorflow", script, errs)
+	if !ok {
 		return
 	}
+	tfInfo := &types.TFInfo{}
+	if strings.Contains(stdout, `"error"`) {
+		if strings.Contains(stdout, "not_installed") {
+			return
+		}
+		tfInfo.Error = extractJSONValue(stdout, "error")
+	} else {
+		tfInfo.Version = extractJSONValue(stdout, "version")
+		gpuRe := regexp.MustCompile(`"gpus":\s*\[([^\]]*)\]`)
+		if m := gpuRe.FindStringSubmatch(stdout); m != nil {
+			itemRe := regexp.MustCompile(`"([^"]+)"`)
+			for _, gm := range itemRe.FindAllStringSubmatch(m[1], -1) {
+				tfInfo.GPUs = append(tfInfo.GPUs, gm[1])
+			}
+		}
+	}
+	info.TensorFlowInfo = tfInfo
+}
 
+func collectKeyPackages(info *types.AIInfo, errs *[]types.CollectorError, timeout int, python string) {
 	script := `
 import json
 packages = {}
@@ -324,38 +430,35 @@ for pkg in ["torch", "tensorflow", "jax", "onnxruntime", "transformers", "numpy"
 print(json.dumps(packages))
 `
 
-	r := util.RunCommand(timeout, pythonCmd, "-c", script)
-	if r.Err == nil && r.Stdout != "" {
-		// Parse key=value pairs from JSON
-		stdout := strings.TrimSpace(r.Stdout)
-		// Simple extraction
-		pairRe := regexp.MustCompile(`"(\w+)":\s*"([^"]*)"`)
-		for _, m := range pairRe.FindAllStringSubmatch(stdout, -1) {
-			info.KeyPackages = append(info.KeyPackages, types.PackageInfo{
-				Name:    m[1],
-				Version: m[2],
-			})
-		}
+	stdout, ok := runProbe(timeout, python, "ai.packages", script, errs)
+	if !ok {
+		return
 	}
-}
-
-func findPython(timeout int) string {
-	candidates := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		candidates = []string{"python", "python3", "py"}
+	pairRe := regexp.MustCompile(`"(\w+)":\s*"([^"]*)"`)
+	for _, m := range pairRe.FindAllStringSubmatch(stdout, -1) {
+		info.KeyPackages = append(info.KeyPackages, types.PackageInfo{
+			Name:    m[1],
+			Version: m[2],
+		})
 	}
-	for _, cmd := range candidates {
-		if util.CommandExists(cmd) {
-			return cmd
-		}
-	}
-	return ""
 }
 
 func extractJSONValue(jsonStr, key string) string {
 	re := regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `":\s*"([^"]*)"`)
 	if m := re.FindStringSubmatch(jsonStr); m != nil {
 		return m[1]
+	}
+	return ""
+}
+
+// lastLine returns the last non-empty line of s; for a Python traceback that
+// is the exception message.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
 	}
 	return ""
 }

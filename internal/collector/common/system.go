@@ -2,13 +2,14 @@
 package common
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectSystemInfo gathers universal system snapshot data.
@@ -24,7 +25,7 @@ func CollectSystemInfo(timeout int) (types.SystemInfo, []types.CollectorError) {
 	}
 	info.Hostname = hostname
 
-	info.Timezone = time.Now().Location().String()
+	info.Timezone = formatTimezone(time.Now())
 
 	if util.IsWindows() {
 		collectWindowsSystem(&info, &errs, timeout)
@@ -33,6 +34,25 @@ func CollectSystemInfo(timeout int) (types.SystemInfo, []types.CollectorError) {
 	}
 
 	return info, errs
+}
+
+// formatTimezone renders e.g. "Local (CDT, UTC-05:00)". Location().String()
+// is the literal "Local" for the system zone on every platform, so on its own
+// it identifies nothing; the zone abbreviation and numeric offset are what
+// actually place the machine.
+func formatTimezone(now time.Time) string {
+	abbr, offset := now.Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	utcOffset := fmt.Sprintf("UTC%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
+	name := now.Location().String()
+	if abbr != "" && abbr != name {
+		return fmt.Sprintf("%s (%s, %s)", name, abbr, utcOffset)
+	}
+	return fmt.Sprintf("%s (%s)", name, utcOffset)
 }
 
 func collectWindowsSystem(info *types.SystemInfo, errs *[]types.CollectorError, timeout int) {
@@ -85,22 +105,66 @@ func collectWindowsSystem(info *types.SystemInfo, errs *[]types.CollectorError, 
 		info.Uptime = strings.TrimSpace(r.Stdout)
 	}
 
-	// Boot mode / Secure Boot
-	r = util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
-		"try { Confirm-SecureBootUEFI } catch { 'Unknown' }")
-	if r.Err == nil {
-		val := strings.TrimSpace(r.Stdout)
-		if val == "True" {
-			info.SecureBoot = "Enabled"
-			info.BootMode = "UEFI"
-		} else if val == "False" {
-			info.SecureBoot = "Disabled"
-			info.BootMode = "UEFI"
-		} else {
-			info.SecureBoot = "Unknown"
-			info.BootMode = "Unknown"
+	collectWindowsBoot(info, errs, timeout)
+}
+
+// secureBootScript reports three independent sources on separate lines.
+// Confirm-SecureBootUEFI needs elevation ("Unable to set proper privileges"),
+// so for a normal user the registry value written by the boot loader
+// (UEFISecureBootEnabled: 1/0, absent on legacy BIOS) and the firmware_type
+// environment variable (UEFI/Legacy) are the non-elevated fallbacks.
+const secureBootScript = `$ErrorActionPreference = 'SilentlyContinue'; ` +
+	`$sb = 'Unknown'; try { $sb = [string](Confirm-SecureBootUEFI -ErrorAction Stop) } catch { $sb = 'Unknown' }; ` +
+	`$reg = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -ErrorAction SilentlyContinue).UEFISecureBootEnabled; ` +
+	`if ($null -eq $reg) { $reg = '__ABSENT__' }; ` +
+	`"cmdlet=$sb"; "registry=$reg"; "firmware=$env:firmware_type"; exit 0`
+
+func collectWindowsBoot(info *types.SystemInfo, errs *[]types.CollectorError, timeout int) {
+	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command", secureBootScript)
+	if r.Err != nil {
+		info.SecureBoot, info.BootMode = "Unknown", "Unknown"
+		*errs = append(*errs, types.CollectorError{Collector: "system.secureboot", Error: r.Err.Error()})
+		return
+	}
+	info.SecureBoot, info.BootMode = parseSecureBootProbe(r.Stdout)
+}
+
+// parseSecureBootProbe combines the three sources printed by secureBootScript.
+// Order of trust: the cmdlet when it ran, then the registry value, then
+// firmware_type for the boot mode alone.
+func parseSecureBootProbe(out string) (secureBoot, bootMode string) {
+	fields := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v := util.ParseKeyValue(line, "="); k != "" {
+			fields[k] = v
 		}
 	}
+
+	secureBoot, bootMode = "Unknown", "Unknown"
+	switch fields["cmdlet"] {
+	case "True":
+		secureBoot, bootMode = "Enabled", "UEFI"
+	case "False":
+		secureBoot, bootMode = "Disabled", "UEFI"
+	}
+	if secureBoot == "Unknown" {
+		switch fields["registry"] {
+		case "1":
+			secureBoot, bootMode = "Enabled", "UEFI"
+		case "0":
+			secureBoot, bootMode = "Disabled", "UEFI"
+		case "__ABSENT__":
+			// The boot loader only writes this key on UEFI firmware.
+			secureBoot = "Not supported/Legacy"
+		}
+	}
+	switch strings.ToUpper(fields["firmware"]) {
+	case "UEFI":
+		bootMode = "UEFI"
+	case "LEGACY":
+		bootMode = "Legacy/BIOS"
+	}
+	return secureBoot, bootMode
 }
 
 func collectLinuxSystem(info *types.SystemInfo, errs *[]types.CollectorError, timeout int) {

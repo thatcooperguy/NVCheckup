@@ -21,8 +21,21 @@ type CommandResult struct {
 	Duration time.Duration
 }
 
+// defaultTimeoutSec is used when a caller passes a zero or negative timeout,
+// which would otherwise make every command fail instantly.
+const defaultTimeoutSec = 30
+
+// waitDelay bounds how long Run blocks after the context expires while a
+// grandchild (e.g. ping.exe spawned by cmd.exe) still holds the stdout pipe.
+// Without it a 1 s timeout was observed to take ~9 s to return.
+const waitDelay = 2 * time.Second
+
 // RunCommand executes a command with a timeout. Never panics; always returns a result.
 func RunCommand(timeoutSec int, name string, args ...string) CommandResult {
+	if timeoutSec <= 0 {
+		timeoutSec = defaultTimeoutSec
+	}
+
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -31,6 +44,12 @@ func RunCommand(timeoutSec int, name string, args ...string) CommandResult {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = waitDelay
+	// Killing only the direct child on timeout leaves its children (a shell's
+	// ping, PowerShell's native helpers, a forked "sh -c" grandchild) running
+	// and holding our pipes. configureProcessTreeKill (exec_linux.go /
+	// exec_other.go) makes Cancel take the whole tree down.
+	configureProcessTreeKill(cmd)
 
 	err := cmd.Run()
 	duration := time.Since(start)

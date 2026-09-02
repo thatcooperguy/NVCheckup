@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectLinuxInfo gathers Linux-specific diagnostic data.
@@ -68,44 +68,72 @@ func collectPackageManager(info *types.LinuxInfo, errs *[]types.CollectorError, 
 	}
 }
 
+// collectNVIDIAPackages lists installed packages whose name mentions NVIDIA.
+// The package manager is run directly and filtered in Go: the former
+// "| grep -i nvidia" pipeline exited 1 on a machine with no NVIDIA packages,
+// which is a legitimate answer, not a failure.
 func collectNVIDIAPackages(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
 	var r util.CommandResult
 	switch info.PackageManager {
 	case "apt":
-		r = util.RunCommand(timeout, "sh", "-c", `dpkg -l | grep -i nvidia | awk '{print $2 " " $3}'`)
+		r = util.RunCommand(timeout, "dpkg", "-l")
 	case "dnf", "yum":
-		r = util.RunCommand(timeout, "sh", "-c", `rpm -qa | grep -i nvidia`)
+		r = util.RunCommand(timeout, "rpm", "-qa")
 	case "pacman":
-		r = util.RunCommand(timeout, "sh", "-c", `pacman -Q | grep -i nvidia`)
+		r = util.RunCommand(timeout, "pacman", "-Q")
 	default:
 		return
 	}
-
-	if r.Err == nil && r.Stdout != "" {
-		for _, line := range strings.Split(r.Stdout, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				info.NVIDIAPackages = append(info.NVIDIAPackages, line)
-			}
+	if r.Err != nil {
+		if detail := toolFailure(r); detail != "" {
+			*errs = append(*errs, types.CollectorError{
+				Collector: "linux.packages",
+				Error:     "Could not list packages: " + detail,
+			})
 		}
+		return
 	}
+	info.NVIDIAPackages = parseNvidiaPackageList(info.PackageManager, r.Stdout)
 }
 
+// parseNvidiaPackageList extracts the NVIDIA-related entries from package
+// manager output. dpkg -l rows are reduced to "name version" (the former
+// awk '{print $2 " " $3}'); rpm -qa and pacman -Q rows are kept whole. The
+// match is case-insensitive on the whole line, as "grep -i nvidia" was.
+func parseNvidiaPackageList(packageManager, output string) []string {
+	var pkgs []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(strings.ToLower(line), "nvidia") {
+			continue
+		}
+		if packageManager == "apt" {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				line = fields[1] + " " + fields[2]
+			}
+		}
+		pkgs = append(pkgs, line)
+	}
+	return pkgs
+}
+
+// collectKernelModules records which NVIDIA/nouveau modules are loaded (true)
+// or merely available to modprobe (false). lsmod is run directly and
+// filtered in Go so that "neither module is loaded" is an empty result, not
+// the "Could not list kernel modules" error the former grep pipeline raised.
 func collectKernelModules(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
 	info.LoadedModules = make(map[string]bool)
 
-	r := util.RunCommand(timeout, "sh", "-c", `lsmod | grep -E "^(nvidia|nouveau)" | awk '{print $1}'`)
+	r := util.RunCommand(timeout, "lsmod")
 	if r.Err == nil {
-		for _, line := range strings.Split(r.Stdout, "\n") {
-			mod := strings.TrimSpace(line)
-			if mod != "" {
-				info.LoadedModules[mod] = true
-			}
+		for _, mod := range parseLsmodGPUModules(r.Stdout) {
+			info.LoadedModules[mod] = true
 		}
-	} else {
+	} else if detail := toolFailure(r); detail != "" {
 		*errs = append(*errs, types.CollectorError{
 			Collector: "linux.modules",
-			Error:     "Could not list kernel modules: " + r.Err.Error(),
+			Error:     "Could not list kernel modules: " + detail,
 		})
 	}
 
@@ -129,10 +157,33 @@ func collectDevNodes(info *types.LinuxInfo, errs *[]types.CollectorError, timeou
 	}
 }
 
+// parseLsmodGPUModules returns the names of loaded modules that belong to the
+// NVIDIA or nouveau drivers (first column of lsmod, names starting with
+// "nvidia" or "nouveau"). The header row is skipped.
+func parseLsmodGPUModules(output string) []string {
+	var mods []string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if strings.HasPrefix(name, "nvidia") || strings.HasPrefix(name, "nouveau") {
+			mods = append(mods, name)
+		}
+	}
+	return mods
+}
+
+// collectLibCuda locates the CUDA driver library via the dynamic linker cache,
+// then falls back to well-known paths. ldconfig is run directly; a cache with
+// no libcuda entry is an ordinary empty result.
 func collectLibCuda(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
-	r := util.RunCommand(timeout, "sh", "-c", `ldconfig -p 2>/dev/null | grep libcuda.so | head -1 | awk '{print $NF}'`)
-	if r.Err == nil && r.Stdout != "" {
-		info.LibCudaPath = strings.TrimSpace(r.Stdout)
+	if util.CommandExists("ldconfig") {
+		r := util.RunCommand(timeout, "ldconfig", "-p")
+		if r.Err == nil {
+			info.LibCudaPath = parseLdconfigLibcuda(r.Stdout)
+		}
 	}
 
 	// Also check common locations
@@ -149,6 +200,23 @@ func collectLibCuda(info *types.LinuxInfo, errs *[]types.CollectorError, timeout
 			}
 		}
 	}
+}
+
+// parseLdconfigLibcuda returns the path of the first libcuda.so entry in
+// "ldconfig -p" output (the last whitespace-separated field, after "=>"), or
+// "" when the cache has none.
+func parseLdconfigLibcuda(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "libcuda.so") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		return fields[len(fields)-1]
+	}
+	return ""
 }
 
 func collectDKMS(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
@@ -278,9 +346,38 @@ func collectJournalSnippets(info *types.LinuxInfo, errs *[]types.CollectorError,
 	}
 }
 
+// dmesgSnippetKeywords select the kernel log lines worth keeping in the report.
+var dmesgSnippetKeywords = []string{"nvidia", "nvrm", "gpu", "nouveau"}
+
+// maxDmesgSnippetLines caps the snippet at the most recent lines (the former
+// "| tail -50").
+const maxDmesgSnippetLines = 50
+
+// filterDmesgSnippets keeps the last maxDmesgSnippetLines lines of dmesg
+// output that mention a GPU-related keyword (case-insensitive).
+func filterDmesgSnippets(output string) string {
+	var kept []string
+	for _, line := range strings.Split(output, "\n") {
+		lower := strings.ToLower(line)
+		for _, kw := range dmesgSnippetKeywords {
+			if strings.Contains(lower, kw) {
+				kept = append(kept, line)
+				break
+			}
+		}
+	}
+	if len(kept) > maxDmesgSnippetLines {
+		kept = kept[len(kept)-maxDmesgSnippetLines:]
+	}
+	return strings.Join(kept, "\n")
+}
+
 func collectDmesgSnippets(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
-	r := util.RunCommand(timeout, "sh", "-c", `dmesg 2>/dev/null | grep -i "nvidia\|NVRM\|gpu\|nouveau" | tail -50`)
+	if !util.CommandExists("dmesg") {
+		return
+	}
+	r := util.RunCommand(timeout, "dmesg")
 	if r.Err == nil {
-		info.DmesgSnippets = r.Stdout
+		info.DmesgSnippets = filterDmesgSnippets(r.Stdout)
 	}
 }

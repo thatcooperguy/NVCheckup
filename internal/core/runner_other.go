@@ -3,7 +3,7 @@
 package core
 
 import (
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func collectPlatformSpecific(r *types.Report, cfg types.RunConfig) []types.CollectorError {

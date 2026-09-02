@@ -5,11 +5,46 @@ on:
     tags:
       - 'v*'
 
+# Read-only by default; only the release job needs to write (to publish the GitHub Release).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    # A tag is released only from a commit that passes vet and the test suite.
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Vet and test
+        run: go vet ./... && go test ./... -timeout 120s
+
+  changelog:
+    # Refuse to publish a version that has no CHANGELOG entry.
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify CHANGELOG.md mentions this version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [${version}]' entry. Add one before tagging."
+            exit 1
+          fi
+          echo "CHANGELOG.md has an entry for ${version}."
+
   build:
+    needs: [test, changelog]
+    timeout-minutes: 20
     strategy:
       matrix:
         include:
@@ -33,6 +68,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: false
 
       - name: Build
         env:
@@ -40,7 +76,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o dist/${{ matrix.name }} ./cmd/nvcheckup
+          # Bake the tag (minus the leading "v") into types.Version so `nvcheckup version` matches the release.
+          go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=${GITHUB_REF_NAME#v}" -o dist/${{ matrix.name }} ./cmd/nvcheckup
 
       - name: Generate checksums
         run: |
@@ -57,7 +94,10 @@ jobs:
 
   release:
     needs: build
+    timeout-minutes: 10
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +116,7 @@ jobs:
           body: |
             ## NVCheckup ${{ github.ref_name }}
 
-            Cross-platform NVIDIA diagnostic tool.
+            Cross-platform NVIDIA diagnostic tool. See `CHANGELOG.md` for what changed.
 
             ### Downloads
 
@@ -88,11 +128,24 @@ jobs:
 
             ### Verify Downloads
 
-            Each binary has a corresponding `.sha256` checksum file.
+            Each binary has a corresponding `.sha256` checksum file. Verify before running.
 
             ```bash
+            # Linux
             sha256sum -c nvcheckup-linux-amd64.sha256
             ```
+
+            ```powershell
+            # Windows: compare the printed hash with the contents of the .sha256 file
+            certutil -hashfile nvcheckup-windows-amd64.exe SHA256
+            Get-Content nvcheckup-windows-amd64.exe.sha256
+            ```
+
+            ### Windows SmartScreen
+
+            The Windows binary is **not code-signed**, so SmartScreen may show "Windows protected your PC".
+            After verifying the SHA256 above, click **More info** and then **Run anyway**. If you would
+            rather not, build from source: `go install github.com/thatcooperguy/nvcheckup/cmd/nvcheckup@${{ github.ref_name }}`.
 
             ### Quick Start
 
@@ -104,6 +157,9 @@ jobs:
             # Windows
             nvcheckup-windows-amd64.exe run --mode full --zip
             ```
+
+            `run` is read-only and makes no network calls unless you add `--network`.
+            Fixes are applied only by `nvcheckup fix --id <id>` after you confirm, and can be reversed with `nvcheckup undo`.
 
             ---
             *Unofficial community tool, not affiliated with NVIDIA Corporation.*
