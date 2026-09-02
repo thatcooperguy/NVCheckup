@@ -1,0 +1,179 @@
+{
+  "verdict": "FITS: Llama 3.1 8B Instruct BF16, 32K context x 4 streams, f16 KV, vLLM needs 51.0 GiB on this machine (pool 119.7 GiB, margin 68.7 GiB).",
+  "exit_code": 0,
+  "platform": {
+    "label": "DGX Spark (GB10)",
+    "class": "dgx-spark",
+    "soc": "GB10",
+    "os": "linux",
+    "gpu": "NVIDIA GB10",
+    "unified_memory": true,
+    "bandwidth_gbps": 273,
+    "bandwidth_note": "273 GB/s (GB10 LPDDR5X, spec 2.1)"
+  },
+  "memory": {
+    "total_gib": 119.7,
+    "available_gib": 109.7,
+    "headroom_gib": 8,
+    "headroom_reason": "8 GiB: headless Linux (spec 7.4)",
+    "allocatable_gib": 109.7,
+    "swap_used_gib": 0,
+    "source": "report.unified_memory (/proc/meminfo MemTotal, measured)",
+    "nodes": 1
+  },
+  "model": {
+    "id": "llama-3.1-8b-instruct",
+    "name": "Llama 3.1 8B Instruct",
+    "hf_repo": "meta-llama/Llama-3.1-8B-Instruct",
+    "params_b": 8.03,
+    "active_params_b": 8.03,
+    "layers": 32,
+    "attention_layers": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "quant": "bf16",
+    "kv_dtype": "f16",
+    "kv_bytes_per_token": 131072,
+    "context": 32768,
+    "concurrency": 4,
+    "profile": "agent",
+    "license": "Llama 3.1 Community License"
+  },
+  "fit": {
+    "weights_gib": 15,
+    "weights_measured": false,
+    "kv_gib": 16,
+    "runtime_gib": 12,
+    "floor_gib": 8,
+    "total_gib": 51,
+    "now_gib": 43,
+    "pool_gib": 119.7,
+    "margin_gib": 68.7,
+    "fits_total": true,
+    "fits_now": true,
+    "gpu_memory_utilization": 0.4,
+    "max_context_tokens": 173552,
+    "per_node": false
+  },
+  "estimates": {
+    "decode_ceiling_tps": 13.4,
+    "decode_ceiling_weights_only_tps": 17,
+    "decode_band_tps": [
+      6.7,
+      10.7
+    ],
+    "prefill_ref_tps": "2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)",
+    "measured_by_others": "8B FP8: 20.5 tok/s measured (S89), vs 34 weights-only / 22 at 32K"
+  },
+  "runtime": {
+    "name": "vllm",
+    "image": "nvcr.io/nvidia/vllm:26.05-py3",
+    "command": "docker run -d --name vllm --ipc=host --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface nvcr.io/nvidia/vllm:26.05-py3 meta-llama/Llama-3.1-8B-Instruct --gpu-memory-utilization 0.40 --max-model-len 32768 --max-num-seqs 4 --enable-auto-tool-choice --tool-call-parser {p}",
+    "env": [],
+    "notes": [
+      "Replace {p} with your model's vLLM tool-call parser (and add --reasoning-parser {r} for reasoning models).",
+      "Alternative image: vllm/vllm-openai:cu130-nightly (spec 7.6).",
+      "Leave --quantization unset for pre-quantized NVFP4 checkpoints (spec 7.6).",
+      "vLLM's Spark guidance is u \u003c= 0.85 and --max-num-seqs 4; the default 0.92 pre-allocates ~110 GiB (spec 7.4).",
+      "First request JIT ~25 s (spec 7.6). Re-check MemAvailable after startup: one report saw transient kernel-init allocations up to ~50 GB on vllm:26.07-py3 (S111)."
+    ]
+  },
+  "advice": {
+    "recommended_quant": "bf16",
+    "reason": "BF16 is the least lossy format that fits with the 8.0 GiB headroom (margin 68.7 GiB)",
+    "quants": [
+      {
+        "quant": "bf16",
+        "weights_gib": 15,
+        "total_gib": 51,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 68.7
+      },
+      {
+        "quant": "fp8",
+        "weights_gib": 7.5,
+        "total_gib": 43.5,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 76.2
+      },
+      {
+        "quant": "nvfp4",
+        "weights_gib": 4.2,
+        "total_gib": 40.2,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 79.5
+      }
+    ],
+    "lines": [
+      "Keep BF16: BF16 is the least lossy format that fits with the 8.0 GiB headroom (margin 68.7 GiB).",
+      "Headroom: up to about 173552 tokens per stream would still fit at BF16 with 4 streams.",
+      "u = ceil05((W + KV + R) / MemTotal) = 0.40, clamped to 0.30..0.85 (spec 7.4)."
+    ]
+  },
+  "prerequisites": [
+    {
+      "id": "driver-present",
+      "status": "PASS",
+      "detail": "driver 580.95.05"
+    },
+    {
+      "id": "cuda-13",
+      "status": "PASS",
+      "detail": "CUDA 13.0"
+    },
+    {
+      "id": "ota-not-torn",
+      "status": "PASS",
+      "detail": "OTA torn score 0"
+    },
+    {
+      "id": "torch-cu130-sm120",
+      "status": "PASS",
+      "detail": "torch 2.9.0+cu130, arch list includes sm_120/sm_121"
+    },
+    {
+      "id": "triton-ptxas-path",
+      "status": "SKIP",
+      "detail": "Triton not installed in the probed python"
+    },
+    {
+      "id": "swap-in-use",
+      "status": "PASS",
+      "detail": "swap in use 0.0 GiB"
+    },
+    {
+      "id": "page-cache",
+      "status": "PASS",
+      "detail": "page cache 19.1 GiB is reclaimable and already counted in MemAvailable 109.7 GiB (MemFree 85.8 GiB)"
+    },
+    {
+      "id": "model-server-ports",
+      "status": "PASS",
+      "detail": "ports 8000/30000/11434/8355 are free"
+    },
+    {
+      "id": "container-image",
+      "status": "SKIP",
+      "detail": "local image inventory not collected; the template uses nvcr.io/nvidia/vllm:26.05-py3"
+    },
+    {
+      "id": "docker-gpu-runtime",
+      "status": "PASS",
+      "detail": "docker with NVIDIA Container Toolkit 1.17.8"
+    },
+    {
+      "id": "ipc-shm",
+      "status": "PASS",
+      "detail": "template uses --ipc=host (spec 7.6)"
+    },
+    {
+      "id": "memavailable-fits",
+      "status": "PASS",
+      "detail": "MemAvailable 109.7 GiB \u003e= W + KV + R = 43.0 GiB"
+    }
+  ],
+  "warnings": []
+}

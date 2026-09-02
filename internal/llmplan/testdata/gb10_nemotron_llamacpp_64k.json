@@ -1,0 +1,175 @@
+{
+  "verdict": "FITS: Nemotron-3-Super-120B-A12B NVFP4, 64K context x 2 streams, q8_0 KV, llama.cpp needs 83.1 GiB on this machine (pool 119.7 GiB, margin 36.6 GiB).",
+  "exit_code": 1,
+  "platform": {
+    "label": "DGX Spark (GB10)",
+    "class": "dgx-spark",
+    "soc": "GB10",
+    "os": "linux",
+    "gpu": "NVIDIA GB10",
+    "unified_memory": true,
+    "bandwidth_gbps": 273,
+    "bandwidth_note": "273 GB/s (GB10 LPDDR5X, spec 2.1)"
+  },
+  "memory": {
+    "total_gib": 119.7,
+    "available_gib": 109.7,
+    "headroom_gib": 8,
+    "headroom_reason": "8 GiB: headless Linux (spec 7.4)",
+    "allocatable_gib": 109.7,
+    "swap_used_gib": 0,
+    "source": "report.unified_memory (/proc/meminfo MemTotal, measured)",
+    "nodes": 1
+  },
+  "model": {
+    "id": "nemotron-3-super-120b-a12b-nvfp4",
+    "name": "Nemotron-3-Super-120B-A12B NVFP4",
+    "params_b": 120,
+    "active_params_b": 12,
+    "layers": 88,
+    "attention_layers": 8,
+    "kv_heads": 2,
+    "head_dim": 128,
+    "quant": "nvfp4",
+    "kv_dtype": "q8_0",
+    "kv_bytes_per_token": 4096,
+    "context": 65536,
+    "concurrency": 2,
+    "profile": "chat",
+    "license": "NVIDIA Open Model License",
+    "notes": "Hybrid Mamba: 88 layers of which 8 attention (single source S81, unconfirmed); ~8 KiB attention KV/token plus a Mamba state term derived from the measured ~7 GB per Ollama slot at 262K (S81). hidden/heads/vocab not published in the spec."
+  },
+  "fit": {
+    "weights_gib": 62.6,
+    "weights_measured": false,
+    "kv_gib": 0.5,
+    "state_gib": 9,
+    "runtime_gib": 3,
+    "floor_gib": 8,
+    "total_gib": 83.1,
+    "now_gib": 75.1,
+    "pool_gib": 119.7,
+    "margin_gib": 36.6,
+    "fits_total": true,
+    "fits_now": true,
+    "gpu_memory_utilization": 0.65,
+    "max_context_tokens": 4859629,
+    "per_node": false
+  },
+  "estimates": {
+    "decode_ceiling_tps": 39.1,
+    "decode_ceiling_weights_only_tps": 40.6,
+    "decode_band_tps": [
+      19.5,
+      31.3
+    ],
+    "prefill_ref_tps": "2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)",
+    "measured_by_others": "23-38 tok/s measured (spec 7.4)"
+  },
+  "runtime": {
+    "name": "llamacpp",
+    "build": "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real",
+    "command": "llama-server -hf {repo}:{quant} --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 65536 -np 2 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja",
+    "env": [],
+    "notes": [
+      "--no-mmap avoids the Spark mmap slow-load; keep the KV cache at q8_0 or higher (spec 7.6).",
+      "Optional speculative decoding for models that ship MTP heads: --spec-type draft-mtp --spec-draft-n-max 3 (spec 7.6).",
+      "-hf {repo}:{quant} names a GGUF repo on Hugging Face; llama-server fetches it on first start, llm-plan does not."
+    ],
+    "unconfirmed": [
+      "NVFP4 has no GGUF equivalent; pick a Q4_K_M or Q8_0 GGUF of this model for llama.cpp (the sizing above used the NVFP4 factor)."
+    ]
+  },
+  "advice": {
+    "recommended_quant": "nvfp4",
+    "reason": "NVFP4 is the least lossy format that fits with the 8.0 GiB headroom (margin 36.6 GiB)",
+    "quants": [
+      {
+        "quant": "bf16",
+        "weights_gib": 223.5,
+        "total_gib": 244.1,
+        "fits_total": false,
+        "fits_now": false,
+        "margin_gib": -124.4
+      },
+      {
+        "quant": "q8_0",
+        "weights_gib": 118.5,
+        "total_gib": 139,
+        "fits_total": false,
+        "fits_now": false,
+        "margin_gib": -19.3
+      },
+      {
+        "quant": "nvfp4",
+        "weights_gib": 62.6,
+        "total_gib": 83.1,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 36.6
+      },
+      {
+        "quant": "q4_k_m",
+        "weights_gib": 67.1,
+        "total_gib": 87.6,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 32.1
+      }
+    ],
+    "lines": [
+      "Keep NVFP4: NVFP4 is the least lossy format that fits with the 8.0 GiB headroom (margin 36.6 GiB).",
+      "Headroom: more than 1M tokens per stream would still fit at NVFP4 with 2 streams; the KV cache is not the limit here."
+    ]
+  },
+  "prerequisites": [
+    {
+      "id": "driver-present",
+      "status": "PASS",
+      "detail": "driver 580.95.05"
+    },
+    {
+      "id": "cuda-13",
+      "status": "PASS",
+      "detail": "CUDA 13.0"
+    },
+    {
+      "id": "ota-not-torn",
+      "status": "PASS",
+      "detail": "OTA torn score 0"
+    },
+    {
+      "id": "torch-cu130-sm120",
+      "status": "PASS",
+      "detail": "torch 2.9.0+cu130, arch list includes sm_120/sm_121"
+    },
+    {
+      "id": "triton-ptxas-path",
+      "status": "SKIP",
+      "detail": "Triton not installed in the probed python"
+    },
+    {
+      "id": "swap-in-use",
+      "status": "PASS",
+      "detail": "swap in use 0.0 GiB"
+    },
+    {
+      "id": "page-cache",
+      "status": "PASS",
+      "detail": "page cache 19.1 GiB is reclaimable and already counted in MemAvailable 109.7 GiB (MemFree 85.8 GiB)"
+    },
+    {
+      "id": "model-server-ports",
+      "status": "PASS",
+      "detail": "ports 8000/30000/11434/8355 are free"
+    },
+    {
+      "id": "memavailable-fits",
+      "status": "PASS",
+      "detail": "MemAvailable 109.7 GiB \u003e= W + KV + R = 75.1 GiB"
+    }
+  ],
+  "warnings": [
+    "NVFP4 has no GGUF equivalent; pick a Q4_K_M or Q8_0 GGUF of this model for llama.cpp (the sizing above used the NVFP4 factor)."
+  ]
+}

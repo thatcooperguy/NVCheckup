@@ -1,0 +1,66 @@
+NVCheckup llm-plan (read-only; estimates, not measurements)
+============================================================
+Platform:      DGX Spark (GB10)
+GPU:           NVIDIA GB10
+Pool:          119.7 GiB (source: report.unified_memory (/proc/meminfo MemTotal, measured))
+MemAvailable:  109.7 GiB   swap used 0.0 GiB   allocatable (spec 3.3) 109.7 GiB
+Bandwidth:     273 GB/s (GB10 LPDDR5X, spec 2.1)
+OS floor F:    8 GiB: headless Linux (spec 7.4)
+
+VERDICT
+  FITS: Llama 3.1 8B Instruct BF16, 32K context x 4 streams, f16 KV, vLLM needs 51.0 GiB on this machine (pool 119.7 GiB, margin 68.7 GiB).
+
+SIZING (spec 7.4)
+  Model            Llama 3.1 8B Instruct: 8.03B params, 32 layers, 8 KV heads, d_head 128
+  Profile          agent: 32K context x 4 streams, vLLM
+  Weights W        15.0 GiB  (8.03B x 2.00 B/param)
+  Quant            BF16, KV cache f16
+  KV cache         16.0 GiB  (131072 B/token x 32768 tokens x 4 streams)
+  Runtime R        12.0 GiB  (vLLM)
+  OS floor F       8.0 GiB
+  Total            51.0 GiB  vs pool 119.7 GiB  ->  margin 68.7 GiB  (fits: yes)
+  Now (W+KV+R)     43.0 GiB  vs MemAvailable 109.7 GiB  (fits now: yes)
+  Utilization u    0.40  (vLLM --gpu-memory-utilization; TRT-LLM free_gpu_memory_fraction; SGLang --mem-fraction-static)
+
+ESTIMATES (formula ceilings; not measured on this machine)
+  Decode ceiling, one stream:  17.0 tok/s weights-only; 13.4 tok/s at 32K context
+  Realism band (50-80% of at-context):  6.7 - 10.7 tok/s
+  Prefill reference:  2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)
+  Measured by others:  8B FP8: 20.5 tok/s measured (S89), vs 34 weights-only / 22 at 32K
+
+ADVICE (spec 7.6)
+  - Keep BF16: BF16 is the least lossy format that fits with the 8.0 GiB headroom (margin 68.7 GiB).
+  - Headroom: up to about 173552 tokens per stream would still fit at BF16 with 4 streams.
+  - u = ceil05((W + KV + R) / MemTotal) = 0.40, clamped to 0.30..0.85 (spec 7.4).
+  Quant    Weights      Total        Fits     Margin
+  bf16     15.0 GiB     51.0 GiB     yes      68.7 GiB
+  fp8      7.5 GiB      43.5 GiB     yes      76.2 GiB
+  nvfp4    4.2 GiB      40.2 GiB     yes      79.5 GiB
+
+PREREQUISITES (spec 7.7, from the read-only report)
+  PASS driver-present         driver 580.95.05
+  PASS cuda-13                CUDA 13.0
+  PASS ota-not-torn           OTA torn score 0
+  PASS torch-cu130-sm120      torch 2.9.0+cu130, arch list includes sm_120/sm_121
+  SKIP triton-ptxas-path      Triton not installed in the probed python
+  PASS swap-in-use            swap in use 0.0 GiB
+  PASS page-cache             page cache 19.1 GiB is reclaimable and already counted in MemAvailable 109.7 GiB (MemFree 85.8 GiB)
+  PASS model-server-ports     ports 8000/30000/11434/8355 are free
+  SKIP container-image        local image inventory not collected; the template uses nvcr.io/nvidia/vllm:26.05-py3
+  PASS docker-gpu-runtime     docker with NVIDIA Container Toolkit 1.17.8
+  PASS ipc-shm                template uses --ipc=host (spec 7.6)
+  PASS memavailable-fits      MemAvailable 109.7 GiB >= W + KV + R = 43.0 GiB
+
+COMMANDS (spec 7.6 template for vLLM)
+  Image:  nvcr.io/nvidia/vllm:26.05-py3
+  $ docker run -d --name vllm --ipc=host --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface nvcr.io/nvidia/vllm:26.05-py3 meta-llama/Llama-3.1-8B-Instruct --gpu-memory-utilization 0.40 --max-model-len 32768 --max-num-seqs 4 --enable-auto-tool-choice --tool-call-parser {p}
+  Notes:
+    - Replace {p} with your model's vLLM tool-call parser (and add --reasoning-parser {r} for reasoning models).
+    - Alternative image: vllm/vllm-openai:cu130-nightly (spec 7.6).
+    - Leave --quantization unset for pre-quantized NVFP4 checkpoints (spec 7.6).
+    - vLLM's Spark guidance is u <= 0.85 and --max-num-seqs 4; the default 0.92 pre-allocates ~110 GiB (spec 7.4).
+    - First request JIT ~25 s (spec 7.6). Re-check MemAvailable after startup: one report saw transient kernel-init allocations up to ~50 GB on vllm:26.07-py3 (S111).
+
+Exit code 0 (0 fits, 1 fits with warnings, 2 does not fit, 3 error).
+llm-plan is read-only: nothing was downloaded, no process or container was started or stopped, and nothing was written outside the output directory.
+Ceilings and bands are formula bounds from the spec, not measurements of this machine; figures quoted as measured were measured by others.
