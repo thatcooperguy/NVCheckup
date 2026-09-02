@@ -1,5 +1,5 @@
 {
-  "description": "Remediation actions available in NVCheckup. Each action has platform, risk level, and undo strategy. Risk labels, descriptions, dry_run_desc and undo_desc are the canonical text and must match the RemediationAction definitions in internal/remediate/actions_*.go and the findings that attach them.",
+  "description": "Remediation actions available in NVCheckup. Each action has platform, risk level, and undo strategy. Risk labels, descriptions, dry_run_desc and undo_desc are the canonical text and must match the RemediationAction catalog in internal/remediate/catalog.go (the platform files only filter it) and the findings that attach them.",
   "actions": [
     {
       "id": "set-high-performance",

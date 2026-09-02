@@ -335,7 +335,7 @@ type DisplayInfo struct {
 	VRREnabled bool   `json:"vrr_enabled"` // G-Sync / FreeSync
 	ColorDepth string `json:"color_depth"` // "8-bit", "10-bit"
 	OutputType string `json:"output_type"` // "HDMI", "DP", "USB-C"
-	GPUIndex   int    `json:"gpu_index"`   // which GPU drives this
+	GPUIndex   int    `json:"gpu_index"`   // adapter ordinal (Windows: Win32_VideoController order) driving this display; may differ from gpus[] index on iGPU+dGPU systems
 	Primary    bool   `json:"primary"`
 	ScalingPct int    `json:"scaling_pct"`
 }
