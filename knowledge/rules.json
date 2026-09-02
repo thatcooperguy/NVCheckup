@@ -39,6 +39,16 @@
       "description": "The nvidia-smi utility was not found."
     },
     {
+      "id": "jetson-detected",
+      "title": "NVIDIA Jetson Detected",
+      "category": "gpu",
+      "severity": "INFO",
+      "base_confidence": 90,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "platform": "linux",
+      "description": "The host is an NVIDIA Jetson / Tegra board (/etc/nv_tegra_release present or the device-tree model names a Jetson). nvidia-smi does not exist on Tegra, so no-nvidia-gpu, driver-not-detected and nvidia-smi-missing are suppressed and GPU, thermal and PCIe diagnostics are limited; tegrastats and jetson_release are the native tools."
+    },
+    {
       "id": "driver-resets-4101",
       "title": "Display Driver Resets Detected (Event ID 4101)",
       "category": "driver",

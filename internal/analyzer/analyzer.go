@@ -38,6 +38,7 @@ func Analyze(report *types.Report, mode types.RunMode) {
 	// Universal checks: GPU, driver, thermal and PCIe are collected in every mode.
 	findings = append(findings, analyzeGPUPresence(report)...)
 	findings = append(findings, analyzeDriverBasics(report)...)
+	findings = append(findings, analyzeJetson(report)...)
 	findings = append(findings, analyzeThermal(report)...)
 	findings = append(findings, analyzePCIe(report)...)
 	// Network probes are opt-in (--network) and independent of mode; the
@@ -127,7 +128,9 @@ func analyzeGPUPresence(report *types.Report) []types.Finding {
 		}
 	}
 
-	if nvidiaCount == 0 {
+	// A Jetson's GPU is integrated (not on PCIe) and nvidia-smi does not
+	// exist there, so an empty inventory is expected; analyzeJetson explains.
+	if nvidiaCount == 0 && !report.System.IsJetson {
 		findings = append(findings, types.Finding{
 			ID:           "no-nvidia-gpu",
 			Severity:     types.SeverityCrit,
@@ -182,6 +185,13 @@ func analyzeGPUPresence(report *types.Report) []types.Finding {
 func analyzeDriverBasics(report *types.Report) []types.Finding {
 	var findings []types.Finding
 
+	// JetPack ships the driver as part of L4T and has no nvidia-smi, so
+	// "no driver version" and "nvidia-smi missing" are the healthy state on
+	// a Jetson; analyzeJetson reports the platform instead.
+	if report.System.IsJetson {
+		return findings
+	}
+
 	if report.Driver.Version == "" {
 		findings = append(findings, types.Finding{
 			ID:           "driver-not-detected",
@@ -217,6 +227,162 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 	}
 
 	return findings
+}
+
+// ── Jetson / Tegra ────────────────────────────────────────────────────
+
+func analyzeJetson(report *types.Report) []types.Finding {
+	var findings []types.Finding
+	if !report.System.IsJetson {
+		return findings
+	}
+	release := strings.TrimSpace(report.System.JetsonRelease)
+	if release == "" {
+		release = "L4T release unknown"
+	}
+	findings = append(findings, types.Finding{
+		ID:           "jetson-detected",
+		Severity:     types.SeverityInfo,
+		Title:        "NVIDIA Jetson Detected",
+		Evidence:     fmt.Sprintf("NVIDIA Jetson detected (%s). nvidia-smi is not available on Tegra, so GPU, thermal and PCIe diagnostics are limited on this platform.", release),
+		WhyItMatters: "Jetson boards integrate the GPU with the CPU and ship their driver as part of JetPack / L4T, so the nvidia-smi based checks that NVCheckup uses on desktops and servers do not apply. The missing-driver and missing-nvidia-smi findings are suppressed here because they would be false alarms.",
+		NextSteps: []string{
+			"Run 'sudo tegrastats' to watch GPU load, temperature and power on Jetson.",
+			"Run 'jetson_release -v' (from the jetson-stats package) to confirm the JetPack / L4T version and the CUDA, cuDNN and TensorRT builds installed.",
+			"For CUDA problems, check that the JetPack CUDA toolkit matches the L4T release; the desktop driver/toolkit compatibility table does not apply to Tegra.",
+		},
+		Category:   "gpu",
+		Confidence: 90,
+	})
+	return findings
+}
+
+// ── Per-GPU helpers ───────────────────────────────────────────────────
+
+// countNVIDIAGPUs returns how many inventory entries are NVIDIA GPUs.
+func countNVIDIAGPUs(gpus []types.GPUInfo) int {
+	n := 0
+	for _, g := range gpus {
+		if g.IsNVIDIA {
+			n++
+		}
+	}
+	return n
+}
+
+// multiGPU reports whether the report describes more than one NVIDIA GPU,
+// either by inventory or by the number of per-GPU samples collected.
+func multiGPU(report *types.Report, samples int) bool {
+	return samples > 1 || countNVIDIAGPUs(report.GPUs) > 1
+}
+
+// thermalEntries returns one thermal sample per GPU: the per-GPU slice when
+// the collector filled it, otherwise the single legacy pointer.
+func thermalEntries(report *types.Report) []*types.ThermalInfo {
+	if len(report.GPUThermal) > 0 {
+		out := make([]*types.ThermalInfo, 0, len(report.GPUThermal))
+		for i := range report.GPUThermal {
+			out = append(out, &report.GPUThermal[i])
+		}
+		return out
+	}
+	if report.Thermal != nil {
+		return []*types.ThermalInfo{report.Thermal}
+	}
+	return nil
+}
+
+// pcieEntries is thermalEntries for PCIe samples.
+func pcieEntries(report *types.Report) []*types.PCIeInfo {
+	if len(report.GPUPCIe) > 0 {
+		out := make([]*types.PCIeInfo, 0, len(report.GPUPCIe))
+		for i := range report.GPUPCIe {
+			out = append(out, &report.GPUPCIe[i])
+		}
+		return out
+	}
+	if report.PCIe != nil {
+		return []*types.PCIeInfo{report.PCIe}
+	}
+	return nil
+}
+
+// gpuLabel names a GPU for evidence text: "GPU 1 (NVIDIA GeForce RTX 4090)",
+// or just "GPU 1" when the inventory has no matching entry.
+func gpuLabel(report *types.Report, index int) string {
+	for _, g := range report.GPUs {
+		if g.IsNVIDIA && g.Index == index && g.Name != "" {
+			return fmt.Sprintf("GPU %d (%s)", index, g.Name)
+		}
+	}
+	return fmt.Sprintf("GPU %d", index)
+}
+
+// tagGPUFindings records which GPU each finding is about and, on multi-GPU
+// systems, prefixes the evidence with the GPU label so the reader knows which
+// card to look at. Single-GPU evidence is left byte-for-byte unchanged.
+func tagGPUFindings(findings []types.Finding, report *types.Report, index int, multi bool) []types.Finding {
+	for i := range findings {
+		findings[i].GPUIndexes = []int{index}
+		if multi {
+			findings[i].Evidence = gpuLabel(report, index) + ": " + findings[i].Evidence
+		}
+	}
+	return findings
+}
+
+// mergePerGPUFindings collapses findings that share an ID across GPUs into
+// one finding so Top Issues stay readable on a multi-GPU rig: the most severe
+// instance is kept, the per-GPU evidence strings are joined, and the list of
+// affected GPU indices is appended. Order of first appearance is preserved.
+func mergePerGPUFindings(findings []types.Finding) []types.Finding {
+	if len(findings) < 2 {
+		return findings
+	}
+	var order []string
+	groups := map[string][]types.Finding{}
+	for _, f := range findings {
+		if _, seen := groups[f.ID]; !seen {
+			order = append(order, f.ID)
+		}
+		groups[f.ID] = append(groups[f.ID], f)
+	}
+	out := make([]types.Finding, 0, len(order))
+	for _, id := range order {
+		group := groups[id]
+		if len(group) == 1 {
+			out = append(out, group[0])
+			continue
+		}
+		merged := group[0]
+		var evidence []string
+		var indexes []int
+		for _, f := range group {
+			if severityRank[f.Severity] < severityRank[merged.Severity] {
+				sev := f.Severity
+				merged = f
+				merged.Severity = sev
+			}
+			if f.Confidence > merged.Confidence {
+				merged.Confidence = f.Confidence
+			}
+			evidence = append(evidence, f.Evidence)
+			indexes = append(indexes, f.GPUIndexes...)
+		}
+		merged.Evidence = strings.Join(evidence, " | ") + " Affected GPUs: " + joinInts(indexes) + "."
+		merged.GPUIndexes = indexes
+		out = append(out, merged)
+	}
+	return out
+}
+
+// joinInts renders "0, 2, 3".
+func joinInts(ns []int) string {
+	parts := make([]string, 0, len(ns))
+	for _, n := range ns {
+		parts = append(parts, strconv.Itoa(n))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ── Thermal Analysis ──────────────────────────────────────────────────
@@ -262,14 +428,26 @@ func thermalState(t *types.ThermalInfo) (thermal, slowdown bool, reasons []strin
 	return thermal, slowdown, reasons
 }
 
+// analyzeThermal evaluates every GPU's thermal sample. Findings keep their
+// single-GPU ids and titles; on multi-GPU systems the evidence is prefixed
+// with the GPU label and identical findings are merged per GPU list.
 func analyzeThermal(report *types.Report) []types.Finding {
+	entries := thermalEntries(report)
+	if len(entries) == 0 {
+		return nil
+	}
+	multi := multiGPU(report, len(entries))
+	var all []types.Finding
+	for _, t := range entries {
+		all = append(all, tagGPUFindings(thermalFindings(t), report, t.GPUIndex, multi)...)
+	}
+	return mergePerGPUFindings(all)
+}
+
+// thermalFindings evaluates one GPU's thermal sample.
+func thermalFindings(t *types.ThermalInfo) []types.Finding {
 	var findings []types.Finding
 
-	if report.Thermal == nil {
-		return findings
-	}
-
-	t := report.Thermal
 	thermal, slowdown, reasons := thermalState(t)
 	reasonText := strings.Join(reasons, ", ")
 	if reasonText == "" {
@@ -432,14 +610,25 @@ func pcieUnderLoad(p *types.PCIeInfo) bool {
 	return p.UtilizationPct >= 20
 }
 
+// analyzePCIe evaluates every GPU's PCIe link sample; see analyzeThermal for
+// the multi-GPU labelling and merging rules.
 func analyzePCIe(report *types.Report) []types.Finding {
+	entries := pcieEntries(report)
+	if len(entries) == 0 {
+		return nil
+	}
+	multi := multiGPU(report, len(entries))
+	var all []types.Finding
+	for _, p := range entries {
+		all = append(all, tagGPUFindings(pcieFindings(p), report, p.GPUIndex, multi)...)
+	}
+	return mergePerGPUFindings(all)
+}
+
+// pcieFindings evaluates one GPU's PCIe link sample.
+func pcieFindings(p *types.PCIeInfo) []types.Finding {
 	var findings []types.Finding
 
-	if report.PCIe == nil {
-		return findings
-	}
-
-	p := report.PCIe
 	curGen, maxGen := parsePCIeGen(p.CurrentSpeed), parsePCIeGen(p.MaxSpeed)
 	curWidth, maxWidth := parsePCIeWidth(p.CurrentWidth), parsePCIeWidth(p.MaxWidth)
 	widthReduced := curWidth > 0 && maxWidth > 0 && curWidth < maxWidth
@@ -1955,13 +2144,7 @@ func valueOrUnknown(s string) string {
 func pcieSummary(report *types.Report) string {
 	p := report.PCIe
 	s := fmt.Sprintf("PCIe: %s %s", p.CurrentSpeed, p.CurrentWidth)
-	warned := false
-	for _, f := range report.Findings {
-		if (f.ID == "pcie-downshift" || f.ID == "pcie-width-reduced") && f.Severity == types.SeverityWarn {
-			warned = true
-			break
-		}
-	}
+	warned := pcieWarnedFor(report.Findings, p.GPUIndex)
 	switch {
 	case warned:
 		s += fmt.Sprintf(" (DOWNSHIFTED, max %s %s)", p.MaxSpeed, p.MaxWidth)
@@ -1969,6 +2152,46 @@ func pcieSummary(report *types.Report) string {
 		s += fmt.Sprintf(" (idle, max %s)", p.MaxSpeed)
 	}
 	return s
+}
+
+// pcieWarnedFor reports whether a PCIe link WARN fired for the given GPU. A
+// finding without GPU attribution (older reports, hand-built tests) counts
+// for every GPU.
+func pcieWarnedFor(findings []types.Finding, gpuIndex int) bool {
+	for _, f := range findings {
+		if (f.ID != "pcie-downshift" && f.ID != "pcie-width-reduced") || f.Severity != types.SeverityWarn {
+			continue
+		}
+		if len(f.GPUIndexes) == 0 {
+			return true
+		}
+		for _, idx := range f.GPUIndexes {
+			if idx == gpuIndex {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// multiGPUSummary renders the one extra summary line for rigs with two or
+// more NVIDIA GPUs: the count and the hottest GPU when thermal data exists.
+func multiGPUSummary(report *types.Report) string {
+	n := countNVIDIAGPUs(report.GPUs)
+	if len(report.GPUThermal) > n {
+		n = len(report.GPUThermal)
+	}
+	line := fmt.Sprintf("GPUs: %d NVIDIA", n)
+	worst := -1
+	for i, t := range report.GPUThermal {
+		if worst < 0 || t.TemperatureC > report.GPUThermal[worst].TemperatureC {
+			worst = i
+		}
+	}
+	if worst >= 0 {
+		line += fmt.Sprintf(" (worst temp %d°C on GPU %d)", report.GPUThermal[worst].TemperatureC, report.GPUThermal[worst].GPUIndex)
+	}
+	return line
 }
 
 func buildSummaryBlock(report *types.Report) string {
@@ -2026,6 +2249,13 @@ func buildSummaryBlock(report *types.Report) string {
 
 	if report.PCIe != nil {
 		add("%s", pcieSummary(report))
+	}
+
+	// The Temp/PCIe lines above describe GPU 0 exactly as they always have;
+	// a rig with several NVIDIA GPUs gets one extra line, never one per GPU,
+	// so the block stays short enough to paste into a forum post.
+	if countNVIDIAGPUs(report.GPUs) >= 2 || len(report.GPUThermal) >= 2 {
+		add("%s", multiGPUSummary(report))
 	}
 
 	critCount, warnCount, fixAvailable := 0, 0, 0

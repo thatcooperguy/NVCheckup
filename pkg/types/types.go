@@ -93,7 +93,9 @@ type SystemInfo struct {
 	StorageFreeMB int64  `json:"storage_free_mb,omitempty"`
 	Uptime        string `json:"uptime"`
 	Timezone      string `json:"timezone,omitempty"`
-	Hostname      string `json:"hostname,omitempty"` // will be redacted
+	Hostname      string `json:"hostname,omitempty"`       // will be redacted
+	IsJetson      bool   `json:"is_jetson,omitempty"`      // NVIDIA Jetson / Tegra board (no nvidia-smi; GPU is not on PCIe)
+	JetsonRelease string `json:"jetson_release,omitempty"` // first line of /etc/nv_tegra_release, e.g. "# R36 (release), REVISION: 4.3, ..."
 }
 
 // GPUInfo holds information about a single GPU
@@ -252,6 +254,7 @@ type Finding struct {
 	Category     string             `json:"category,omitempty"` // "driver", "cuda", "overlay", etc.
 	Confidence   int                `json:"confidence"`         // 0-100 confidence score
 	Remediation  *RemediationAction `json:"remediation,omitempty"`
+	GPUIndexes   []int              `json:"gpu_indexes,omitempty"` // nvidia-smi indices of the GPU(s) this finding is about (thermal/PCIe findings)
 }
 
 // RemediationAction describes a safe, reversible fix for a finding
@@ -297,7 +300,7 @@ type ChangeJournalEntry struct {
 type ThermalInfo struct {
 	TemperatureC    int      `json:"temperature_c"`
 	ThermalThrottle bool     `json:"thermal_throttle"`
-	PowerState      string   `json:"power_state"` // P0-P12
+	PowerState      string   `json:"power_state"` // P0-P15
 	CurrentClockMHz int      `json:"current_clock_mhz"`
 	MaxClockMHz     int      `json:"max_clock_mhz"`
 	PowerLimitW     string   `json:"power_limit_w"`
@@ -308,6 +311,7 @@ type ThermalInfo struct {
 	SlowdownReason  string   `json:"slowdown_reason,omitempty"`  // raw clocks_event_reasons.active bitmask
 	ThrottleReasons []string `json:"throttle_reasons,omitempty"` // decoded active reasons, e.g. "sw_thermal_slowdown"
 	UtilizationPct  int      `json:"utilization_pct"`            // utilization.gpu at sample time
+	GPUIndex        int      `json:"gpu_index"`                  // nvidia-smi index of the GPU this row describes
 }
 
 // PCIeInfo holds PCIe link state data
@@ -320,6 +324,7 @@ type PCIeInfo struct {
 	PowerState     string `json:"power_state,omitempty"` // pstate at sample time, e.g. "P8"
 	UtilizationPct int    `json:"utilization_pct"`       // utilization.gpu at sample time
 	IdleLikely     bool   `json:"idle_likely"`           // P5+ or low utilization: link power-saving is expected
+	GPUIndex       int    `json:"gpu_index"`             // nvidia-smi index of the GPU this row describes
 }
 
 // DisplayInfo holds display/monitor pipeline data
@@ -392,6 +397,8 @@ type Report struct {
 	TopIssues       []string         `json:"top_issues"`
 	NextSteps       []string         `json:"next_steps"`
 	SummaryBlock    string           `json:"summary_block"`
+	GPUThermal      []ThermalInfo    `json:"gpu_thermal,omitempty"` // one entry per NVIDIA GPU; Thermal points at entry 0
+	GPUPCIe         []PCIeInfo       `json:"gpu_pcie,omitempty"`    // one entry per NVIDIA GPU; PCIe points at entry 0
 }
 
 // ReportMetadata holds info about the report itself

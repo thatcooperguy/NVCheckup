@@ -42,10 +42,20 @@ func footerLines(meta types.ReportMetadata) []string {
 // annotation. PCIeInfo.Downshifted is deliberately not consulted: the
 // collector sets it without knowing whether the sample was taken at idle.
 func pcieSummary(report *types.Report) string {
-	p := report.PCIe
+	return pcieLine(report.PCIe, pcieWarned(report.Findings))
+}
+
+// pcieSummaryFor renders one GPU's PCIe line for a multi-GPU report, deciding
+// "DOWNSHIFTED" from the findings attributed to that GPU only.
+func pcieSummaryFor(findings []types.Finding, p *types.PCIeInfo) string {
+	return pcieLine(p, pcieWarnedFor(findings, p.GPUIndex))
+}
+
+// pcieLine formats a PCIe sample; warned selects the DOWNSHIFTED annotation.
+func pcieLine(p *types.PCIeInfo, warned bool) string {
 	cur := strings.TrimSpace(valueOrNA(p.CurrentSpeed) + " " + p.CurrentWidth)
 	switch {
-	case pcieWarned(report.Findings):
+	case warned:
 		return fmt.Sprintf("%s (DOWNSHIFTED, max %s %s)", cur, valueOrNA(p.MaxSpeed), p.MaxWidth)
 	case pcieGen(p.CurrentSpeed) > 0 && pcieGen(p.CurrentSpeed) < pcieGen(p.MaxSpeed):
 		return fmt.Sprintf("%s (idle, max %s)", cur, valueOrNA(p.MaxSpeed))
@@ -62,6 +72,59 @@ func pcieWarned(findings []types.Finding) bool {
 		}
 	}
 	return false
+}
+
+// pcieWarnedFor reports whether a PCIe link WARN fired for the given GPU. A
+// finding without GPU attribution counts for every GPU.
+func pcieWarnedFor(findings []types.Finding, gpuIndex int) bool {
+	for _, f := range findings {
+		if (f.ID != "pcie-downshift" && f.ID != "pcie-width-reduced") || f.Severity != types.SeverityWarn {
+			continue
+		}
+		if len(f.GPUIndexes) == 0 {
+			return true
+		}
+		for _, idx := range f.GPUIndexes {
+			if idx == gpuIndex {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// perGPULines reports whether the report carries thermal or PCIe samples for
+// more than one GPU. In that case the samples are printed inside each GPU's
+// inventory block instead of as the single "PCIe:" / "Thermal:" lines, which
+// only ever described GPU 0.
+func perGPULines(report *types.Report) bool {
+	return len(report.GPUPCIe) > 1 || len(report.GPUThermal) > 1
+}
+
+// pcieFor returns the PCIe sample for an inventory entry, or nil.
+func pcieFor(samples []types.PCIeInfo, gpu types.GPUInfo) *types.PCIeInfo {
+	if !gpu.IsNVIDIA {
+		return nil
+	}
+	for i := range samples {
+		if samples[i].GPUIndex == gpu.Index {
+			return &samples[i]
+		}
+	}
+	return nil
+}
+
+// thermalFor returns the thermal sample for an inventory entry, or nil.
+func thermalFor(samples []types.ThermalInfo, gpu types.GPUInfo) *types.ThermalInfo {
+	if !gpu.IsNVIDIA {
+		return nil
+	}
+	for i := range samples {
+		if samples[i].GPUIndex == gpu.Index {
+			return &samples[i]
+		}
+	}
+	return nil
 }
 
 // pcieGen parses "Gen4" (or "4") into 4; 0 when unknown.
@@ -169,6 +232,7 @@ func GenerateText(report *types.Report) string {
 	if len(report.GPUs) == 0 {
 		w("  No GPUs detected.\n")
 	}
+	perGPU := perGPULines(report)
 	for _, gpu := range report.GPUs {
 		w("  [GPU %d] %s\n", gpu.Index, gpu.Name)
 		w("    Vendor:    %s\n", gpu.Vendor)
@@ -186,16 +250,26 @@ func GenerateText(report *types.Report) string {
 		if gpu.WDDMVersion != "" {
 			w("    WDDM:      %s\n", gpu.WDDMVersion)
 		}
+		if perGPU {
+			if p := pcieFor(report.GPUPCIe, gpu); p != nil {
+				w("    PCIe:      %s\n", pcieSummaryFor(report.Findings, p))
+			}
+			if t := thermalFor(report.GPUThermal, gpu); t != nil {
+				w("    Thermal:   %s\n", thermalSummary(t))
+			}
+		}
 		w("\n")
 	}
 
-	// Driver Info
+	// Driver Info. With a single GPU the PCIe and Thermal lines keep their
+	// long-standing place and format here; multi-GPU reports print them per
+	// GPU above instead.
 	w("  NVIDIA Driver: %s\n", valueOrNA(report.Driver.Version))
 	w("  CUDA (driver): %s\n", valueOrNA(report.Driver.CUDAVersion))
-	if report.PCIe != nil {
+	if !perGPU && report.PCIe != nil {
 		w("  PCIe:          %s\n", pcieSummary(report))
 	}
-	if report.Thermal != nil {
+	if !perGPU && report.Thermal != nil {
 		w("  Thermal:       %s\n", thermalSummary(report.Thermal))
 	}
 	line()

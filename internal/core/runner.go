@@ -99,15 +99,23 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 
 	// Phase 3: thermal + PCIe
 	ph.begin("Collecting GPU thermal and PCIe data...")
-	thermalInfo, thermalErrs := common.CollectThermalInfo(cfg.Timeout)
-	if thermalInfo.TemperatureC > 0 || thermalInfo.PowerState != "" {
-		r.Thermal = &thermalInfo
+	// One entry per NVIDIA GPU lands in GPUThermal / GPUPCIe; the single
+	// Thermal / PCIe pointers keep pointing at GPU 0 for existing consumers.
+	thermals, thermalErrs := common.CollectThermalAll(cfg.Timeout)
+	if len(thermals) > 0 {
+		r.GPUThermal = thermals
+		if thermals[0].TemperatureC > 0 || thermals[0].PowerState != "" {
+			r.Thermal = &r.GPUThermal[0]
+		}
 	}
 	ph.addErrors(thermalErrs)
 
-	pcieInfo, pcieErrs := common.CollectPCIeInfo(cfg.Timeout)
-	if pcieInfo.CurrentSpeed != "" || pcieInfo.MaxSpeed != "" {
-		r.PCIe = &pcieInfo
+	pcies, pcieErrs := common.CollectPCIeAll(cfg.Timeout)
+	if len(pcies) > 0 {
+		r.GPUPCIe = pcies
+		if pcies[0].CurrentSpeed != "" || pcies[0].MaxSpeed != "" {
+			r.PCIe = &r.GPUPCIe[0]
+		}
 	}
 	ph.addErrors(pcieErrs)
 	ph.end()
