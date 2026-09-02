@@ -306,18 +306,35 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, of
 		found = true
 	}
 	if !found && !unified && r != nil {
-		for _, g := range r.GPUs {
-			if g.IsNVIDIA && g.VRAMTotalMB > 0 && g.MemoryReporting != "not-supported" {
-				pool = MemoryPool{
-					TotalBytes:     float64(g.VRAMTotalMB) * 1024 * 1024,
-					AvailableBytes: float64(g.VRAMFreeMB) * 1024 * 1024,
-					Source:         fmt.Sprintf("nvidia-smi memory.total of %s (dedicated VRAM, discrete GPU)", g.Name),
-					Discrete:       true,
-				}
-				pool.AllocatableBytes = pool.AvailableBytes
-				found = true
-				notes = append(notes, "Discrete GPU: the pool is dedicated VRAM, not the shared pool spec 7.4 sizes; the OS floor F defaults to 0 here (F is a host-OS reservation out of unified memory) unless --headroom-gib is given, and the swap/page-cache checks are skipped.")
-				break
+		// Discrete GPUs: the pool is the largest single device (by VRAM total,
+		// then by free VRAM). The weights must fit one GPU because the wizard
+		// plans no tensor parallelism, so on a multi-GPU machine the other
+		// devices only get a note.
+		best := -1
+		count := 0
+		for i, g := range r.GPUs {
+			if !g.IsNVIDIA || g.VRAMTotalMB <= 0 || g.MemoryReporting == "not-supported" {
+				continue
+			}
+			count++
+			if best < 0 || g.VRAMTotalMB > r.GPUs[best].VRAMTotalMB ||
+				(g.VRAMTotalMB == r.GPUs[best].VRAMTotalMB && g.VRAMFreeMB > r.GPUs[best].VRAMFreeMB) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			g := r.GPUs[best]
+			pool = MemoryPool{
+				TotalBytes:     float64(g.VRAMTotalMB) * 1024 * 1024,
+				AvailableBytes: float64(g.VRAMFreeMB) * 1024 * 1024,
+				Source:         fmt.Sprintf("nvidia-smi memory.total of %s (dedicated VRAM, discrete GPU)", g.Name),
+				Discrete:       true,
+			}
+			pool.AllocatableBytes = pool.AvailableBytes
+			found = true
+			notes = append(notes, "Discrete GPU: the pool is dedicated VRAM, not the shared pool spec 7.4 sizes; the OS floor F defaults to 0 here (F is a host-OS reservation out of unified memory) unless --headroom-gib is given, and the swap/page-cache checks are skipped.")
+			if count > 1 {
+				notes = append(notes, fmt.Sprintf("%d NVIDIA GPUs detected; the plan sizes against the largest single GPU (%s, %s); multi-GPU tensor parallelism is not planned by this wizard.", count, g.Name, fmtGiB(pool.TotalBytes)))
 			}
 		}
 	}

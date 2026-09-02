@@ -258,3 +258,49 @@ func TestPlatformLabel(t *testing.T) {
 		t.Errorf("label without platform class = %s", l)
 	}
 }
+
+// A multi-GPU discrete machine is sized against the largest single GPU (by
+// VRAM total, then by free VRAM): the weights must fit one device because the
+// wizard plans no tensor parallelism, and the plan says so in a note.
+func TestDerivePool_MultiGPU(t *testing.T) {
+	t.Setenv("NVC_SIM_ROOT", "")
+	// Two identical 3090s, the first nearly full: the free twin is the pool.
+	twins := &types.Report{
+		System: types.SystemInfo{RAMTotalMB: 131072},
+		GPUs: []types.GPUInfo{
+			{Index: 0, Name: "NVIDIA GeForce RTX 3090", IsNVIDIA: true, VRAMTotalMB: 24576, VRAMFreeMB: 100, MemoryReporting: "dedicated"},
+			{Index: 1, Name: "NVIDIA GeForce RTX 3090", IsNVIDIA: true, VRAMTotalMB: 24576, VRAMFreeMB: 24000, MemoryReporting: "dedicated"},
+		},
+	}
+	pool, notes := DerivePool(twins, "linux", 5, 0, true)
+	if !pool.Discrete || pool.Unified || pool.TotalBytes != 24576*1024*1024 || pool.AvailableBytes != 24000*1024*1024 {
+		t.Errorf("twin pool = %+v, want 24576 MiB total / 24000 MiB free", pool)
+	}
+	want := "2 NVIDIA GPUs detected; the plan sizes against the largest single GPU (NVIDIA GeForce RTX 3090, 24.0 GiB); multi-GPU tensor parallelism is not planned by this wizard."
+	if joined := strings.Join(notes, " "); !strings.Contains(joined, want) {
+		t.Errorf("twin notes = %q, want %q", joined, want)
+	}
+
+	// Different sizes: the largest total wins even when a smaller GPU has more
+	// free VRAM, and a non-NVIDIA adapter is not counted.
+	mixed := &types.Report{
+		GPUs: []types.GPUInfo{
+			{Index: 0, Name: "Intel(R) UHD Graphics 770", Vendor: "Intel"},
+			{Index: 1, Name: "NVIDIA GeForce RTX 3060", IsNVIDIA: true, VRAMTotalMB: 12288, VRAMFreeMB: 12000, MemoryReporting: "dedicated"},
+			{Index: 2, Name: "NVIDIA GeForce RTX 4090", IsNVIDIA: true, VRAMTotalMB: 24564, VRAMFreeMB: 100, MemoryReporting: "dedicated"},
+		},
+	}
+	pool, notes = DerivePool(mixed, "windows", 5, 0, true)
+	if pool.TotalBytes != 24564*1024*1024 || pool.AvailableBytes != 100*1024*1024 || !strings.Contains(pool.Source, "RTX 4090") {
+		t.Errorf("mixed pool = %+v, want the RTX 4090", pool)
+	}
+	if joined := strings.Join(notes, " "); !strings.Contains(joined, "2 NVIDIA GPUs detected; the plan sizes against the largest single GPU (NVIDIA GeForce RTX 4090, 24.0 GiB)") {
+		t.Errorf("mixed notes = %q", joined)
+	}
+
+	// One GPU: no multi-GPU note (the win_rtx3090 golden is unchanged).
+	pool, notes = DerivePool(rtx3090Report(), "windows", 5, 0, true)
+	if !strings.Contains(pool.Source, "RTX 3090") || strings.Contains(strings.Join(notes, " "), "NVIDIA GPUs detected") {
+		t.Errorf("single GPU pool = %+v notes = %v", pool, notes)
+	}
+}

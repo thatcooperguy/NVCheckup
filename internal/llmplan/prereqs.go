@@ -45,6 +45,14 @@ const (
 	pressureWarnBytes = 8 * GiB  // spec 7.4: unified-memory-pressure WARN < 8 GiB
 	torchCUDATag      = "+cu130" // spec 7.7: torch +cu130
 	tritonPtxasPath   = "/usr/local/cuda/bin/ptxas"
+
+	// RTX Spark (spec 2.2, rule rtx-spark-driver-developer-preview): the
+	// first Arm64 driver is the 616.00 Developer Preview; its WDDM
+	// DriverVersion is expected to end in 16.1600 (the "32.0." prefix, hence
+	// the full "32.0.16.1600" string, is unconfirmed, so only the tail is
+	// matched).
+	rtxSparkDPDriver     = "616.00"
+	rtxSparkDPWDDMSuffix = "16.1600"
 )
 
 // versionOrEmpty maps the placeholders nvidia-smi and the collectors print for
@@ -104,6 +112,53 @@ func majorOf(v string) int {
 	return n
 }
 
+// isWDDMVersion reports whether s is a Windows WDDM DriverVersion as WMI
+// (Win32_VideoController.DriverVersion) prints it: four dot-separated numeric
+// fields whose first is the WDDM generation 30-40, e.g. "32.0.16.1600". The
+// Windows GPU collector copies that string into GPUInfo.DriverVersion when
+// nvidia-smi.exe is absent, so it can reach the driver check on RTX Spark
+// (spec 2.2, 8). It is not a driver branch: "32" must never be compared with
+// the 580 minimum of spec 7.7.
+func isWDDMVersion(s string) bool {
+	fields := strings.Split(strings.TrimSpace(s), ".")
+	if len(fields) != 4 {
+		return false
+	}
+	for _, f := range fields {
+		if f == "" {
+			return false
+		}
+		for _, c := range f {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	gen, _ := strconv.Atoi(fields[0])
+	return gen >= 30 && gen <= 40
+}
+
+// isRTXSpark reports whether the report comes from an RTX Spark (N1X) host:
+// the detector's Class (spec 3.1 row 2), or Windows on Arm with an NVIDIA
+// adapter named RTX Spark / N1X when the classification did not run.
+func isRTXSpark(r *types.Report) bool {
+	if r == nil {
+		return false
+	}
+	if r.Platform.Class == "rtx-spark" {
+		return true
+	}
+	if !r.Platform.IsWindowsOnArm {
+		return false
+	}
+	for _, g := range r.GPUs {
+		if g.IsNVIDIA && (strings.Contains(g.Name, "RTX Spark") || strings.Contains(g.Name, "N1X")) {
+			return true
+		}
+	}
+	return false
+}
+
 // Evaluate runs the spec 7.7 checklist against the report and sizing.
 func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 	var out []Prereq
@@ -111,26 +166,71 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 	r := f.Report
 	spark := SparkSoC(r) != ""
 
-	// Driver present / branch.
+	// Driver present / branch. Driver.Version comes from nvidia-smi. When it
+	// is empty, the GPU collector's per-GPU DriverVersion is the fallback; on
+	// Windows without nvidia-smi.exe that is the WDDM string from WMI
+	// ("32.0.16.1600"), which is the only driver source on RTX Spark, whose
+	// developer-preview package ships no nvidia-smi.exe (spec 2.2, 8). A WDDM
+	// string is kept apart from the branch version so it is never compared
+	// with the 580 minimum.
 	driver := ""
+	wddm := ""
 	cuda := ""
+	rtxSpark := isRTXSpark(r)
+	var woa *types.WoAInfo
 	if r != nil {
+		woa = r.Platform.WoA
 		driver = versionOrEmpty(r.Driver.Version)
 		cuda = versionOrEmpty(r.Driver.CUDAVersion)
 		for _, g := range r.GPUs {
-			if driver == "" && g.IsNVIDIA {
-				driver = versionOrEmpty(g.DriverVersion)
+			if driver != "" || wddm != "" || !g.IsNVIDIA {
+				continue
+			}
+			if v := versionOrEmpty(g.DriverVersion); isWDDMVersion(v) {
+				wddm = v
+			} else {
+				driver = v
+			}
+		}
+		if driver == "" && wddm == "" && woa != nil {
+			if v := versionOrEmpty(woa.DriverVersion); isWDDMVersion(v) {
+				wddm = v
 			}
 		}
 		if cuda == "" && r.AI != nil {
 			cuda = versionOrEmpty(r.AI.CUDADriverVersion)
 		}
 	}
-	if driver == "" {
+	// The 616.00 Developer Preview on RTX Spark, whichever source named it:
+	// nvidia-smi "616.00", the WDDM tail 16.1600, or the WoA collector's
+	// INF-based flag.
+	dpWDDM := wddm != "" && strings.HasSuffix(wddm, rtxSparkDPWDDMSuffix)
+	developerPreview := rtxSpark && (dpWDDM || strings.HasPrefix(driver, rtxSparkDPDriver) || (woa != nil && woa.DeveloperPreview))
+	switch {
+	case driver == "" && wddm == "":
 		add("driver-present", StatusFail, "no NVIDIA driver version detected (nvidia-smi absent or failed)")
-	} else if spark && majorOf(driver) < minDriverMajor {
+	case developerPreview:
+		// Rule rtx-spark-driver-developer-preview is WARN: NVIDIA lists the
+		// preview stack as pre-release, not for production or benchmarking
+		// (S26), so a plan on it carries the same warning.
+		var label string
+		switch {
+		case dpWDDM:
+			label = fmt.Sprintf("WDDM driver %s (driver %s developer preview; nvidia-smi.exe not shipped)", wddm, rtxSparkDPDriver)
+		case wddm != "":
+			label = fmt.Sprintf("WDDM driver %s (developer preview per the nv_surface_woa.inf INF; nvidia-smi.exe not shipped; version mapping unconfirmed)", wddm)
+		default:
+			label = fmt.Sprintf("driver %s (developer preview)", driver)
+		}
+		add("driver-present", StatusWarn, label+"; the RTX Spark Developer Preview is pre-release, not for production or benchmarking (rtx-spark-driver-developer-preview, spec 2.2)")
+	case wddm != "":
+		// Windows host without nvidia-smi: the driver is present, but the WDDM
+		// string maps to a branch only by convention, which the spec does not
+		// confirm beyond the 16.1600 tail.
+		add("driver-present", StatusPass, fmt.Sprintf("WDDM driver %s (nvidia-smi.exe absent; version mapping unconfirmed)", wddm))
+	case spark && majorOf(driver) < minDriverMajor:
 		add("driver-present", StatusWarn, fmt.Sprintf("driver %s; DGX OS 7 / sm_121 expects the 580 branch (spec 2.1, 7.7)", driver))
-	} else {
+	default:
 		add("driver-present", StatusPass, "driver "+driver)
 	}
 	switch {
