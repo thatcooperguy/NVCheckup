@@ -123,3 +123,28 @@ func TestToolFailure(t *testing.T) {
 		t.Errorf("only the first stderr line should be used, got %q", d)
 	}
 }
+
+// TestParseAndGroupXidErrorsGB10 uses the GB10 kernel-log forms of spec 3.2:
+// the PCI:000f:01:00 domain form and the new Xid 120 "GSP task exception".
+// Existing behaviour (grouping, descriptions) is unchanged for other codes.
+func TestParseAndGroupXidErrorsGB10(t *testing.T) {
+	boot := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	lines := []string{
+		"[   12.345678] NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!",
+		"[   13.000000] NVRM: Xid (PCI:000f:01:00): 120, GSP task exception",
+		"[   14.000000] NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!",
+	}
+	got := parseAndGroupXidErrors(lines, boot, boot.Add(time.Hour))
+	if len(got) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(got), got)
+	}
+	if got[0].Code != 119 || got[0].Count != 2 || got[0].Message != "GSP firmware error" {
+		t.Errorf("119 group = %+v", got[0])
+	}
+	if got[1].Code != 120 || got[1].Count != 1 || got[1].Message != "GSP task exception" {
+		t.Errorf("120 group = %+v", got[1])
+	}
+	if want := boot.Add(14 * time.Second); !got[0].Timestamp.Equal(want) {
+		t.Errorf("119 last seen = %v, want %v", got[0].Timestamp, want)
+	}
+}

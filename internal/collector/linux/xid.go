@@ -26,6 +26,7 @@ var knownXidDescriptions = map[int]string{
 	69:  "Graphics engine exception",
 	79:  "GPU has fallen off the bus",
 	119: "GSP firmware error",
+	120: "GSP task exception", // docs/roadmap/spark-support.md 3.2 (GB10 GSP failure), WP1 item 10
 }
 
 var (
