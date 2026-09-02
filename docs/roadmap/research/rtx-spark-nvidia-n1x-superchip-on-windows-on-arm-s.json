@@ -1,0 +1,708 @@
+{
+ "topic": "RTX Spark (NVIDIA N1X superchip) on Windows on Arm: specs, OEM devices, driver/CUDA/WSL/WinML status, memory reporting on unified memory, x86 emulation, detection heuristics, Linux status, and GitHub Actions windows-11-arm runners (state of public knowledge as of 2026-09-02)",
+ "facts": [
+  {
+   "claim": "RTX Spark was announced 2026-05-31 (Computex / GTC Taipei) by NVIDIA and Microsoft; it is the productized N1X superchip for Windows laptops and compact desktops.",
+   "detail": "NVIDIA press release: 20-core NVIDIA Grace CPU + NVIDIA Blackwell RTX GPU with 6,144 CUDA cores, fifth-generation Tensor Cores with FP4, up to 128GB unified memory, NVLink-C2C chip-to-chip interconnect, '1 petaflop of AI performance' (sparse FP4), co-designed with MediaTek. Launch partners: ASUS, Dell, HP, Lenovo, Microsoft Surface, MSI; Acer and GIGABYTE 'to follow'. Availability 'this fall' (2026).",
+   "confidence": "high",
+   "source_url": "https://nvidianews.nvidia.com/news/nvidia-microsoft-windows-pcs-agents-rtx-spark"
+  },
+  {
+   "claim": "nvidia.com product page lists the top configuration as 'up to' 20-core Grace CPU, 6,144-core Blackwell RTX GPU, 128 GB unified memory, 1 petaflop FP4; it does not publish memory bandwidth, SM counts, or lower memory tiers.",
+   "detail": "Page says 'CUDA, the software that accelerates the world's AI, runs natively on RTX Spark.' Listed laptops: ASUS ProArt P16, Dell XPS 16, HP OmniBook X 14, Lenovo Yoga Pro 9n, Microsoft Surface Laptop Ultra, MSI Prestige N16 Flip AI+. Desktops 'coming soon'.",
+   "confidence": "high",
+   "source_url": "https://www.nvidia.com/en-us/products/rtx-spark/"
+  },
+  {
+   "claim": "Two RTX Spark GPU configurations exist: 6,144-core (48 SM) and 5,120-core (40 SM). Their PCI device IDs are 10DE:2E03 and 10DE:2E06, codename GB20B.",
+   "detail": "pci-ids.ucw.cz registers 10de:2e03 as 'GB20B [RTX Spark N1X (6144-core Blackwell RTX GPU)]' and 10de:2e06 as 'GB20B [RTX Spark N1X (5120-core Blackwell RTX GPU)]' (historical name 'GB20B [JMJWOA-Generic-GPU]'). The 616.00 Arm64 driver INF nv_surface_woa.inf lists: NVIDIA_DEV.2E03.0109.1414 = 'NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)'; NVIDIA_DEV.2E06.0109.1414 and NVIDIA_DEV.2E06.0110.1414 = 'NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)'; NVIDIA_DEV.1081 = 'NVIDIA Graphics Device'; NVIDIA_DEV.2E13.0116.1414 = 'NVIDIA Desktop Device'; plus multiple 'NVIDIA NPU (Deep Learning Accelerator)' entries. Subsystem 1414 = Microsoft (Surface).",
+   "confidence": "high",
+   "source_url": "https://admin.pci-ids.ucw.cz/read/PC/10de/2e03"
+  },
+  {
+   "claim": "CPU core layout is reported (not officially published) as 10x Arm Cortex-X925 + 10x Cortex-A725, boost ~4.0-4.1 GHz, matching the GB10 in DGX Spark.",
+   "detail": "Wikipedia table: N1x 675 = 10 X925 + 10 A725, 48 SMs/6,144 CUDA, up to 128 GB 16-channel LPDDR5X, 45-80 W. Reported variants: N1x 650 = 9+9 cores, 40 SMs/5,120 CUDA; N1 #1 = 8 X925 + 4 A725, 20 SMs/2,560 CUDA, 8-64 GB 8-channel, 18-45 W; N1 #2 = 7+3 cores, 16 SMs/2,048 CUDA. Leaked sheet (Cyber Kendra/VideoCardz) adds N1X memory range 16GB-128GB, LPDDR5X 8,533 MT/s, 12x PCIe 5.0 + 5x PCIe 4.0 lanes. Simon Willison's DGX Spark shows GB10 = 10x Cortex-X925 + 10x Cortex-A725.",
+   "confidence": "medium",
+   "source_url": "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark"
+  },
+  {
+   "claim": "No official memory-bandwidth figure exists for RTX Spark; the GB10 twin (DGX Spark) is 128 GB LPDDR5X on a 256-bit bus at ~273 GB/s, and reviewers assume the same for N1X.",
+   "detail": "lecompute marks '~273 GB/s' and '256-bit' as derived from the GB10 datasheet with 'no official figure for the RTX Spark'. Some press cite 301 GB/s (LPDDR5X-9400) but that is unsourced. Notebookcheck's '600 GB/s (with NVLink)' refers to the NVLink-C2C link, not DRAM.",
+   "confidence": "medium",
+   "source_url": "https://lecompute.fr/en/silicon/rtx-spark-vs-dgx-spark/"
+  },
+  {
+   "claim": "The GB10 GPU is compute capability 12.1 (sm_121) with 48 SMs; the N1X is expected to be sm_121 as well but this is not confirmed in any NVIDIA document.",
+   "detail": "backend.ai: DGX Spark reports 'SM12x (compute capability 12.1)', 48 SMs / 6,144 CUDA cores, 273 GB/s; sm_121 lacks TMEM/tcgen05 of datacenter sm_100. NVIDIA forum users treat N1X as 'the mobile version of DGX Spark' / 'more units based on SM121'. Jensen described N1X as 'technically very close' to GB10 (press Q&A, secondary).",
+   "confidence": "medium",
+   "source_url": "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell"
+  },
+  {
+   "claim": "Announced OEM devices: ASUS ProArt P16 (H7607) and P14 plus ProArt Mini PC; Dell XPS 16 Creator Edition; HP OmniBook X 14 and OmniBook Ultra 16; Lenovo Yoga Pro 9n (15-inch) and Yoga 9n 2-in-1 (14-inch); Microsoft Surface Laptop Ultra and Surface RTX Spark Dev Box; MSI Prestige N16 Flip AI+ and EdgeMesa N AI+; Acer and GIGABYTE later. All 'fall 2026' or 'later in 2026'; none on sale and no prices as of 2026-09-02.",
+   "detail": "Microsoft Windows Experience blog: 'Beginning this Fall, RTX Spark will power a full range of Windows laptops and small form factor desktop PCs, starting with Microsoft Surface, ASUS, Dell, HP, Lenovo and MSI.' NVIDIA says >30 laptop designs and ~10 desktops. Analyst price estimates $1,799-$2,999 are unofficial.",
+   "confidence": "high",
+   "source_url": "https://blogs.windows.com/windowsexperience/2026/05/31/introducing-a-powerful-new-chapter-for-windows-pcs-accelerated-by-nvidia-rtx-spark/"
+  },
+  {
+   "claim": "Memory configurations below 128 GB are offered: ASUS ProArt P16 H7607 lists 24 GB, 32 GB, 48 GB, 64 GB or 128 GB LPDDR5X unified memory with 512 GB / 1 TB / 2 TB PCIe 4.0 storage.",
+   "detail": "Other OEMs only say 'up to 128GB unified memory'. Retailer aggregators list MSI Prestige N16 Flip AI+ at 32 GB/1 TB, Lenovo Yoga Pro 9n at 32 GB, and HP OmniBook X 14 at 16 GB, but these are unconfirmed listings. Surface RTX Spark Dev Box is 128 GB only.",
+   "confidence": "medium",
+   "source_url": "https://www.notebookcheck.net/Asus-ProArt-P16-launching-with-1-600-nit-Tandem-OLED-display-128-GB-RAM-and-Nvidia-RTX-Spark.1384089.0.html"
+  },
+  {
+   "claim": "Surface RTX Spark Dev Box: 128 GB unified memory, 100 W thermal envelope, Windows 11 Pro, WSL 2 preconfigured 'with GPU passthrough and CUDA support', PowerShell 7 default shell, Developer Mode on, US-only via Microsoft.com 'later this year', FCC authorization pending.",
+   "detail": "Microsoft Devices blog (2026-06-02) lists preinstalled VS Code, GitHub Copilot, Git, Python, Node.js, AI Toolkit for VS Code, 'Windows ML with TensorRT', Windows Copilot Runtime, Microsoft Foundry, Entra ID/Intune, Secured-core, BitLocker. Ports: two USB-C, USB-A, HDMI, Ethernet, headphone jack. Wikipedia lists it as '128 GB, 100W'.",
+   "confidence": "high",
+   "source_url": "https://blogs.windows.com/devices/2026/06/02/building-the-next-generation-of-devices-for-developers-surface-rtx-spark-dev-box/"
+  },
+  {
+   "claim": "Surface Laptop Ultra: 15-inch mini-LED PixelSense Ultra (2000 nits HDR), up to 128 GB unified memory, replaceable SSD, USB-C x3, USB-A, HDMI, SD reader, <18 mm, ~2 kg; up to 80 W chip power reported; no price; fall 2026.",
+   "detail": "Microsoft page describes the chip only as 'All-new NVIDIA Silicon'. Power/ports details from GSMArena.",
+   "confidence": "medium",
+   "source_url": "https://www.microsoft.com/en-us/surface/devices/surface-laptop-ultra"
+  },
+  {
+   "claim": "First native Windows 11 Arm64 GeForce driver is 616.00 'Developer Preview', published 2026-07-16 on the NVIDIA Developer Forums thread 'RTX Spark Developer Preview' (TomNVIDIA), targeting the Surface RTX Spark Dev Box.",
+   "detail": "Download: https://developer.nvidia.com/downloads/assets/geforce-drivers/616.00_DeveloperPreview_win11_arm64_International.exe (also mirrored on developer.download.nvidia.cn). INF: nv_surface_woa.inf. A companion 'NVIDIA x64 Driver for Cross Compilation' is at https://www.nvidia.com/en-us/drivers/details/272764/. Recommended steps: '1. Review your application and third-party dependencies for Arm64 support. 2. Choose an Arm64 or Arm64EC porting strategy appropriate for your application. 3. Build and test your application on Windows on Arm. 4. Validate the NVIDIA and CUDA software paths used by your application. 5. Test installation, updates, functionality, and performance. 6. Validate on RTX Spark when supported hardware and software become available.' Quote: 'You do not need RTX Spark hardware to get started.'",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/rtx-spark-developer-preview/377106"
+  },
+  {
+   "claim": "Known issues published with the 616.00 / CUDA 13.4 developer preview: reduced CUDA transfer performance with pageable host memory (use page-locked memory), display blank ~2 minutes during driver installation, GPU timeouts/system restarts in some PyTorch build workflows, and 'Nsight Copilot is disabled and unavailable on Windows ARM64 in this developer preview'.",
+   "detail": "Igor's Lab also quotes NVIDIA that the preview is 'not intended for production systems, certifications, or business-critical environments' and that benchmark numbers from the preview may not be published.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/raw/377106"
+  },
+  {
+   "claim": "CUDA Toolkit 13.4 Developer Preview (release notes dated Jul 16, 2026) is the first CUDA with native Windows Arm64 support: 'Native Windows Arm64 development for the upcoming RTX Spark device' and 'Cross-compiling Windows Arm64 CUDA applications using the Windows x86_64 Toolkit'. Installers: 'Windows installer: Local installer for Windows x86_64, Windows ARM64' and 'Binary archives: ... Windows x86_64, Windows ARM64'.",
+   "detail": "Release notes: 'Starting with CUDA 13.1, the NVIDIA GPU driver on Windows is no longer bundled with the CUDA Toolkit.' and (sic) 'The Windows driver for DGX Spark device is 616.00 or later.' Minimum-driver table shows '13.x >= 580' generally. Section 6 'Known Limitations': 'This preview has not completed full validation. It may be incomplete, may contain errors or design flaws.' Download archive: https://developer.nvidia.com/cuda-13-4-0-download-archive. Package includes nvcc, runtime, import libraries, math libraries, Nsight Compute and Nsight Systems (Igor's Lab).",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html"
+  },
+  {
+   "claim": "GA CUDA on Windows (13.3, Installation Guide dated Jun 25, 2026) is x86_64-only; the guide has no Arm64/aarch64/Arm64EC content, and the 13.4 DP Windows installation guide likewise still documents only 'Native x86_64'.",
+   "detail": "Therefore any CUDA toolkit found on an Arm64 Windows host that is not the 13.4 Developer Preview is an x86_64 build running under Prism emulation (nvcc may run emulated, but it cannot produce/verify a native Arm64 runtime path).",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/cuda/cuda-installation-guide-microsoft-windows/index.html"
+  },
+  {
+   "claim": "An earlier internal Arm64 driver (591.33, CUDA 13.1) was extracted from RTX Spark software and used to run a desktop RTX 4060 on Windows 11 Arm64 (Huawei Kunpeng 920 workstation) in July 2026, showing the Arm64 driver is a unified build that also enumerates discrete RTX 20/30/40/50 GPUs.",
+   "detail": "Windows Latest: Task Manager showed RTX 4060 usage '89%' during Blender CUDA rendering; no native Windows Arm CUDA toolkit was available at the time outside WSL. Kernel anti-cheat titles refused to launch.",
+   "confidence": "medium",
+   "source_url": "https://www.windowslatest.com/2026/07/21/developer-gets-nvidia-rtx-4060-working-on-windows-11-arm/"
+  },
+  {
+   "claim": "On NVIDIA unified-memory iGPU platforms (DGX Spark / GB10), nvidia-smi does not report GPU memory: 'On iGPU platforms, nvidia-smi will display Memory-Usage: Not Supported even though per-process GPU memory is listed.' NVIDIA staff: 'NVIDIA-SMI only reports memory utilization when there is dedicated GPU VRAM.' The same behavior is expected on RTX Spark (same architecture), but no Windows nvidia-smi.exe output from RTX Spark has been published.",
+   "detail": "DGX Spark Known Issues also states 'the cudaMemGetInfo API does not account for memory that could potentially be reclaimed from SWAP' and recommends /proc/meminfo MemAvailable + SwapFree on Linux. Community tools: nv-monitor, dgxtop, Sparkview. nvidia-smi query fields return '[N/A]'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "Windows 11 Task Manager semantics: 'Dedicated GPU memory' is memory exclusively reserved for the GPU and managed by VidMm (for integrated GPUs, 'the amount of system memory that is reserved for graphics'); 'Shared GPU memory' is normal system memory usable by GPU or CPU, and 'Windows has a policy whereby the GPU is only allowed to use half of physical memory at any given instant.' Requires WDDM 2.0+ driver.",
+   "detail": "On a unified-memory RTX Spark, expect a small/zero dedicated figure and a large shared figure (roughly half of RAM) unless the new carve-out feature is used.",
+   "confidence": "high",
+   "source_url": "https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/"
+  },
+  {
+   "claim": "Windows 11 Insider build 29648.1000 (2026-08-17, 'Future Platforms'/Experimental branch) contains a hidden unified-memory reservation feature 'IntelligentCarveout' (feature ID 61121285, SettingsHandlers_UnifiedMemory.dll) with strings 'Reserved memory for accelerators', 'Memory for graphics and AI acceleration', 'Let Windows reserve additional unified memory for graphics and AI intensive games and applications. Reserved memory is not available for other applications.' Expected under Settings > System > Advanced.",
+   "detail": "Windows Latest notes it creates an actual reserved carve-out rather than the dynamic 'Shared GPU Memory' ceiling; explicitly tied to unified-memory PCs such as RTX Spark.",
+   "confidence": "medium",
+   "source_url": "https://www.windowslatest.com/2026/08/21/windows-11-will-let-you-decide-how-much-memory-goes-to-graphics-and-ai-on-pcs-with-unified-memory/"
+  },
+  {
+   "claim": "Programmatic UMA detection on Windows: D3D12 CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1) returns UMA and CacheCoherentUMA booleans ('The runtime sets this member to TRUE if the hardware and driver support UMA'); DXGI_ADAPTER_DESC exposes DedicatedVideoMemory ('dedicated video memory that are not shared with the CPU'), DedicatedSystemMemory, and SharedSystemMemory ('the maximum value of system memory that may be consumed by the adapter').",
+   "detail": "IDXGIAdapter3::QueryVideoMemoryInfo reports Budget/CurrentUsage for DXGI_MEMORY_SEGMENT_GROUP_LOCAL vs NON_LOCAL; on UMA devices D3D12 docs say apps 'must be tolerant that D3D12_HEAP_TYPE_UPLOAD and D3D12_HEAP_TYPE_READBACK come from that same memory segment group'.",
+   "confidence": "high",
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_architecture"
+  },
+  {
+   "claim": "WMI: Win32_Processor.Architecture enumeration is x86 (0), ARM (5), x64 (9), ARM64 (12); Win32_Processor.Name comes from SMBIOS Type 4 'Processor Version'. Win32_VideoController.AdapterRAM is uint32 (mapped from registry HardwareInformation.MemorySize) and therefore cannot represent >4 GB; PNPDeviceID carries the PCI VEN/DEV string; InfFilename/InfSection identify the driver INF.",
+   "detail": "Win32_VideoController docs: 'Hardware that is not compatible with Windows Display Driver Model (WDDM) returns inaccurate property values for instances of this class.'",
+   "confidence": "high",
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-processor"
+  },
+  {
+   "claim": "Native 64-bit processes on Arm64 Windows see PROCESSOR_ARCHITECTURE=ARM64; emulated processes receive emulated processor details ('For compatibility reasons, the API GetNativeSystemInfo also returns emulated processor details when run from an app under emulation'). Use IsWow64Process2 (pNativeMachine) or GetMachineTypeAttributes to detect the Arm64 host from an emulated x86/x64 binary.",
+   "detail": "WOW64 doc: 64-bit process env has 'PROCESSOR_ARCHITECTURE=AMD64 or ... ARM64'; 32-bit process has 'PROCESSOR_ARCHITECTURE=x86 PROCESSOR_ARCHITEW6432=%PROCESSOR_ARCHITECTURE%'. IsWow64Process2: pProcessMachine is IMAGE_FILE_MACHINE_UNKNOWN when the process is not WOW64; pNativeMachine identifies the host architecture. Emulation supports user-mode only: 'Any kernel mode components must be compiled as Arm64.'",
+   "confidence": "high",
+   "source_url": "https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation"
+  },
+  {
+   "claim": "Prism (Windows 11 24H2+) is the x86/x64 emulator; it added AVX/AVX2, BMI, FMA, F16C support in 24H2+, is 'optimized and tuned specifically for Qualcomm Snapdragon processors' per Microsoft Learn, but Microsoft says for RTX Spark: 'Prism has been tuned for the microarchitecture of RTX Spark'.",
+   "detail": "Windows blog also cites 'Workload profile scheduling (WPS)' optimized for the 20 cores, Microsoft Power and Thermal Framework (MPTF) enabled on RTX Spark, DirectX 12 with neural rendering, and enhanced 'page sizes in shared memory regions'. RTX Spark PCs 'will join the Copilot+ PC category, with powerful NPUs for local AI processing in addition to the GPU'.",
+   "confidence": "high",
+   "source_url": "https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation"
+  },
+  {
+   "claim": "Game compatibility: Microsoft/NVIDIA announced native Arm64 anti-cheat from Epic Easy Anti-Cheat and BattlEye, Xbox PC app support, and titles League of Legends, VALORANT, PUBG: Battlegrounds, PRAGMATA, Alan Wake 2, Naraka: Bladepoint, War Thunder; press reports Denuvo also on board. Games themselves may still run under Prism while the anti-cheat driver runs natively.",
+   "detail": "Native Arm64 creative apps announced: Adobe Photoshop and Premiere, Blender, DaVinci Resolve, Maxon Cinema4D and Redshift, Topaz Photo, CapCut, Cubase, Bitwig Studio, Affinity by Canva; MATLAB 'officially supports Windows on Arm via Prism'. AI/dev tools named: GitHub Copilot, Claude Code, ComfyUI, Cursor, CUDA-accelerated PyTorch, llama.cpp, TensorRT, Hugging Face, Unsloth, Kohya. No independent retail benchmarks exist yet; Computex hands-on ran on Surface hardware.",
+   "confidence": "high",
+   "source_url": "https://blogs.windows.com/windowsexperience/2026/05/31/introducing-a-powerful-new-chapter-for-windows-pcs-accelerated-by-nvidia-rtx-spark/"
+  },
+  {
+   "claim": "Windows 11, version 26H1 (OS build 28000) reached GA 2026-02-10 and 'is scoped to support new devices that come to market in early 2026 and is not designed as a feature update for existing devices. This version is not offered as an in-place update from 24H2 or 25H2 on existing devices.' Latest build 28000.2804 (2026-08-27). Press reports it as the Arm-only release for Snapdragon X2 and NVIDIA N1X/RTX Spark.",
+   "detail": "Wikipedia: 'Version 26H1 is a platform-specific support release that only includes changes to support devices with certain ARM processors'; IoT Enterprise and hotpatching not supported on 26H1. Whether shipping RTX Spark devices run 26H1 or a later branch is not confirmed by Microsoft/NVIDIA.",
+   "confidence": "medium",
+   "source_url": "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
+  },
+  {
+   "claim": "Windows ML execution providers (including NVIDIA 'NvTensorRtRtxExecutionProvider') are downloadable only on 'Windows 11 PCs running version 24H2 (build 26100) or greater'; the NVIDIA EP requirement text is 'NVIDIA GeForce RTX 30XX and above with minimum recommended driver version 32.0.15.5585 + Cuda version 12.5'; latest MSIX 2.30.43.0 (2026-07). Microsoft does not state an Arm64 build for the NVIDIA EP.",
+   "detail": "DirectML is now 'legacy' in Windows ML. ONNX Runtime build docs for the TensorRT RTX EP cover native Windows Arm64 builds and Windows cross-compile targets Arm64, Arm64EC and Arm64X, and warn: 'Windows on Arm supports a x86-64 Python environment via emulation. Ensure that the Arm64 Python environment is actived for a native Arm64 ONNX Runtime build.'",
+   "confidence": "medium",
+   "source_url": "https://learn.microsoft.com/en-us/windows/ai/new-windows-ml/supported-execution-providers"
+  },
+  {
+   "claim": "NVIDIA app system requirements list only 'Windows 10, Windows 11', Intel/AMD CPUs, 'GeForce RTX 20, 30, 40, and 50 Series GPUs', 'GeForce 551.52 Driver or later'; there is no published Arm64 NVIDIA app or any RTX Spark mention as of 2026-09-02.",
+   "detail": "No press coverage of an Arm64 NVIDIA app was found; the 616.00 developer package contents (control panel, NVIDIA app, nvidia-smi.exe) are undocumented publicly.",
+   "confidence": "medium",
+   "source_url": "https://www.nvidia.com/en-us/software/nvidia-app/system-requirements/"
+  },
+  {
+   "claim": "CUDA on WSL User Guide (13.3) contains no Arm64/Windows-on-Arm text, but Microsoft ships the Surface RTX Spark Dev Box with 'WSL 2 (configured with GPU passthrough and CUDA support)', so WSL2 CUDA on Arm64 Windows exists in the dev-box image.",
+   "detail": "WSL guide: 'users must not install any NVIDIA GPU Linux driver within WSL 2'; kernel 'at least 4.19.121+', recommend 5.10.16.3+. Microsoft WSL GPU tutorial requires Windows 11 or Windows 10 21H2+.",
+   "confidence": "medium",
+   "source_url": "https://docs.nvidia.com/cuda/wsl-user-guide/index.html"
+  },
+  {
+   "claim": "Linux on RTX Spark laptops: NVIDIA has neither confirmed nor denied support; Phoronix expects it to 'still work great on Linux' because the silicon is nearly identical to GB10, whose DGX OS stack is Ubuntu 24.04 + Linux 6.11-based kernel + 'R580.GA UDA driver' + CUDA 13.0. XDA notes a userspace TSO memory-ordering request 'was rejected by Nvidia's Linux kernel' on GB10.",
+   "detail": "Notebookcheck: NVIDIA 'didn't confirm/deny Linux support'. NVIDIA forum users expect community Linux support but flag EC/touchpad/Wi-Fi/audio driver gaps. Geekbench N1X prototype (HP 83A3 board) ran Ubuntu 24.04.1 with 20 cores, ~4.05 GHz, 128 GB.",
+   "confidence": "medium",
+   "source_url": "https://www.phoronix.com/news/NVIDIA-RTX-Spark"
+  },
+  {
+   "claim": "GitHub Actions hosted Windows-on-Arm runners use label 'windows-11-arm'; public preview 2025-04-14, GA for public repositories 2025-08-07 at no cost. GitHub docs (2026) list windows-11-arm at 4 vCPU / 16 GB RAM / 14 GB SSD for public repos and also list it for private repos at 2 vCPU / 8 GB.",
+   "detail": "Original changelog: 'this label will not work in private repositories'. Current image (runner-images Windows11-Arm64-Readme): OS 10.0.26200 Build 9168, image 20260823.149.1, Go 1.24.13 default (cached 1.24.13, 1.25.14, 1.26.7), Python 3.13.15, PowerShell 7.6.4, VS Enterprise 2022 17.14.37614.0, Git 2.55.0, CMake 4.4.2; R is 'emulated'; the windows-11-arm label is scheduled to move to the VS 2026 image by September 2026. actions/partner-runner-images was archived 2026-06-15 (images now in actions/runner-images).",
+   "confidence": "high",
+   "source_url": "https://github.blog/changelog/2025-08-07-arm64-hosted-runners-for-public-repositories-are-now-generally-available/"
+  },
+  {
+   "claim": "Conan documented CUDA 13.4 cross-compilation to Windows Arm64: use 'conan create . --settings arch=armv8' with nvcc on the x86_64 host linking Arm64 CUDA libraries; requires Visual Studio 2022/2026 with the ARM64 MSVC toolset; llama.cpp on Windows Arm64 currently needs clang-cl.",
+   "detail": "Blog dated 2026-07-30; CMAKE_CUDA_ARCHITECTURES must be set to the target GPU architecture.",
+   "confidence": "high",
+   "source_url": "https://blog.conan.io/cuda/gpu/armv8/arm64/windows/conan/nvidia/jetson/jetpack/2026/07/30/CUDA-Meets-Windows-On-Arm64-NVIDIA-RTX-Spark.html"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Host is Windows on Arm64 (not x64) even when NVCheckup runs as an emulated x64 binary",
+   "how": "Native arm64 Go build: runtime.GOARCH == \"arm64\". x64 build: call kernel32!IsWow64Process2(GetCurrentProcess(), &procMachine, &nativeMachine); nativeMachine == IMAGE_FILE_MACHINE_ARM64 (0xAA64) means Arm64 host; procMachine != IMAGE_FILE_MACHINE_UNKNOWN means this process is emulated. Do not trust GetNativeSystemInfo or PROCESSOR_ARCHITECTURE from an emulated process (they report the emulated CPU). WMI: Win32_Processor.Architecture == 12.",
+   "exact_strings": [
+    "ARM64",
+    "IMAGE_FILE_MACHINE_ARM64",
+    "PROCESSOR_ARCHITECTURE=ARM64",
+    "PROCESSOR_ARCHITEW6432",
+    "Architecture (12)"
+   ],
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-iswow64process2"
+  },
+  {
+   "what": "GPU is an RTX Spark N1X (unified-memory integrated Blackwell GPU)",
+   "how": "Enumerate Win32_VideoController (or SetupAPI/pnputil) and match PNPDeviceID containing PCI\\VEN_10DE&DEV_2E03 (6144-core) or PCI\\VEN_10DE&DEV_2E06 (5120-core); or match Name containing 'RTX Spark'. DXGI: VendorId 0x10DE and DeviceId 0x2E03/0x2E06. Also treat DEV_2E13 ('NVIDIA Desktop Device') as a possible RTX Spark desktop SKU (unconfirmed).",
+   "exact_strings": [
+    "PCI\\VEN_10DE&DEV_2E03",
+    "PCI\\VEN_10DE&DEV_2E06",
+    "PCI\\VEN_10DE&DEV_2E13",
+    "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)",
+    "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+    "GB20B",
+    "NVIDIA NPU (Deep Learning Accelerator)"
+   ],
+   "source_url": "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/"
+  },
+  {
+   "what": "Installed NVIDIA driver is the Arm64 Developer Preview branch (R616) rather than a production driver",
+   "how": "Win32_VideoController.InfFilename / InfSection or pnputil output referencing nv_surface_woa.inf; DriverVersion in WDDM form 32.0.16.1600 -> NVIDIA 616.00 (NVIDIA version = last digit of 3rd field + 4th field, e.g. 32.0.15.5585 -> 555.85). Installer file name contains 'DeveloperPreview'. Any NVIDIA driver < 616.00 on an Arm64 host is not a public Arm64 build.",
+   "exact_strings": [
+    "nv_surface_woa.inf",
+    "616.00",
+    "32.0.16.1600",
+    "616.00_DeveloperPreview_win11_arm64_International.exe",
+    "Developer Preview"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/raw/377106"
+  },
+  {
+   "what": "GPU memory is unified (no dedicated VRAM) so VRAM-style checks must be suppressed",
+   "how": "D3D12: CreateDevice then CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1) -> UMA == TRUE (check CacheCoherentUMA too). DXGI_ADAPTER_DESC: DedicatedVideoMemory small (or 0) while SharedSystemMemory is large (~half of RAM). nvidia-smi: Memory-Usage column shows 'Not Supported' or query fields return '[N/A]'. Win32_VideoController.AdapterRAM is uint32 and unreliable (>4 GB wraps/caps); read registry HardwareInformation.qwMemorySize only as a hint.",
+   "exact_strings": [
+    "Memory-Usage: Not Supported",
+    "Not Supported",
+    "[N/A]",
+    "UMA",
+    "CacheCoherentUMA",
+    "DedicatedVideoMemory",
+    "SharedSystemMemory",
+    "HardwareInformation.MemorySize"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "Machine model / OEM identification for RTX Spark devices",
+   "how": "Win32_ComputerSystemProduct.Name / Win32_ComputerSystem.Model and Manufacturer substring match against announced products (marketing names; exact SMBIOS strings unconfirmed). Win32_Processor.Name is expected to contain 'NVIDIA' or 'N1X'/'RTX Spark' but no public dump exists; fall back to Manufacturer/Architecture==12 plus GPU DEV_2E03/2E06.",
+   "exact_strings": [
+    "Surface RTX Spark Dev Box",
+    "Surface Laptop Ultra",
+    "XPS 16 Creator Edition",
+    "ProArt P16",
+    "H7607",
+    "ProArt P14",
+    "OmniBook X 14",
+    "OmniBook Ultra 16",
+    "Yoga Pro 9n",
+    "Yoga 9n",
+    "Prestige N16 Flip AI+",
+    "EdgeMesa N AI+",
+    "NVIDIA N1X",
+    "HP 83A3"
+   ],
+   "source_url": "https://blogs.windows.com/windowsexperience/2026/05/31/introducing-a-powerful-new-chapter-for-windows-pcs-accelerated-by-nvidia-rtx-spark/"
+  },
+  {
+   "what": "CUDA toolkit on the Arm64 host is native (13.4 Developer Preview) versus an emulated x86_64 toolkit",
+   "how": "Locate nvcc via CUDA_PATH / 'where.exe nvcc'; run 'nvcc --version' and check the reported release (13.4 = first Windows Arm64 build). Inspect the PE machine type of nvcc.exe / cudart64_13.dll (IMAGE_FILE_MACHINE_ARM64 0xAA64 vs AMD64 0x8664) to distinguish native from emulated. GA 13.3 and earlier Windows toolkits are x86_64-only.",
+   "exact_strings": [
+    "Cuda compilation tools, release 13.4",
+    "CUDA_PATH",
+    "NVIDIA GPU Computing Toolkit\\CUDA\\v13.4",
+    "cuda-13-4-0-download-archive",
+    "Windows ARM64"
+   ],
+   "source_url": "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html"
+  },
+  {
+   "what": "Windows version gates for Prism, Windows ML EPs and the Arm-only 26H1 branch",
+   "how": "Win32_OperatingSystem.BuildNumber: >= 26100 required for Prism (24H2) and downloadable Windows ML EPs; 28000 = version 26H1 (device-scoped Arm release); Insider >= 29648 may expose the unified-memory 'IntelligentCarveout' setting.",
+   "exact_strings": [
+    "26100",
+    "28000",
+    "29648",
+    "26H1",
+    "IntelligentCarveout",
+    "Reserved memory for accelerators",
+    "Memory for graphics and AI acceleration"
+   ],
+   "source_url": "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
+  },
+  {
+   "what": "WSL2 CUDA availability on Arm64 Windows",
+   "how": "'wsl.exe --version' succeeds; inside WSL 'uname -m' returns aarch64 and /usr/lib/wsl/lib/nvidia-smi and libcuda.so exist (provided by the Windows driver). Flag any Linux NVIDIA driver package installed inside WSL as an error per NVIDIA guidance.",
+   "exact_strings": [
+    "aarch64",
+    "/usr/lib/wsl/lib/nvidia-smi",
+    "/usr/lib/wsl/lib/libcuda.so",
+    "users must not install any NVIDIA GPU Linux driver within WSL 2"
+   ],
+   "source_url": "https://docs.nvidia.com/cuda/wsl-user-guide/index.html"
+  },
+  {
+   "what": "Linux booted on RTX Spark hardware (unsupported configuration)",
+   "how": "lspci -nn shows [10de:2e03] or [10de:2e06]; /proc/cpuinfo has 20 cores of Cortex-X925/A725 (CPU implementer 0x41, part 0xd85 X925 / 0xd87 A725); /proc/device-tree or DMI product strings match RTX Spark OEM names. Compare against the DGX Spark reference stack (Ubuntu 24.04, kernel 6.11, R580 open driver, CUDA 13.0, sm_121).",
+   "exact_strings": [
+    "10de:2e03",
+    "10de:2e06",
+    "GB20B",
+    "sm_121",
+    "R580.GA UDA driver"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/software-requirements.html"
+  },
+  {
+   "what": "GitHub Actions CI on real Windows on Arm",
+   "how": "Use runs-on: windows-11-arm in public repos (free); the image is 10.0.26200-based with Go 1.24/1.25/1.26 cached. Note the runner has no NVIDIA GPU, so only emulation/arch-detection paths can be tested there.",
+   "exact_strings": [
+    "windows-11-arm",
+    "ubuntu-24.04-arm",
+    "ubuntu-22.04-arm",
+    "10.0.26200"
+   ],
+   "source_url": "https://github.com/actions/runner-images/blob/main/images/windows/Windows11-Arm64-Readme.md"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "RTXSPARK-PLATFORM-DETECTED",
+   "severity": "INFO",
+   "trigger": "Windows host architecture is ARM64 and a GPU with PCI VEN_10DE DEV_2E03 or DEV_2E06 is present (or Win32_VideoController.Name contains 'RTX Spark').",
+   "evidence_template": "Detected NVIDIA RTX Spark (N1X) {6144|5120}-core Blackwell RTX GPU [PCI\\VEN_10DE&DEV_{2E03|2E06}] on Windows {version} build {build} ARM64; model '{Win32_ComputerSystemProduct.Name}'; unified memory {TotalPhysicalMemory} GB shared by CPU and GPU.",
+   "why_it_matters": "Enables the unified-memory/Arm64-specific rule set and suppresses discrete-GPU assumptions (VRAM totals, x86-only CUDA paths, NVIDIA app expectations).",
+   "next_steps": [
+    "Report total system RAM as the GPU-addressable pool instead of a VRAM figure",
+    "Skip or downgrade any check that treats nvidia-smi memory.total/used as authoritative",
+    "Record the NVIDIA driver version and INF name for follow-up rules"
+   ],
+   "sources": [
+    "https://admin.pci-ids.ucw.cz/read/PC/10de/2e03",
+    "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/"
+   ]
+  },
+  {
+   "id": "RTXSPARK-NVSMI-MEMORY-NOT-SUPPORTED",
+   "severity": "INFO",
+   "trigger": "RTX Spark detected and nvidia-smi output contains 'Memory-Usage: Not Supported' / 'Not Supported' / '[N/A]' for memory fields.",
+   "evidence_template": "nvidia-smi reports GPU memory as '{Not Supported|[N/A]}'. This is expected on unified-memory NVIDIA iGPUs: 'NVIDIA-SMI only reports memory utilization when there is dedicated GPU VRAM.' System memory in use: {used}/{total} GB.",
+   "why_it_matters": "Prevents a false 'nvidia-smi broken / driver fault' diagnosis; on RTX Spark the CPU and GPU share one LPDDR5X pool, so memory must be read from the OS instead.",
+   "next_steps": [
+    "Use Task Manager / Win32_OperatingSystem (FreePhysicalMemory, TotalVisibleMemorySize) or DXGI QueryVideoMemoryInfo for memory pressure",
+    "In WSL/Linux use free -h or /proc/meminfo MemAvailable and SwapFree",
+    "Do not treat cudaMemGetInfo free as the true limit; it excludes memory reclaimable from swap"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765"
+   ]
+  },
+  {
+   "id": "RTXSPARK-DRIVER-DEVELOPER-PREVIEW",
+   "severity": "WARN",
+   "trigger": "RTX Spark detected and (driver INF is nv_surface_woa.inf, or NVIDIA driver version is 616.00, or the driver package/name contains 'DeveloperPreview'), or NVIDIA driver version < 616.00 on an ARM64 host.",
+   "evidence_template": "NVIDIA driver {version} ({inf}) is the RTX Spark Developer Preview branch (R616). NVIDIA states it is not intended for production or benchmarking; first public Arm64 GeForce driver was 616.00 (2026-07-16).",
+   "why_it_matters": "Developer-preview drivers carry documented issues (blank display ~2 min during install, PyTorch GPU timeouts/system restarts) and may lack production features (NVIDIA app, control panel, WHQL). Anything below 616.00 on Arm64 is an extracted/unofficial build.",
+   "next_steps": [
+    "Check the RTX Spark Developer Preview forum thread and NVIDIA driver downloads for a newer Arm64 release",
+    "If the device is a retail RTX Spark PC, prefer the OEM/Windows Update driver",
+    "Warn users that benchmark results on preview drivers are not publishable per NVIDIA"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/rtx-spark-developer-preview/377106",
+    "https://www.igorslab.de/en/cuda-13-4-developer-preview-nvidia-opens-development-environment-windows-on-arm-rtx-spark/"
+   ]
+  },
+  {
+   "id": "WOA-CUDA-TOOLKIT-NOT-NATIVE",
+   "severity": "WARN",
+   "trigger": "Host architecture ARM64 and a CUDA toolkit is found whose nvcc.exe / cudart DLLs are x86_64 PE images (IMAGE_FILE_MACHINE_AMD64) or whose version is <= 13.3.",
+   "evidence_template": "CUDA toolkit {version} at {CUDA_PATH} is an x86_64 build running under Prism emulation on this Arm64 host. Native Windows Arm64 CUDA first shipped in CUDA 13.4 Developer Preview (local installer 'Windows ARM64').",
+   "why_it_matters": "An emulated toolkit cannot exercise the native Arm64 CUDA runtime that RTX Spark uses; builds produced this way target x64 and CUDA-under-Prism behaviour is undocumented by NVIDIA.",
+   "next_steps": [
+    "Install CUDA Toolkit 13.4 Developer Preview (Windows ARM64) from https://developer.nvidia.com/cuda-13-4-0-download-archive",
+    "Or cross-compile Arm64 CUDA binaries from an x86_64 Windows machine using the 13.4 toolkit and the x64 cross-compilation driver",
+    "Verify with nvcc --version and by checking the PE machine type of nvcc.exe"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html",
+    "https://docs.nvidia.com/cuda/cuda-installation-guide-microsoft-windows/index.html"
+   ]
+  },
+  {
+   "id": "WOA-CUDA-134-DP-KNOWN-ISSUES",
+   "severity": "INFO",
+   "trigger": "CUDA 13.4 Developer Preview detected on Windows ARM64.",
+   "evidence_template": "CUDA 13.4 Developer Preview (Windows ARM64) detected with driver {version}. Known issues: reduced transfer performance with pageable host memory (use cudaMallocHost/page-locked), possible GPU timeouts or system restarts in PyTorch build workflows, Nsight Copilot unavailable on Windows ARM64.",
+   "why_it_matters": "Users hitting slow H2D/D2H copies or PyTorch build crashes should recognise these as documented preview limitations rather than hardware faults.",
+   "next_steps": [
+    "Use page-locked (pinned) host memory for transfers",
+    "Avoid production or certification use; monitor the RTX Spark Developer Preview thread for updates",
+    "Note the driver is not bundled with the toolkit since CUDA 13.1 on Windows"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/raw/377106",
+    "https://www.igorslab.de/en/cuda-13-4-developer-preview-cuda-windows-on-arm/"
+   ]
+  },
+  {
+   "id": "WOA-NVCHECKUP-RUNNING-EMULATED",
+   "severity": "WARN",
+   "trigger": "IsWow64Process2 reports pNativeMachine == IMAGE_FILE_MACHINE_ARM64 and pProcessMachine != IMAGE_FILE_MACHINE_UNKNOWN (NVCheckup itself is an x86/x64 binary under Prism).",
+   "evidence_template": "NVCheckup is running under Prism emulation (process machine {procMachine}, native machine ARM64). CPU/feature data from GetNativeSystemInfo and PROCESSOR_ARCHITECTURE reflect the emulated processor.",
+   "why_it_matters": "Emulated processes receive emulated CPU details, and x86 processes are subject to filesystem/registry redirection, so hardware inventory and any x64-only NVIDIA library loading may be misleading.",
+   "next_steps": [
+    "Run the native windows/arm64 NVCheckup build",
+    "Treat CPU name/feature output from this run as unreliable",
+    "Use IsWow64Process2 / GetMachineTypeAttributes results in the report header"
+   ],
+   "sources": [
+    "https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation",
+    "https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-iswow64process2"
+   ]
+  },
+  {
+   "id": "WOA-WINDOWS-BUILD-TOO-OLD",
+   "severity": "WARN",
+   "trigger": "Windows on Arm64 host with BuildNumber < 26100.",
+   "evidence_template": "Windows 11 build {build} is older than 24H2 (26100). Prism x64 emulation improvements (AVX/AVX2) and downloadable Windows ML execution providers require 24H2 or later; RTX Spark devices ship with 26H1 (28000) or newer.",
+   "why_it_matters": "x86-64 apps using AVX and Windows ML/TensorRT-RTX EP will fail or fall back on older builds.",
+   "next_steps": [
+    "Update Windows to 24H2 (build 26100) or later",
+    "Note 26H1 (build 28000) is device-scoped and not offered as an in-place update"
+   ],
+   "sources": [
+    "https://learn.microsoft.com/en-us/windows/ai/new-windows-ml/supported-execution-providers",
+    "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
+   ]
+  },
+  {
+   "id": "RTXSPARK-ADAPTERRAM-UNRELIABLE",
+   "severity": "INFO",
+   "trigger": "RTX Spark detected and Win32_VideoController.AdapterRAM is used or reports <= 4 GB / 4294967295.",
+   "evidence_template": "Win32_VideoController.AdapterRAM = {value} bytes is a uint32 field (max 4 GB) and reflects reserved/dedicated memory only; on RTX Spark the GPU can address the shared {TotalRAM} GB unified pool (Task Manager 'Shared GPU memory' default ceiling ~50% of RAM unless a carve-out is reserved).",
+   "why_it_matters": "Reporting AdapterRAM as 'VRAM' would badly understate RTX Spark's usable GPU memory and can mislead model-fit checks.",
+   "next_steps": [
+    "Report DXGI SharedSystemMemory and total physical RAM instead",
+    "Read D3D12_FEATURE_ARCHITECTURE1.UMA to label the adapter as unified memory",
+    "If Windows exposes 'Reserved memory for accelerators', report the reserved size separately"
+   ],
+   "sources": [
+    "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-videocontroller",
+    "https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/",
+    "https://www.windowslatest.com/2026/08/21/windows-11-will-let-you-decide-how-much-memory-goes-to-graphics-and-ai-on-pcs-with-unified-memory/"
+   ]
+  },
+  {
+   "id": "WOA-NVIDIA-APP-NOT-AVAILABLE",
+   "severity": "INFO",
+   "trigger": "Windows ARM64 host with NVIDIA GPU and no NVIDIA app / NVIDIA Control Panel found.",
+   "evidence_template": "NVIDIA app not found. As of 2026-09 NVIDIA's published NVIDIA app requirements list only Intel/AMD CPUs and x64 Windows; no Arm64 NVIDIA app has been announced for RTX Spark.",
+   "why_it_matters": "Avoids flagging a missing NVIDIA app as a misconfiguration on Arm64 systems.",
+   "next_steps": [
+    "Do not recommend installing the x64 NVIDIA app under emulation",
+    "Re-check NVIDIA app system requirements after RTX Spark retail launch"
+   ],
+   "sources": [
+    "https://www.nvidia.com/en-us/software/nvidia-app/system-requirements/"
+   ]
+  },
+  {
+   "id": "WOA-WSL-CUDA-CHECK",
+   "severity": "WARN",
+   "trigger": "Windows ARM64 host with RTX Spark and WSL2 installed, but /usr/lib/wsl/lib/libcuda.so or nvidia-smi is missing inside WSL, or a Linux NVIDIA driver package is installed inside the distro.",
+   "evidence_template": "WSL2 distro '{distro}' (uname -m = {arch}): libcuda.so {present|missing}; Linux NVIDIA driver packages inside WSL: {list}. CUDA in WSL is provided by the Windows driver; NVIDIA: 'users must not install any NVIDIA GPU Linux driver within WSL 2'.",
+   "why_it_matters": "The Surface RTX Spark Dev Box ships WSL2 'with GPU passthrough and CUDA support'; a stale Windows driver or an in-distro Linux driver breaks that path.",
+   "next_steps": [
+    "Update the Windows Arm64 NVIDIA driver (>= 616.00)",
+    "Remove any nvidia-driver packages installed inside the WSL distro",
+    "Confirm the distro is aarch64 and use aarch64 CUDA/PyTorch wheels (as on DGX Spark)"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/cuda/wsl-user-guide/index.html",
+    "https://blogs.windows.com/devices/2026/06/02/building-the-next-generation-of-devices-for-developers-surface-rtx-spark-dev-box/"
+   ]
+  },
+  {
+   "id": "RTXSPARK-LINUX-UNSUPPORTED",
+   "severity": "WARN",
+   "trigger": "Linux host where lspci shows 10de:2e03 or 10de:2e06 (RTX Spark N1X) rather than a DGX Spark GB10.",
+   "evidence_template": "RTX Spark N1X GPU [{pciid}] detected under Linux ({distro}, kernel {kernel}, driver {driver}). NVIDIA has not announced Linux support for RTX Spark devices; the closest supported reference is DGX Spark (Ubuntu 24.04, kernel 6.11 base, R580 driver, CUDA 13.0, sm_121).",
+   "why_it_matters": "Users may expect DGX Spark parity; drivers for laptop EC, touchpad, Wi-Fi and audio are unverified and NVIDIA diagnostics are validated only on DGX OS.",
+   "next_steps": [
+    "Treat results as best-effort; compare against DGX Spark software requirements",
+    "Expect nvidia-smi memory fields to read N/A as on GB10",
+    "Watch Phoronix / NVIDIA forums for official RTX Spark Linux enablement"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/software-requirements.html",
+    "https://www.phoronix.com/news/NVIDIA-RTX-Spark"
+   ]
+  },
+  {
+   "id": "RTXSPARK-EXPECT-SM121",
+   "severity": "INFO",
+   "trigger": "RTX Spark detected and deviceQuery / cudaGetDeviceProperties reports compute capability 12.1, or a CUDA library/app reports 'no kernel image is available for execution on the device'.",
+   "evidence_template": "GPU compute capability {major}.{minor} (sm_121, same family as DGX Spark GB10). Binaries built only for sm_120 (RTX 50 desktop) or sm_100 (B200) without PTX will fail with 'no kernel image is available'.",
+   "why_it_matters": "sm_121 is a distinct target; frameworks lacking sm_121 kernels fall back to PTX JIT or fail, a frequent DGX Spark support issue that will recur on RTX Spark.",
+   "next_steps": [
+    "Build with -gencode arch=compute_121,code=sm_121 (or include compute_120 PTX)",
+    "Prefer NVIDIA-provided aarch64/Arm64 wheels and containers validated for GB10/sm_121"
+   ],
+   "sources": [
+    "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell",
+    "https://forums.developer.nvidia.com/t/next-version-of-dgx-spark-is-here-it-is-a-notebook/371812"
+   ]
+  },
+  {
+   "id": "WOA-GAME-ANTICHEAT-NOTE",
+   "severity": "INFO",
+   "trigger": "RTX Spark detected and the user is diagnosing a game or launcher failure (e.g., anti-cheat init error) on Windows ARM64.",
+   "evidence_template": "On RTX Spark, x86/x64 games run under Prism while anti-cheat must be native Arm64. Announced native support: Easy Anti-Cheat, BattlEye (and reportedly Denuvo, Riot Vanguard for LoL/VALORANT). Titles without Arm64 anti-cheat drivers will not launch.",
+   "why_it_matters": "Kernel-mode components cannot be emulated ('Any kernel mode components must be compiled as Arm64'); this is the dominant game-compat failure mode on Windows on Arm.",
+   "next_steps": [
+    "Check the title on worksonwoa.com",
+    "Verify the game's anti-cheat vendor has shipped an Arm64 driver",
+    "Use the Xbox PC app catalog where possible"
+   ],
+   "sources": [
+    "https://blogs.windows.com/windowsexperience/2026/05/31/introducing-a-powerful-new-chapter-for-windows-pcs-accelerated-by-nvidia-rtx-spark/",
+    "https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Identify NVIDIA GPU, PCI IDs, driver version and INF on Windows (PowerShell)",
+   "command": "Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID,DriverVersion,DriverDate,InfFilename,InfSection,AdapterRAM,VideoProcessor | Format-List",
+   "notes": "Match PNPDeviceID for PCI\\VEN_10DE&DEV_2E03 / DEV_2E06; InfFilename 'nv_surface_woa.inf' = dev-preview Surface driver; DriverVersion 32.0.16.1600 corresponds to NVIDIA 616.00; AdapterRAM is uint32 and unreliable on unified memory.",
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-videocontroller"
+  },
+  {
+   "context": "Identify CPU and architecture on Windows",
+   "command": "Get-CimInstance Win32_Processor | Select-Object Name,Manufacturer,Architecture,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,ProcessorId",
+   "notes": "Architecture 12 = ARM64 (5 = ARM, 9 = x64, 0 = x86). Name comes from SMBIOS 'Processor Version'; the exact RTX Spark string is not yet public.",
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-processor"
+  },
+  {
+   "context": "Identify OEM model and Windows version",
+   "command": "Get-CimInstance Win32_ComputerSystemProduct | Select-Object Vendor,Name,Version,IdentifyingNumber; Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture,TotalVisibleMemorySize,FreePhysicalMemory",
+   "notes": "BuildNumber 26100 = 24H2, 28000 = 26H1 (Arm device-scoped release). TotalVisibleMemorySize is the unified pool size.",
+   "source_url": "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
+  },
+  {
+   "context": "Check process/host architecture and emulation from a shell",
+   "command": "echo $env:PROCESSOR_ARCHITECTURE; echo $env:PROCESSOR_ARCHITEW6432",
+   "notes": "Native Arm64 process shows ARM64. Under emulation the process sees the emulated architecture; in code prefer IsWow64Process2(hProcess,&procMachine,&nativeMachine) with nativeMachine 0xAA64 = ARM64, procMachine 0 = not emulated.",
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/winprog64/wow64-implementation-details"
+  },
+  {
+   "context": "nvidia-smi on unified-memory NVIDIA platforms",
+   "command": "nvidia-smi; nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used --format=csv",
+   "notes": "Expect 'Memory-Usage: Not Supported' in the table and '[N/A]' for memory.* query fields on GB10-class unified memory (DGX Spark documented; RTX Spark expected). Per-process memory rows may still be listed.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "Locate and validate the CUDA toolkit on Windows Arm64",
+   "command": "echo $env:CUDA_PATH; where.exe nvcc; nvcc --version",
+   "notes": "Only CUDA 13.4 Developer Preview provides a native 'Windows ARM64' local installer/zip; 13.3 GA and earlier are x86_64-only and would run under Prism. Download archive: https://developer.nvidia.com/cuda-13-4-0-download-archive",
+   "source_url": "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html"
+  },
+  {
+   "context": "Install the Arm64 developer-preview driver (developer systems only)",
+   "command": "616.00_DeveloperPreview_win11_arm64_International.exe",
+   "notes": "From https://developer.nvidia.com/downloads/assets/geforce-drivers/616.00_DeveloperPreview_win11_arm64_International.exe (forum post 2026-07-16). Known issue: display may stay blank ~2 minutes during installation. Companion x64 driver for cross-compilation: https://www.nvidia.com/en-us/drivers/details/272764/",
+   "source_url": "https://forums.developer.nvidia.com/raw/377106"
+  },
+  {
+   "context": "Cross-compile CUDA for Windows Arm64 with Conan (from x86_64 Windows)",
+   "command": "conan create . --settings arch=armv8",
+   "notes": "Uses the x86_64 nvcc from CUDA 13.4 and links Arm64 CUDA libraries; needs Visual Studio 2022/2026 with the ARM64 MSVC toolset; set CMAKE_CUDA_ARCHITECTURES to the target GPU arch.",
+   "source_url": "https://blog.conan.io/cuda/gpu/armv8/arm64/windows/conan/nvidia/jetson/jetpack/2026/07/30/CUDA-Meets-Windows-On-Arm64-NVIDIA-RTX-Spark.html"
+  },
+  {
+   "context": "Check WSL2 and CUDA inside WSL on an Arm64 host",
+   "command": "wsl.exe --version; wsl.exe -- uname -m; wsl.exe -- ls /usr/lib/wsl/lib; wsl.exe -- nvidia-smi",
+   "notes": "Expect aarch64. libcuda.so/nvidia-smi under /usr/lib/wsl/lib are injected by the Windows driver; never install a Linux NVIDIA driver inside WSL 2. WSL kernel should be 5.10.16.3 or later.",
+   "source_url": "https://docs.nvidia.com/cuda/wsl-user-guide/index.html"
+  },
+  {
+   "context": "Check GPU memory reporting via DirectX (programmatic)",
+   "command": "IDXGIAdapter::GetDesc -> DXGI_ADAPTER_DESC{DedicatedVideoMemory,SharedSystemMemory}; ID3D12Device::CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1) -> UMA, CacheCoherentUMA; IDXGIAdapter3::QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)",
+   "notes": "UMA == TRUE marks unified memory; on such adapters upload/readback heaps come from the same segment group as default heaps.",
+   "source_url": "https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_architecture"
+  },
+  {
+   "context": "Windows unified-memory reservation setting (Insider builds >= 29648)",
+   "command": "Settings > System > Advanced > 'Reserved memory for accelerators' / 'Memory for graphics and AI acceleration'",
+   "notes": "Feature 'IntelligentCarveout' (ID 61121285) in build 29648.1000 (2026-08-17, Experimental/Future Platforms). Not yet in GA builds; may change.",
+   "source_url": "https://www.windowslatest.com/2026/08/21/windows-11-will-let-you-decide-how-much-memory-goes-to-graphics-and-ai-on-pcs-with-unified-memory/"
+  },
+  {
+   "context": "Linux memory accounting on unified-memory NVIDIA systems (DGX Spark reference, applicable to RTX Spark under WSL/Linux)",
+   "command": "free -h; grep -E 'MemAvailable|SwapFree' /proc/meminfo; sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'",
+   "notes": "NVIDIA recommends MemAvailable + SwapFree instead of cudaMemGetInfo because the latter ignores reclaimable swap; drop_caches is a debug workaround.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "GitHub Actions workflow on hosted Windows on Arm",
+   "command": "runs-on: windows-11-arm",
+   "notes": "Free for public repositories (GA 2025-08-07); 4 vCPU / 16 GB / 14 GB SSD for public repos per GitHub docs (docs also list 2 vCPU / 8 GB for private). Image 10.0.26200 with Go 1.24.13 default and 1.25.14 / 1.26.7 cached; no GPU. Label moving to the VS 2026 image by September 2026.",
+   "source_url": "https://docs.github.com/en/actions/reference/runners/github-hosted-runners"
+  },
+  {
+   "context": "Build ONNX Runtime with the TensorRT RTX EP natively on Windows Arm64",
+   "command": "build.bat --use_nv_tensorrt_rtx --tensorrt_rtx_home <path> --cuda_home <path> --build_shared_lib --build_wheel",
+   "notes": "Docs cover native Windows Arm64 and cross-compile targets Arm64, Arm64EC, Arm64X; ensure an Arm64 (not emulated x86-64) Python is active. Minimum driver 555.85 for the EP on discrete RTX.",
+   "source_url": "https://onnxruntime.ai/docs/build/eps.html"
+  }
+ ],
+ "open_questions": [
+  "Exact Win32_Processor.Name / Manufacturer / SMBIOS Processor Version string on shipping RTX Spark devices (e.g., 'NVIDIA RTX Spark N1X ...') - no public dump found; only the Linux Geekbench label 'NVIDIA N1X' on an HP 83A3 dev board exists.",
+  "Whether nvidia-smi.exe ships in the 616.00 Windows Arm64 package and what it prints for Memory-Usage on RTX Spark (extrapolated from DGX Spark 'Not Supported' / '[N/A]'; not confirmed on Windows).",
+  "Official RTX Spark memory bandwidth and LPDDR5X speed (273 GB/s / 256-bit is inferred from GB10; 301 GB/s LPDDR5X-9400 appears in press without a source).",
+  "Official confirmation that the RTX Spark GPU is compute capability 12.1 (sm_121) and whether CUDA 13.4 Windows Arm64 adds any new sm_ target.",
+  "Exact memory tiers per OEM beyond ASUS (24/32/48/64/128 GB); whether 16 GB or 8 GB N1 (non-X) SKUs will ship in Windows devices and what their PCI IDs are (DEV_2E13 'NVIDIA Desktop Device' and DEV_1081 are unexplained).",
+  "Which Windows 11 version shipping RTX Spark PCs run (26H1 build 28000 vs a newer branch) and whether 26H1's device scoping formally covers N1X (Microsoft only names 'certain ARM processors').",
+  "Whether an Arm64-native NVIDIA app / NVIDIA Control Panel / GeForce overlay will exist at retail launch (current NVIDIA app requirements list no Arm64).",
+  "Whether the Windows ML NvTensorRtRtxExecutionProvider MSIX has an ARM64 build and works on RTX Spark (Microsoft's EP page lists no architecture).",
+  "Behavior of x86/x64 CUDA applications under Prism on RTX Spark (does the driver expose a CUDA path to emulated processes, and is there an x64 cudart shim?) - unverified; only a low-trust aggregator claimed a 'translation layer for x86 CUDA binaries'.",
+  "How Task Manager / DXGI report Dedicated vs Shared GPU memory on RTX Spark by default (e.g., whether DedicatedVideoMemory is 0 or a firmware carve-out) and how the 'IntelligentCarveout' reservation changes those numbers.",
+  "Official NVIDIA position on Linux for RTX Spark laptops/desktops and whether the 580-open / 590 driver series enumerates GB20B (10de:2e03/2e06).",
+  "WDDM version implemented by the 616.00 Arm64 driver (WDDM 3.2 is claimed by secondary sites without evidence) and whether it is WHQL-signed.",
+  "Whether the 616.00 developer driver installs on non-Surface Arm64 systems (Snapdragon X + discrete RTX) officially, or only via INF modification as in the RTX 4060 experiment.",
+  "Tom's Hardware / VideoCardz / TechSpot / WCCFTech / Windows Forum pages could not be fetched (HTTP 402/403); their claims are reflected only via search snippets and other outlets."
+ ],
+ "sources": [
+  "https://nvidianews.nvidia.com/news/nvidia-microsoft-windows-pcs-agents-rtx-spark",
+  "https://www.nvidia.com/en-us/products/rtx-spark/",
+  "https://www.nvidia.com/en-us/geforce/news/gfecnt/20266/computex-2026-nvidia-geforce-rtx-announcements/",
+  "https://blogs.windows.com/windowsexperience/2026/05/31/introducing-a-powerful-new-chapter-for-windows-pcs-accelerated-by-nvidia-rtx-spark/",
+  "https://blogs.windows.com/devices/2026/06/02/building-the-next-generation-of-devices-for-developers-surface-rtx-spark-dev-box/",
+  "https://www.microsoft.com/en-us/surface/devices/surface-rtx-spark-dev-box",
+  "https://www.microsoft.com/en-us/surface/devices/surface-laptop-ultra",
+  "https://forums.developer.nvidia.com/t/rtx-spark-developer-preview/377106",
+  "https://forums.developer.nvidia.com/raw/377106",
+  "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765",
+  "https://forums.developer.nvidia.com/t/next-version-of-dgx-spark-is-here-it-is-a-notebook/371812",
+  "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html",
+  "https://docs.nvidia.com/cuda/developer-preview/13.4/index.html",
+  "https://docs.nvidia.com/cuda/cuda-installation-guide-microsoft-windows/index.html",
+  "https://docs.nvidia.com/cuda/wsl-user-guide/index.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/software-requirements.html",
+  "https://admin.pci-ids.ucw.cz/read/PC/10de/2e03",
+  "https://admin.pci-ids.ucw.cz/read/PC/10de/2e06",
+  "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/",
+  "https://www.windowslatest.com/2026/07/21/developer-gets-nvidia-rtx-4060-working-on-windows-11-arm/",
+  "https://www.windowslatest.com/2026/08/21/windows-11-will-let-you-decide-how-much-memory-goes-to-graphics-and-ai-on-pcs-with-unified-memory/",
+  "https://www.windowslatest.com/2026/06/02/nvidia-reveals-if-rtx-spark-n1x-can-run-all-your-windows-11-apps/",
+  "https://www.windowslatest.com/2026/07/30/exclusive-this-is-the-first-nvidia-rtx-spark-powered-convertible-laptop-the-lenovo-yoga-9n-2-in-1/",
+  "https://www.igorslab.de/en/cuda-13-4-developer-preview-cuda-windows-on-arm/",
+  "https://www.igorslab.de/en/cuda-13-4-developer-preview-nvidia-opens-development-environment-windows-on-arm-rtx-spark/",
+  "https://blog.conan.io/cuda/gpu/armv8/arm64/windows/conan/nvidia/jetson/jetpack/2026/07/30/CUDA-Meets-Windows-On-Arm64-NVIDIA-RTX-Spark.html",
+  "https://www.tweaktown.com/news/112704/nvidia-rtx-spark-developer-preview-driver-lets-devs-get-their-apps-ready-for-the-new-windows-on-arm-devices/index.html",
+  "https://www.tweaktown.com/news/112779/nvidia-confirms-the-first-rtx-spark-laptops-and-when-they-will-release/index.html",
+  "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark",
+  "https://en.wikipedia.org/wiki/Nvidia_N1",
+  "https://en.wikipedia.org/wiki/Windows_11_version_history",
+  "https://www.cyberkendra.com/2026/05/nvidias-n1x-laptop-chip-leaks-on.html",
+  "https://www.notebookcheck.net/Nvidia-N1X-officially-confirmed-to-arrive-as-the-RTX-Spark.1312010.0.html",
+  "https://www.notebookcheck.net/Asus-ProArt-P16-launching-with-1-600-nit-Tandem-OLED-display-128-GB-RAM-and-Nvidia-RTX-Spark.1384089.0.html",
+  "https://www.notebookcheck.net/HP-unveils-world-s-thinnest-RTX-Spark-laptops-12K-video-editing-128GB-RAM-all-day-battery.1312200.0.html",
+  "https://www.notebookcheck.net/Lenovo-reveals-first-Nvidia-RTX-Spark-laptop-15-inch-screen-large-trackpad-SD-card-slot.1313464.0.html",
+  "https://www.notebookcheck.net/Dell-reveals-first-all-Nvidia-RTX-laptop-for-creators-16-inch-OLED-SD-card-reader-128GB-RAM.1312440.0.html",
+  "https://www.notebookcheck.net/Nvidia-N1X-Windows-on-Arm-chip-shows-up-on-FurMark.1071693.0.html",
+  "https://www.notebookcheck.net/Nvidia-N1X-Arm-based-chip-spotted-on-Geekbench.1033751.0.html",
+  "https://press.asus.com/news/press-releases/asus-proart-p16-p14-mini-pc-nvidia-rtx-spark-computex-2026/",
+  "https://www.dell.com/en-us/blog/dell-and-nvidia-bring-serious-performance-to-creators/",
+  "https://www.gsmarena.com/microsofts_surface_laptop_ultra_with_nvidias_rtx_spark_is_coming_this_fall-news-73066.php",
+  "https://www.heise.de/en/news/Nvidia-s-PC-processor-N1X-in-Geekbench-10440781.html",
+  "https://www.phoronix.com/news/NVIDIA-RTX-Spark",
+  "https://www.xda-developers.com/nvidia-rtx-spark-already-here-different-name-cyberpunk/",
+  "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell",
+  "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists",
+  "https://simonwillison.net/2025/Oct/14/nvidia-dgx-spark/",
+  "https://lecompute.fr/en/silicon/rtx-spark-vs-dgx-spark/",
+  "https://tech4gamers.com/nvidia-rtx-spark-x86-emulation-vs-native-arm-gaming/",
+  "https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation",
+  "https://learn.microsoft.com/en-us/windows/arm/overview",
+  "https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-iswow64process2",
+  "https://learn.microsoft.com/en-us/windows/win32/winprog64/wow64-implementation-details",
+  "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-processor",
+  "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-videocontroller",
+  "https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_architecture",
+  "https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_adapter_desc",
+  "https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiadapter3-queryvideomemoryinfo",
+  "https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/",
+  "https://learn.microsoft.com/en-us/windows/ai/new-windows-ml/supported-execution-providers",
+  "https://learn.microsoft.com/en-us/windows/ai/npu-devices/",
+  "https://learn.microsoft.com/en-us/windows/wsl/tutorials/gpu-compute",
+  "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information",
+  "https://github.com/microsoft/WindowsML/wiki/Windows-ML-Execution-Provider-Releases",
+  "https://onnxruntime.ai/docs/build/eps.html",
+  "https://onnxruntime.ai/docs/execution-providers/TensorRTRTX-ExecutionProvider.html",
+  "https://www.nvidia.com/en-us/software/nvidia-app/system-requirements/",
+  "https://github.blog/changelog/2025-04-14-windows-arm64-hosted-runners-now-available-in-public-preview/",
+  "https://github.blog/changelog/2025-08-07-arm64-hosted-runners-for-public-repositories-are-now-generally-available/",
+  "https://docs.github.com/en/actions/reference/runners/github-hosted-runners",
+  "https://github.com/actions/runner-images",
+  "https://github.com/actions/runner-images/blob/main/images/windows/Windows11-Arm64-Readme.md",
+  "https://github.com/actions/partner-runner-images",
+  "https://github.com/actions/partner-runner-images/blob/main/images/arm-windows-11-image.md"
+ ]
+}

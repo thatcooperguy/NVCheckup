@@ -1,0 +1,743 @@
+{
+ "topic": "NVIDIA-shipped diagnostics/monitoring on DGX Spark (GB10, DGX OS 7) vs Jetson vs generic aarch64+dGPU (GH200), and platform-identification heuristics for NVCheckup",
+ "facts": [
+  {
+   "claim": "DGX Dashboard is a local web app on port 11000 (localhost-only) that shows system metrics, applies OS/firmware updates, changes some settings, and launches per-user JupyterLab.",
+   "detail": "Docs: 'an overview of the system's current operational metrics, the ability to apply updates, change some system settings, and access local Jupyter Notebooks'; access URL http://localhost:11000; remote access via SSH tunnel 'ssh -L 11000:localhost:11000 <username>@<IP or spark-abcd.local>' or via NVIDIA Sync's 'DGX Dashboard' button. Per-user JupyterLab ports live in /opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml (YAML: 'users: - username: nobody / jupyterlab_port: 11001'). 'To run updates and change the device name, you must have sudo access'. The GitHub playbook says the dashboard orchestrates 'apt' updates and 'system firmware upgrades'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html"
+  },
+  {
+   "claim": "The DGX Dashboard runs as two systemd units, dgx-dashboard.service and dgx-dashboard-admin.service (unit files in /etc/systemd/system/, owned by package dgx-dashboard; binary /opt/nvidia/dgx-dashboard/dashboard-admin). Older builds were restarted as 'dgx-dashboard-service'.",
+   "detail": "Forum user pasted systemctl show output: 'Id=dgx-dashboard.service ... FragmentPath=/etc/systemd/system/dgx-dashboard.service', 'Id=dgx-dashboard-admin.service ... ExecStart={ path=/opt/nvidia/dgx-dashboard/dashboard-admin', 'dgx-dashboard: /etc/systemd/system/dgx-dashboard.service' (Aug 2026). Another thread (Jul 2026) used 'journalctl -u dgx-dashboard.service' and 'journalctl -u dgx-dashboard-admin.service'. A Nov 2025 thread used 'sudo systemctl restart dgx-dashboard-service' on the 'Oct 2025 release' living in /opt/nvidia/dgx-dashboard-service/. Package versions observed: dgx-dashboard 0.23.3 -> 0.29.1 (Aug 2026).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/issues-setup-and-update-of-new-dgx-spark/379261"
+  },
+  {
+   "claim": "The Dashboard's Updates page calls the NVIDIA OTA checker: /opt/nvidia/spark-ota-check/check_ota_status.py is-ota-available (package nvidia-spark-ota-check), which in turn runs 'fwupdmgr get-devices --json'; a stuck fwupd.service hangs the Dashboard Updates page.",
+   "detail": "Root cause thread (Jul 2026): 'Every time the Updates page is loaded ... a new instance of /opt/nvidia/spark-ota-check/check_ota_status.py is-ota-available is spawned and never exits'; '/opt/nvidia/spark-ota-check/check_firmware.py (package nvidia-spark-ota-check, version 1.0.14-1)'; 'fwupd[180179]: Failed to load daemon: failed to load engine: libfwupd version 1.9.34 does not match daemon 1.9.30'; 'fwupd.service: Main process exited, code=exited, status=1/FAILURE'. Dashboard API paths: 'GET /api/v1/ota/status', 'available', 'list'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/375537"
+  },
+  {
+   "claim": "nvidia-spark-ota-check is an NVIDIA CLI (package nvidia-spark-ota-check, 1.0.14-1 .. 1.0.16-1) that compares installed package/firmware versions against a named OTA release and reports a 'torn' score.",
+   "detail": "Usage text: 'usage: nvidia-spark-ota-check [-h] [--version] [-v] {is-ota-available,torn-score,installed-name,installed-versions,ota-versions,summary} ... Prints system component information compared to released OTA updates.' Subcommand help: 'torn-score  Prints how incomplete the current OTA update is (0 = fully applied).', 'installed-name  Prints the name of the OTA release that best matches the installed system.' Example outputs: 'sudo nvidia-spark-ota-check summary' -> 'detected_ota OTA2607, match 99.3%, total_checks 153, passed_checks 152, failed: [\"driver\"]'; 'sudo nvidia-spark-ota-check torn-score' -> '{ \"name\": \"OTA2607\", \"releaseDate\": \"2026-07-15...\", \"torn\": 1 }'; 'is-ota-available' -> '{ \"available\": false, \"name\": \"July 2026\", ... }'. OTA releases are named OTAyymm (OTA2607 = July 2026).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "claim": "DGX OS on Spark records version state in /etc/dgx-release (DGX_NAME, DGX_SWBUILD_VERSION, DGX_OTA_VERSION, DGX_OTA_DATE, DGX_SERIAL_NUMBER, DGX_PLATFORM) and the factory image in /etc/fastos-release; the apt package dgx-release carries the OTA version.",
+   "detail": "Observed Spark /etc/dgx-release: 'DGX_NAME=\"DGX Spark\"', 'DGX_PRETTY_NAME=\"NVIDIA DGX Spark\"', 'DGX_SWBUILD_DATE=\"2025-09-10-13-50-03\"', 'DGX_SWBUILD_VERSION=\"7.2.3\"', 'DGX_COMMIT_ID=\"833b4a7\"', 'DGX_PLATFORM=\"DGX Server for KVM\"', 'DGX_SERIAL_NUMBER=\"Not Specified\"' (factory) and after OTA 'DGX_OTA_VERSION=\"7.3.1\"', 'DGX_OTA_DATE=\"Wed Nov 19 08:47:00 CET 2025\"'; DGX_SERIAL_NUMBER gets populated after first OTA. /etc/fastos-release: 'NAME=\"DGX SPARK FASTOS\"', 'VERSION=\"1.91.51\"', 'BUILD_TYPE=\"customer\"'. 'apt list -a dgx-release' shows 'dgx-release/unknown,now 7.5.0 all [installed,automatic]' with older 7.4.1/7.4.0. DGX OS 7 user guide: 'DGX_OTA_VERSION' tracks 'each over-the-network update applied since the software was last installed'; view with 'more /etc/dgx-release'. Note DGX_PLATFORM literally reads 'DGX Server for KVM' on Spark (quirk).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-nvidia-driver-issue/351828"
+  },
+  {
+   "claim": "Official DGX Spark update path is the Dashboard; the documented manual equivalent is apt dist-upgrade plus fwupdmgr, and driver/firmware must stay paired to the OTA release or the GPU fails to initialize.",
+   "detail": "OS and Component Update Guide: 'The DGX Dashboard is the primary and recommended way to perform system updates on your DGX Spark.' Manual: 'sudo apt update', 'sudo apt dist-upgrade', 'sudo fwupdmgr refresh', 'sudo fwupdmgr upgrade', 'sudo reboot'. Failure case (Jul 2026): apt upgraded nvidia-driver-580-open 580.159.03 -> 580.173.02 while firmware stayed at OTA2607 (paired with 580.159.03): dmesg 'NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP! Expected function 4097 (GSP_INIT_DONE)', 'NVRM: ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out.', 'NVRM: RmInitAdapter: Cannot initialize GSP firmware RM', 'NVRM: GPU 000f:01:00.0: RmInitAdapter failed! (0x62:0x65:2028)', nvidia-smi 'No devices were found'. Fixed by re-running the Dashboard update on 2026-07-28. Driver packages: 'nvidia-driver-580-open', 'linux-modules-nvidia-580-open-6.17.0-1026-nvidia'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+  },
+  {
+   "claim": "DGX Spark has no BMC, no NVSM support, and no pre-installed DGX Diagnostics Suite (dgxdiag); the RMA pre-check tool is the separately installed dgx-spark-fieldiag package.",
+   "detail": "NVIDIA (aniculescu, 2025-12-08): 'the DGX Spark is not like our other DGX product as there is no BMC on the DGX Spark and there is no pre-installed diagnostic suite as it is not a datacenter.' User attempts: '/usr/local/nvidia/dgx/diagnostics/dgxdiag --full' -> 'No such file or directory'; 'sudo nvsm show health' -> 'ERROR:nvsm:Failed to initialize NVSM: Failed to find a matching definition file for this platform. Please toggle autogenerate_pdf flag from nvsm.config for auto generating pdf.'; 'sudo ipmitool sel list' fails because /dev/ipmi0 does not exist (ipmi modules loaded but no BMC).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/memtester-failures-and-missing-nvidia-dgx-diagnostics-suite/353950"
+  },
+  {
+   "claim": "NVIDIA Field Diagnostic for DGX Spark: package dgx-spark-fieldiag_<version>-1_arm64.deb, installed to /opt/nvidia/dgx-spark-fieldiag, run as 'sudo ./partnerdiag --field' from a TTY (init 3, Secure Boot disabled), ~30-40 min, ends with PASS/FAIL banner, logs in logs-<yyyymmdd-hhnnss>/ with summary.json.",
+   "detail": "User guide: 'Package name: dgx-spark-fieldiag_<version>-1_arm64.deb'; folder contains 'partnerdiag', 'onediagfield.rX.XXX.tgz', JSON spec files, 'UserGuide-DGX-SPARK-Fieldiag.pdf'; 'sudo apt-get install dgx-spark-fieldiag', verify 'dpkg -l | grep dgx-spark-fieldiag'; 'sudo mokutil --sb-state' (Secure Boot must be disabled), 'sudo init 3', 'cd /opt/nvidia/dgx-spark-fieldiag', 'sudo ./partnerdiag --field'; 'If field diagnostics cannot start and displays the nvidia_drm is in use message' -> 'sudo systemctl disable gdm3 --now'. Tests: GpuStress, C2CStress, CpuStress1, CpuStress2, PowerStress, ThermalStress, FioSSD, MemStress, CX7Stress (needs doca-ofed/kernel-mft-dkms). Logs: 'logs-<yyyymmdd-hhnnss>' folder with 'output.log', 'run.log', 'summary.json', per-test 'GPU<number>_<bdf>/output.log'; error code format 'XXX-YYY-Z-<12-digit Error Code>', non-zero 12 digits = error. Forum output: 'Testing PowerStress FAILED [ 8:10s ]', 'Final Result: FAIL', '\"Error Code\": \"082-000-1-020000021139\", \"ErrorType\": \"MODS\", \"Notes\": \"Acceptable temperature limits exceeded or the thermal sensor is broken or miscalibrated\"'. Versions seen: 1.0.9-1, 2.0.4-1. Support page: 'sudo dpkg -l | grep dgx-spark-fieldiag'; a FAIL result is what NVIDIA uses to approve RMA ('Since your field diagnostics returned a failure, an RMA is approved').",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/pdf/userguide-dgx-spark-fieldiag.pdf"
+  },
+  {
+   "claim": "For DGX Spark support NVIDIA asks for: nvidia-bug-report.log.gz (from nvidia-bug-report.sh, which works on aarch64 DGX OS), field-diagnostic results, kernel logs of the crash, and a support-case number; nvidia-bug-report.sh cannot run when the GPU is already crashed.",
+   "detail": "Support page: hardware tickets via nvidia.custhelp.com ('Open a new ticket'); Field Diagnostic is 'a pre-check for RMA qualification'. Staff requests observed: 'can you share a sudo nvidia-bug-report.sh log when container is using GPU' (NVES, Dec 2025); 'Collect and share an nvidia-bug-report while GPU is in a bad state' + run field diagnostics (aniculescu); Neill accepted 'nvidia-bug-report-20260812.gz (421.4 KB)' plus kernel-log txt files; kberger1 asked for an 'sos report' and reviewed 'nvidia-bug-report.log.gz' (1.4 MB); users report 'nvidia-bug-report.sh came back empty' and 'it will not run when GPU is crashed'. Forum rule: 'Please always include a copy of an nvidia-bug-report.log.gz file ... the log file will be placed in the current working directory.' Jetson's equivalent is 'sudo ./nvidia-bug-report-tegra.sh' producing a .log file.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/support.html"
+  },
+  {
+   "claim": "On GB10 nvidia-smi and NVML cannot report framebuffer memory: the Memory-Usage column shows 'Not Supported', --query-gpu=memory.* returns [N/A], nvmlDeviceGetMemoryInfo returns NVML_ERROR_NOT_SUPPORTED; NVIDIA says this is expected on the unified-memory iGPU and to use free/top/htop or the Dashboard instead.",
+   "detail": "Known Issues: 'nvidia-smi will display Memory-Usage: Not Supported even though per-process GPU memory is listed' (cause: iGPU lacking dedicated framebuffer). Exact nvidia-smi rows: 'NVIDIA-SMI 580.95.05  Driver Version: 580.95.05  CUDA Version: 13.0', '|   0  NVIDIA GB10   On  |   0000000F:01:00.0  On |   N/A |', '| N/A   38C    P8    4W /  N/A  | Not Supported   |   0%   Default |'. 'nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv' -> '[N/A], [N/A], [N/A]'. k8s-device-plugin (Oct 2025) failed with 'error getting device memory: Not Supported' (fixed in v0.17.4); DRA driver: 'error getting memory info for device 0: Not Supported' with driver 595.58.03. Also 'Power cap' shows 'N/A', Fan 'N/A', Persistence-M 'On' by default. NVES (Apr 2026): 'The DGX Spark uses a unified memory architecture, so there isn't dedicated GPU VRAM for nvidia-smi to report on.' ECC: 'ECCSupported: 0' in bug report; dmidecode 'Error Correction Type: None'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "deviceQuery on GB10 reports compute capability 12.1, 48 SMs / 6144 CUDA cores, 'Integrated GPU sharing Host Memory: Yes', and ~122,570 MB global memory (the whole unified pool minus reservations); free -h shows ~120-121 GiB total, not 128.",
+   "detail": "deviceQuery: 'Device 0: \"NVIDIA GB10\"', 'CUDA Capability Major/Minor version number: 12.1', 'Total amount of global memory: 122,570 MBytes', '(048) Multiprocessors, (128) CUDA Cores/MP: 6,144 CUDA Cores', 'Integrated GPU sharing Host Memory: Yes', 'Device supports Managed Memory: Yes', 'L2 Cache Size: 25,165,824 bytes'. free -h 'Mem: 120Gi'; other units show 'total 119/121' GiB in free -g. Known issue: cudaMemGetInfo 'doesn't account for memory reclaimable from SWAP'; workaround 'sudo sh -c \"sync; echo 3 > /proc/sys/vm/drop_caches\"'. PyTorch warning text on old wheels: 'Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)'.",
+   "confidence": "high",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "claim": "GB10 is compute capability 12.1 (sm_121); RTX PRO 6000/5000/4500/4000 Blackwell and GeForce RTX 5090/5080 are 12.0 (sm_120); GB200/B200 are 10.0 and B300 is 10.3; GH200/H100 are 9.0; Jetson T5000 (Thor) is 11.0; Jetson AGX Orin is 8.7. sm_121 compiler support arrived in CUDA 12.9; compute_120f covers both 12.0 and 12.1.",
+   "detail": "developer.nvidia.com/cuda-gpus lists 'NVIDIA GB10 (DGX Spark)' at 12.1 and 'NVIDIA RTX PRO 6000 Blackwell Workstation Edition' etc. at 12.0. CUDA 12.9 features archive: 'CUDA Toolkit 12.9 adds compiler target support for SM architecture 10.3 (sm_103, sm_103f, sm_103a) and 12.1 (sm_121)'. CUDA Programming Guide: 'compute_120f' is compatible with 12.0 and 12.1; 'compute_121f' with 12.1 only. Family blog: cubin 'will run on GPUs of that CC and any later GPU with that same major capability' (so sm_120 SASS runs on 12.1, sm_121 SASS does not run on 12.0). The 10.x and 12.x Blackwell families are not cross-compatible. A community table notes sm_121a as the arch-specific target for GB10.",
+   "confidence": "high",
+   "source_url": "https://developer.nvidia.com/cuda-gpus"
+  },
+  {
+   "claim": "DGX OS 7 on Spark = Ubuntu 24.04 aarch64 with Canonical's 'linux-nvidia' kernel flavour (uname -r like 6.14.0-1015-nvidia, 6.17.0-1014-nvidia ... 6.17.0-1029-nvidia; metapackage linux-nvidia-hwe-24.04) and the Ubuntu-packaged open driver nvidia-driver-580-open (580.95.05 -> 580.142 -> 580.159.03 -> 580.173.02). Release table (Aug 2026): DGX OS 7.5.0, driver 580.159.03, CUDA 13.0.2, kernel 6.17, UEFI 1.110.13, EC 3.5.8, USB PD 0.5.22, TPM 7.516.1, SoC 2.155.11.",
+   "detail": "Release notes table quoted; 'These release versions apply only to the DGX Spark Founders Edition. GB10-based partner systems may not receive updates at the same time.' DGX OS 7 guide: supports ARM64 'DGX GB300, GB200, and DGX Spark'. Kernel modules are 'pre-built into Ubuntu's linux-nvidia kernel flavour' (package 'linux-modules-nvidia-580-open-nvidia-hwe-24.04'); CUDA-repo drivers are pinned to -1 via '/etc/apt/preferences.d/cuda-compute-repo-lowpri*'. NVIDIA (Mar 2026): 'Driver 590 and hwe kernels are not yet supported on the Spark'. dpkg listing shows 'nvidia-firmware-580-580.173.02', 'nvidia-kernel-common-580', 'nvidia-compute-utils-580', 'nvidia-persistenced'. Earlier OS builds used 6.14 HWE kernel; kernel name 6.11.0-1014-nvidia also seen in linux-tools.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "claim": "DGX OS on Spark ships a distinctive set of NVIDIA platform packages/services absent from stock Ubuntu: nvidia-system-core/-utils/-extra/-station, dgx-spark-ota-update-meta, nvidia-spark-ota-check, nvidia-spark-mlnx-firmware-manager, nvidia-dgx-telemetry, dgx-dashboard, dgx-oobe, dgx-oobe-desktop, dgx-spark-mlnx-hotplug, dgx-spark-oobe-customize, dgx-repo, nvidia-crashdump, nvidia-grub-params, nvidia-cppc-cpufreq-options, nvidia-disable-numa-balancing, nvidia-enable-power-meter-cap, nvidia-drm-options-modeset0, nvidia-ai-workbench, nvidia-container-toolkit.",
+   "detail": "dpkg -l excerpt (Aug 2026): 'ii nvidia-dgx-telemetry 7.3 arm64 NVIDIA DGX Telemetry Services', 'ii nvidia-spark-ota-check 1.0.16-1 arm64 NVIDIA Spark OTA Update Checker', 'ii nvidia-spark-mlnx-firmware-manager 5.0.8-1 arm64 NVIDIA Spark Mellanox Firmware Update Service', 'ii nvidia-crashdump 25.08-1 all NVIDIA crash dump policy', 'ii nvidia-grub-params 25.10-1 all Provides the /usr/share/nvidia/grub-params.json file', 'ii nvidia-enable-bt-profiles 26.03-1 all Enable BT profiles for Spark', 'ii nvidia-disable-numa-balancing 24.10-2 all', 'ii linux-nvidia-hwe-24.04 6.17.0-1029.29 arm64 Complete NVIDIA Linux kernel and headers'. Spark metapackages reinstall line: 'nvidia-system-core nvidia-system-utils nvidia-system-extra nvidia-system-station dgx-spark-ota-update-meta nvidia-spark-ota-check nvidia-spark-mlnx-firmware-manager nvidia-mlnx-tools'. Telemetry journal lines: 'nvidia-dgx-telemetry[2169]: Cached Localized EventsURL: https://events.telemetry.data.nvidia.com/v1.1/events/json'. Repo tgz for stock Ubuntu: 'https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/dgx-repo-files.tgz'; Spark apt source file 'dgx.sources' in /etc/apt/sources.list.d/.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/378945"
+  },
+  {
+   "claim": "DMI identifies a Founders Edition DGX Spark as Manufacturer 'NVIDIA', Product Name 'NVIDIA_DGX_Spark', Version 'A.7', BIOS vendor AMI with versions like '5.36_0ACUM018' / '5.36_0ACUM023'; OEM GB10 boxes carry their own DMI strings (ASUS 'GX10DGX...' BIOS, HP 'HP ZGX Nano G1n AI Station', Lenovo '30KL0004FC' / 'ThinkStation PGX', Dell Pro Max, MSI EdgeXpert, Acer GN100) but all share Version 'A.7' and the same GB10 GPU.",
+   "detail": "'sudo dmidecode -t system | grep -A3 \"System Information\"' -> 'Manufacturer: NVIDIA / Product Name: NVIDIA_DGX_Spark / Version: A.7' (FE) vs 'Manufacturer: HP / Product Name: HP ZGX Nano G1n AI Station / Version: A.7' and 'Manufacturer: LENOVO / Product Name: 30KL0004FC / Version: ThinkStation PGX'. 'sudo dmidecode -s bios-version' -> '5.36_0ACUM018' (FE) or 'GX10DGX.0102.2025.1111.1531' (ASUS Ascent GX10). NVIDIA says the AMI BIOS string is 'a little stale, but only updated as part of the SoC FW'. Memory device: 'Memory Type: LPDDR5', 'Error Correction Type: None', total 128 GB. fwupdmgr get-devices GUIDs on FE: Embedded Controller '3d13c989-e6a8-4ead-95ee-921f09868f65', SoC UEFI 'b488217b-3895-4fc0-b1bf-ab7005a2d45a', USB-PD 'dd1a238a-5f8e-46bd-9401-a88da99c5a96'. OEM hostnames differ: FE 'spark-XXXX', ASUS 'gx10-4323', HP 'zgx-spark'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/363849"
+  },
+  {
+   "claim": "GB10's GPU is PCI device 10de:2e12 at BDF 000f:01:00.0 ('NVIDIA Corporation Device 2e12 (rev a1)'); the CPU is 20 cores (10 Cortex-X925 + 10 Cortex-A725), scaling driver cppc_cpufreq; ConnectX-7 is 'Mellanox Technologies MT2910 Family [ConnectX-7]'.",
+   "detail": "lspci: '000f:01:00.0 VGA compatible controller: NVIDIA Corporation Device 2e12 (rev a1)', '0000:01:00.0 Ethernet controller: Mellanox Technologies MT2910 Family [ConnectX-7]', '0007:01:00.0 Ethernet controller: Realtek ... Device 8127', '0009:01:00.0 Network controller: MEDIATEK Corp. Device 7925', NVMe 'Phison ... PS5027-E27T'. Hardware page: '20-core Arm processor (10 Cortex-X925 + 10 Cortex-A725)', '128 GB LPDDR5x unified system memory, 256-bit interface, 4266 MHz, 273 GB/s bandwidth', '240W external power supply', GB10 TDP 140 W. 'cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver' -> 'cppc_cpufreq'. Kernel boot line shows MIDR '[0x410fd871]'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-variant-oem-hardware-information/352023"
+  },
+  {
+   "claim": "GH200 (Grace Hopper) is the confusable sibling: aarch64 + unified/coherent memory but a discrete Hopper GPU with real HBM, so nvidia-smi shows 'NVIDIA GH200 480GB' with '97871MiB' total memory, Product Architecture 'Hopper', CC 9.0, and lscpu shows 72 CPUs / 1 socket / 'NUMA node(s): 9'.",
+   "detail": "Grace tuning guide: 'sudo ipmitool fru print' -> GH200 'FRU Device Description : PG530', 'Product Name : GH200 480GB'; C2 Grace CPU superchip 'Product Name : C2' with 144 CPUs/2 sockets and 'NUMA node(s): 2'; GB200 'Product Name : GB200 1CPU:2GPU Board PC' with 'NUMA node(s): 34'. lscpu: 'Architecture: aarch64', 'Vendor ID: ARM'. nvidia-smi rows: 'NVIDIA GH200 480GB  On | 00000009:01:00.0 Off | 0' and '1MiB / 97871MiB' with driver 555.42.06 / CUDA 12.4; kernel package 'linux-nvidia-64k-hwe-22.04'. GH200 has ECC and a BMC (ipmitool works) unlike Spark.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dccpu/grace-perf-tuning-guide/system.html"
+  },
+  {
+   "claim": "Jetson (L4T/JetPack) identifies via device-tree and L4T files, not DMI: /etc/nv_tegra_release ('# R<rel> (release), REVISION: <rev>, GCID: ..., BOARD: ...'), /sys/firmware/devicetree/base/model, /proc/device-tree/compatible, /proc/device-tree/nvidia,dtsfilename, /proc/device-tree/nvidia,boardids, /sys/firmware/devicetree/base/serial-number, and the nvidia-l4t-core package version; classic Jetsons (Orin and older) have tegrastats but no nvidia-smi.",
+   "detail": "jetson_stats jetson_variables.py: RAW_FILES = ['/etc/nv_tegra_release','/sys/firmware/devicetree/base/model','/proc/device-tree/nvidia,boardids','/proc/device-tree/compatible','/proc/device-tree/nvidia,dtsfilename']; parser: 'nv_tegra_release = cat(\"/etc/nv_tegra_release\").split(\", \")', 'l4t_release = nv_tegra_release[0].lstrip(\"# R\").rstrip(\" (release)\")', 'l4t_revision = nv_tegra_release[1].lstrip(\"REVISION: \")'; fallback 'dpkg-query --showformat=${Version} --show nvidia-l4t-core'; regex DPKG_L4T_CORE_RE '^nvidia-l4t-core.*install$'; SoC->CC table tegra264 11.0 (Thor), tegra234 8.7 (Orin), tegra194 7.2, tegra186 6.2, tegra210 5.3. Forum: '/etc/nv_tegra_release' example 'BOARD: t186ref', kernel '5.10.65-tegra'; 'nvidia-smi is not there' on Jetson Nano; Jetson bug reports use 'sudo ./nvidia-bug-report-tegra.sh'. tegrastats output sample (Orin): 'GR3D_FREQ 45%@114'.",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/rbonghi/jetson_stats/master/jtop/core/jetson_variables.py"
+  },
+  {
+   "claim": "Jetson AGX Thor (JetPack 7.x, Jetson Linux R38.x/R39.x) breaks the old Jetson heuristic: it is SBSA-aligned, uses the OpenRM (open kernel module) driver, and DOES ship nvidia-smi (driver e.g. 595.78 reported by nvidia-smi), while tegrastats no longer prints GPU utilization ('GR3D_FREQ @[314,314,314]').",
+   "detail": "NVIDIA (DaneLLL, 2025-10-13): 'Ob AGX Thor Jetpack 7, the GPU driver is openrm, so please run the command to check loading: $ watch -n 1 nvidia-smi ... $ sudo tegrastats shows only frequencie of GPU engines.' 'thor is using nvidia-ml-py'. JetPack 7.0 = 'Jetson Linux 38.2 with Linux Kernel 6.8 and Ubuntu 24.04 LTS', CUDA 13, 'aligns with the Server Base System Architecture (SBSA)', 'sudo ./apply_binaries.sh --openrm'. Bug report header (Aug 2026): 'JetPack Version: 7.2 GA (L4T R39.2)', 'NVIDIA GPU Driver Version: 595.78 (as reported by nvidia-smi)'. Thor tegrastats sample: 'RAM 2028/125772MB (lfb 4x4MB) CPU[0%@972,...] EMC_FREQ 0%@665 GR3D_FREQ @[0,0,0]'. Thor still has /etc/nv_tegra_release and device-tree model (jetson_stats supports Thor), so Jetson = 'device-tree/L4T files present', not 'nvidia-smi absent'.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/missing-gpu-utilization-gr3d-in-tegrastats-on-jetpack-7-0-thor/347333"
+  },
+  {
+   "claim": "DCGM has no explicit GB10/DGX Spark entry in its changelog; it installs on Spark (package datacenter-gpu-manager-4-cuda13, DGX OS has it 'already enabled' per a third-party guide) but memory-related fields inherit the NVML 'Not Supported' behavior. The DGX Spark FAQ #7 explains the memory display.",
+   "detail": "DCGM changelog (through 4.6.1) mentions Blackwell RTX PRO 5000/6000 and GB300 but 'no mentions' of GB10/DGX Spark/unified memory. Techno Tim's stock-Ubuntu-on-GB10 guide installs 'datacenter-gpu-manager-4-cuda13' and says DGX OS provides 'persistence daemon and DCGM already enabled'. k8s-device-plugin v0.17.4 changelog item: NVML error handling for memory queries (GB10 issue #1482). No NVIDIA statement on official DCGM/dcgm-exporter support for GB10 was found.",
+   "confidence": "low",
+   "source_url": "https://docs.nvidia.com/datacenter/dcgm/latest/release-notes/changelog.html"
+  },
+  {
+   "claim": "Nsight Systems and Nsight Compute run on DGX Spark (Blackwell support since Nsight Compute 2024.4/2025.3) but Nsight Systems Unified Memory tracing is not supported on GB10; NVIDIA said UVM profiling 'is currently being worked on'.",
+   "detail": "Nsight Systems 2026.1.1 on GB10 (driver 580.95.05, CUDA 13.1): 'CUDA device 0: Unified Memory trace is not supported by the current driver version or configuration.' NVIDIA (aniculescu, 2026-02-04): 'UVM profiling is not supported on Spark but is currently being worked on for a future release'. Flags that did not help: '--cuda-um-cpu-page-faults=true', '--cuda-um-gpu-page-faults=true'. DGX Spark 'NVIDIA Nsight' page lists Nsight Systems, Compute, Graphics, DL Designer and points to developer downloads (nothing pre-installed is documented). Nsight Compute release notes: '2025.3 Added or improved support for Blackwell chips', '2025.4 Added support for collecting C2C link information on Blackwell GPUs'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nsight-systems-unified-memory-trace-support-for-gb10-sm121/357848"
+  },
+  {
+   "claim": "nvidia-persistenced runs by default on DGX OS Spark (nvidia-smi shows 'Persistence-M: On'); NVIDIA's documented GPU-reset procedure is to stop it first, then 'nvidia-smi -r -i 0'. Failure signature when the driver cannot attach: 'nvidia-persistenced: Failed to query NVIDIA devices. Please ensure that the NVIDIA device files (/dev/nvidia*) exist'.",
+   "detail": "aniculescu (Dec 2025): 'To reset the GPU, stop any GPU processes and services ex. sudo systemctl stop nvidia-persistenced and then run sudo nvidia-smi -r -i 0'. Community clock-cap fix relies on it: 'DGX Spark OS runs nvidia-persistenced by default' and systemd unit declares After=/Wants= nvidia-persistenced; commands 'sudo nvidia-smi -lgc 300,2200', 'nvidia-smi -q -d CLOCK', 'sudo nvidia-smi -rgc'. Fabric Manager is NOT needed on Spark ('DGX Spark does not have an NVSwitch').",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/354395"
+  },
+  {
+   "claim": "Common GB10 GPU/firmware failure strings NVCheckup can match: GSP init timeouts (Xid 119/120), 'GPU requires reset' in nvidia-smi, sentinel register reads 0xbadf5600, log-less hard power-offs, and RCU stalls with a taint value of 4097.",
+   "detail": "'NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!'; 'Xid (PCI:000f:01:00): 120, pid=2702, name=Xorg, GSP task exception: supervisor timer interrupt (cause:0x8000000000000005)'; 'NVRM: kgspHealthCheck_TU102: ****'; 'NVRM: nvAssertFailedNoLog: Assertion failed: (status == NV_OK) || (status == NV_ERR_GPU_IN_FULLCHIP_RESET) @ gpu_user_shared_data.c:373'; 'NVRM: gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x611ef0, regvalue: 0xbadf5600'; nvidia-smi fields 'GPU requires reset' (Product Brand, Serial Number, Board Part Number, GPU C2C Mode), Fan 'ERR!'; docker 'nvidia-container-cli: detection error: nvml error: gpu requires reset'. Hard power-off: 'no shutdown records — every boot ends still running', 'No OOM-killer output, no kernel panic, no hung-task, no MCE, no Xid, no thermal throttle', '/sys/fs/pstore is empty'. RCU-stall thread: kdump effectively unsupported (crashkernel default '1G-:0M'), sbsa_gwdt blacklisted in '/etc/modprobe.d/blacklist-watchdog.conf', pstore recipe 'crash_kexec_post_notifiers=1 pstore.kmsg_bytes=65536', output '/var/lib/systemd/pstore/*/001/dmesg-efi_pstore-*'. Fix for post-firmware GSP corruption: full AC unplug 30+ s, not warm reboot. Benign boot warning: 'Detected insufficient power on the PCIe slot (27W)' for ConnectX-7 ('benign', aniculescu Aug 2026).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/gb10-spontaneous-reboots-after-july-2026-update-gsp-health-check-fail-nvrm-assert-flood-gpu-user-shared-data-c-373/379959"
+  },
+  {
+   "claim": "NVIDIA Sync is a laptop-side tray utility (Windows/macOS/Ubuntu; Ubuntu package 'nvidia-sync') that manages SSH, key-based auth and port-forwarding to a Spark discovered by mDNS as spark-XXXX.local; it installs no documented agent on the Spark and only needs hostname + username/password, plus optional Tailscale and a Cluster Assistant for ConnectX-7 clustering.",
+   "detail": "Docs: 'A utility for Windows, macOS, and Ubuntu that streamlines access to your DGX Spark', handles 'SSH connections, port forwarding, and tunnels in the background'; needs 'only the hostname on your network plus your username and password for the device'; Ubuntu install 'sudo apt install nvidia-sync'; playbook: 'NVIDIA Sync should detect your Spark (e.g. spark-abcd.local)', 'The password is used to configure SSH key-based authentication only when you add the device.' Rollback: edit '~/.ssh/authorized_keys' on the Spark. Download: https://build.nvidia.com/spark/connect-to-your-spark/sync.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-sync.html"
+  },
+  {
+   "claim": "NVIDIA publishes an 'Enterprise Lifecycle Integration Scripts' package for Spark fleets with JSON-emitting inventory/diag tools (device_identity.py, hardware_config.py, firmware_reporter.py, os_build_identity.py, driver_inventory_reporter.py, spark_updatectl.py, spark_diagctl.py, reset_reason_reporter.py) installed under /usr/local/bin/dgx-mgmt/ with logs in /var/log/dgx_spark/ and state in /var/lib/dgx_spark_management/.",
+   "detail": "Fleet doc: tools 'emit exactly one bounded JSON document on stdout per invocation' with envelope 'tool, ts, host, status, rc, duration_ms, summary, warnings, artifacts'; runtime outputs '/var/lib/dgx_spark_management/{functional_area}/{tool_name}/'; production logs '/var/log/dgx_spark/{functional_area}/{tool_name}/'; 'spark_diagctl.py — Health posture and diagnostics bundle generation'; Landscape scripts 'landscape_collect_package.sh — Support bundle collection'. These are opt-in (ZIP download), not preinstalled.",
+   "confidence": "medium",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/enterprise-fleet-lifecycle.html"
+  },
+  {
+   "claim": "RTX Spark (N1X/N1) is the Windows-on-Arm sibling announced 2026-05-31 (NVIDIA + Microsoft, GTC Taipei/Computex), shipping fall 2026 from Microsoft Surface, ASUS, Dell, HP, Lenovo, MSI (Acer, Gigabyte later): 20-core Grace CPU + Blackwell RTX GPU with 6,144 CUDA cores (N1X) and up to 128 GB unified memory; Windows driver INF (616.00 dev preview, Jul 2026) names 'NVIDIA RTX Spark N1X' with PCI IDs 2E03 (6144-core) and 2E06 (5120-core).",
+   "detail": "Wikipedia: 'Nvidia and Microsoft announced RTX Spark on May 31, 2026'; 'a 20-core Nvidia Grace CPU with a Blackwell RTX GPU containing 6,144 CUDA cores'; 'up to 128 GB of unified memory'; RTX Spark is 'Windows-oriented' vs DGX Spark on DGX OS. Windows Latest: INF entries 'NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)' / 'NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)', device IDs 'NVIDIA_DEV.2E03.0109.1414', 'NVIDIA_DEV.2E06.0109.1414', 'NVIDIA_DEV.2E06.0110.1414', driver 'Version 616.00', 'native Windows 11 Arm64 package', includes DLA NPU entries. Compute capability not published; N1X GPU IDs 2E0x are adjacent to GB10's 2E12 (same 2Exx family).",
+   "confidence": "medium",
+   "source_url": "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Detect DGX OS (NVIDIA's Ubuntu spin) on any DGX including Spark",
+   "how": "Stat /etc/dgx-release; parse KEY=\"value\" lines. DGX_NAME=\"DGX Spark\" => DGX Spark on DGX OS. Also check dpkg for package 'dgx-release' (version = OTA level, e.g. 7.5.0) and /etc/fastos-release (factory image). Absence of /etc/dgx-release on a GB10 => stock Ubuntu / OEM image (e.g. Ubuntu Server per Techno Tim) and Dashboard/OTA tooling will be missing.",
+   "exact_strings": [
+    "DGX_NAME=\"DGX Spark\"",
+    "DGX_PRETTY_NAME=\"NVIDIA DGX Spark\"",
+    "DGX_SWBUILD_VERSION=\"7.2.3\"",
+    "DGX_OTA_VERSION=\"7.3.1\"",
+    "DGX_OTA_DATE=",
+    "DGX_SERIAL_NUMBER=\"Not Specified\"",
+    "DGX_PLATFORM=\"DGX Server for KVM\"",
+    "NAME=\"DGX SPARK FASTOS\"",
+    "dgx-release/unknown,now 7.5.0 all [installed,automatic]"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-nvidia-driver-issue/351828"
+  },
+  {
+   "what": "Detect GB10 hardware regardless of OS (FE or OEM variant)",
+   "how": "Read /sys/class/dmi/id/{sys_vendor,product_name,product_version,bios_version}. FE: sys_vendor 'NVIDIA', product_name 'NVIDIA_DGX_Spark', product_version 'A.7'. OEM GB10: vendor HP/LENOVO/ASUS/Dell/MSI/Acer with product_version 'A.7' (HP, NVIDIA) or model strings ('HP ZGX Nano G1n AI Station', '30KL0004FC'/'ThinkStation PGX', ASUS BIOS 'GX10DGX.*'). Cross-check lspci for NVIDIA device 10de:2e12 at 000f:01:00.0 and nvidia-smi name 'NVIDIA GB10'. Jetson has no DMI at all (/sys/class/dmi/id absent) so DMI presence alone separates Spark from Jetson.",
+   "exact_strings": [
+    "Manufacturer: NVIDIA",
+    "Product Name: NVIDIA_DGX_Spark",
+    "Version: A.7",
+    "5.36_0ACUM018",
+    "5.36_0ACUM023",
+    "GX10DGX.0102.2025.1111.1531",
+    "Product Name: HP ZGX Nano G1n AI Station",
+    "Product Name: 30KL0004FC",
+    "Version: ThinkStation PGX",
+    "000f:01:00.0 VGA compatible controller: NVIDIA Corporation Device 2e12 (rev a1)",
+    "0000:01:00.0 Ethernet controller: Mellanox Technologies MT2910 Family [ConnectX-7]"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/363849"
+  },
+  {
+   "what": "Detect GB10 from nvidia-smi / NVML and tell it apart from GH200 and discrete GPUs",
+   "how": "nvidia-smi --query-gpu=name,memory.total,compute_cap,pci.bus_id: GB10 => name 'NVIDIA GB10', memory.total '[N/A]', compute_cap 12.1, bus id 0000000F:01:00.0; table view shows 'Not Supported' in the Memory-Usage cell and 'N/A' power cap. GH200 => name 'NVIDIA GH200 480GB', memory.total ~97871 MiB, compute_cap 9.0, NUMA node(s) 9 in lscpu. Discrete Blackwell workstation (RTX PRO 6000 etc.) => compute_cap 12.0 with real memory. Via NVML: nvmlDeviceGetMemoryInfo returning NVML_ERROR_NOT_SUPPORTED while nvmlDeviceGetName succeeds is the GB10 signature; via CUDA: cudaDeviceProp.integrated==1 && major==12 && minor==1.",
+   "exact_strings": [
+    "NVIDIA GB10",
+    "Not Supported",
+    "[N/A], [N/A], [N/A]",
+    "memory.total [MiB], memory.used [MiB], memory.free [MiB]",
+    "0000000F:01:00.0",
+    "NVIDIA GH200 480GB",
+    "97871MiB",
+    "Integrated GPU sharing Host Memory: Yes",
+    "CUDA Capability Major/Minor version number: 12.1",
+    "NVML_ERROR_NOT_SUPPORTED",
+    "error getting device memory: Not Supported",
+    "error getting memory info for device 0: Not Supported"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322"
+  },
+  {
+   "what": "Detect Jetson (L4T) vs Spark vs generic aarch64",
+   "how": "Jetson: /etc/nv_tegra_release exists OR dpkg has nvidia-l4t-core OR /proc/device-tree/compatible contains 'nvidia,tegra' / model starts 'NVIDIA Jetson'; kernel version string contains '-tegra' (older) ; uses tegrastats and nvidia-bug-report-tegra.sh. Do NOT use 'nvidia-smi missing' as the Jetson test: Thor/JetPack 7 has nvidia-smi (openrm). Spark: DMI present, kernel '-nvidia' flavour, /etc/dgx-release. Generic aarch64 server (GH200/Grace): DMI present, BMC/ipmitool works, no /etc/dgx-release unless DGX GB200/GB300, lscpu NUMA node(s) 9 (GH200) or 2 (C2).",
+   "exact_strings": [
+    "/etc/nv_tegra_release",
+    "# R",
+    "(release), REVISION:",
+    "GCID:",
+    "BOARD: t186ref",
+    "nvidia-l4t-core",
+    "/sys/firmware/devicetree/base/model",
+    "/proc/device-tree/nvidia,dtsfilename",
+    "/proc/device-tree/nvidia,boardids",
+    "/sys/firmware/devicetree/base/serial-number",
+    "5.10.65-tegra",
+    "GR3D_FREQ 45%@114",
+    "GR3D_FREQ @[314,314,314]",
+    "nvidia-bug-report-tegra.sh"
+   ],
+   "source_url": "https://raw.githubusercontent.com/rbonghi/jetson_stats/master/jtop/core/jetson_variables.py"
+  },
+  {
+   "what": "Detect DGX OS Spark kernel/driver packaging (Ubuntu linux-nvidia flavour + Ubuntu-packaged open driver) vs NVIDIA .run / CUDA-repo driver",
+   "how": "uname -r matches /^\\d+\\.\\d+\\.\\d+-\\d+-nvidia$/ (e.g. 6.17.0-1029-nvidia). dpkg: nvidia-driver-580-open version suffix '-0ubuntu0.24.04.N' (Ubuntu restricted pocket), linux-modules-nvidia-580-open-nvidia-hwe-24.04, linux-nvidia-hwe-24.04, and pin file /etc/apt/preferences.d/cuda-compute-repo-lowpri*. A driver version not matching the OTA-paired driver (e.g. 580.173.02 on OTA2607 which pairs 580.159.03) is a 'torn' update; confirm with nvidia-spark-ota-check if present.",
+   "exact_strings": [
+    "6.17.0-1014-nvidia",
+    "6.17.0-1021-nvidia",
+    "6.17.0-1026-nvidia",
+    "6.17.0-1029-nvidia",
+    "6.14.0-1015-nvidia",
+    "nvidia-driver-580-open",
+    "580.159.03-0ubuntu0.24.04.1",
+    "580.173.02-0ubuntu0.24.04.1",
+    "linux-modules-nvidia-580-open-nvidia-hwe-24.04",
+    "linux-nvidia-hwe-24.04",
+    "/etc/apt/preferences.d/cuda-compute-repo-lowpri",
+    "Driver 590 and hwe kernels are not yet supported on the Spark"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/upgrading-the-gpu-driver-from-580-to-590-on-dgx-spark-using-cli/363299"
+  },
+  {
+   "what": "Detect NVIDIA-shipped Spark tooling presence/health (what NVCheckup should complement, not duplicate)",
+   "how": "systemctl is-active dgx-dashboard.service dgx-dashboard-admin.service nvidia-persistenced fwupd.service nvidia-dgx-telemetry(if unit exists); test TCP 127.0.0.1:11000; stat /opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml, /opt/nvidia/spark-ota-check/check_ota_status.py, /opt/nvidia/dgx-spark-fieldiag/partnerdiag; which nvidia-spark-ota-check nvidia-bug-report.sh fwupdmgr; dpkg -l dgx-dashboard dgx-spark-ota-update-meta nvidia-spark-ota-check nvidia-dgx-telemetry nvidia-system-core dgx-spark-fieldiag. NVSM/dgxdiag are expected to be ABSENT on Spark (do not flag as missing).",
+   "exact_strings": [
+    "dgx-dashboard.service",
+    "dgx-dashboard-admin.service",
+    "/etc/systemd/system/dgx-dashboard.service",
+    "/opt/nvidia/dgx-dashboard/dashboard-admin",
+    "/opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml",
+    "http://localhost:11000",
+    "/opt/nvidia/spark-ota-check/check_ota_status.py",
+    "/opt/nvidia/spark-ota-check/check_firmware.py",
+    "/opt/nvidia/dgx-spark-fieldiag",
+    "partnerdiag",
+    "dgx-spark-ota-update-meta",
+    "nvidia-spark-ota-check",
+    "nvidia-dgx-telemetry",
+    "nvidia-spark-mlnx-firmware-manager",
+    "nvidia-system-core",
+    "ERROR:nvsm:Failed to initialize NVSM: Failed to find a matching definition file for this platform",
+    "/usr/local/nvidia/dgx/diagnostics/dgxdiag"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/issues-setup-and-update-of-new-dgx-spark/379261"
+  },
+  {
+   "what": "Detect torn OTA (firmware/driver pairing) and GSP boot failure on GB10",
+   "how": "If nvidia-smi prints 'No devices were found' on a GB10, grep journalctl -k for GSP/SEC2 strings below; run 'sudo nvidia-spark-ota-check summary' and parse 'failed: [...]' and 'torn-score' JSON 'torn' > 0. Recommend re-running the Dashboard update (which restores the paired driver) and a full AC unplug after firmware capsules.",
+   "exact_strings": [
+    "No devices were found",
+    "NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP! Expected function 4097 (GSP_INIT_DONE)",
+    "NVRM: ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out.",
+    "NVRM: RmInitAdapter: Cannot initialize GSP firmware RM",
+    "RmInitAdapter failed! (0x62:0x65:2028)",
+    "detected_ota OTA2607, match 99.3%, total_checks 153, passed_checks 152, failed: [\"driver\"]",
+    "\"torn\": 1",
+    "\"torn\": 0",
+    "nvidia-persistenced: Failed to query NVIDIA devices. Please ensure that the NVIDIA device files (/dev/nvidia*) exist"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "what": "Detect GPU-in-bad-state / hardware fault signatures on GB10 that warrant fieldiag + RMA",
+   "how": "Parse nvidia-smi -q for 'GPU requires reset' values; dmesg for 0xbadf5600 register reads, Xid 120 GSP task exception, kgspHealthCheck lines, nvAssertFailedNoLog gpu_user_shared_data.c:373; docker 'nvml error: gpu requires reset'. Parse fieldiag logs-*/summary.json for non-zero 12-digit codes and MODS thermal code 020000600139 / 020000021139.",
+   "exact_strings": [
+    "GPU requires reset",
+    "ERR!",
+    "NVRM: gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x611ef0, regvalue: 0xbadf5600",
+    "Xid (PCI:000f:01:00): 120",
+    "GSP task exception: supervisor timer interrupt (cause:0x8000000000000005)",
+    "NVRM: kgspHealthCheck_TU102:",
+    "NVRM: nvAssertFailedNoLog: Assertion failed: (status == NV_OK) || (status == NV_ERR_GPU_IN_FULLCHIP_RESET) @ gpu_user_shared_data.c:373",
+    "nvidia-container-cli: detection error: nvml error: gpu requires reset",
+    "Final Result: FAIL",
+    "Testing PowerStress FAILED",
+    "082-000-1-020000021139",
+    "MODS-020000600139",
+    "Acceptable temperature limits exceeded or the thermal sensor is broken or miscalibrated",
+    "summary.json"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499"
+  },
+  {
+   "what": "Detect sm_120 vs sm_121 build mismatches (wheels/containers without sm_121 kernels) on GB10",
+   "how": "Query compute capability (12.1) then check torch.cuda.get_arch_list() / cuobjdump / nvcc -arch for 'sm_121' or 'compute_120f'/'compute_121f' PTX. A wheel built only for sm_120 SASS still runs on 12.1 (same major, lower minor), but a wheel whose max CC is 12.0 with no PTX will emit the PyTorch warning below; CUDA 12.x wheels (cu126/cu128) predate sm_121 support (added in 12.9) so flag any torch built for CUDA < 12.9 on GB10.",
+   "exact_strings": [
+    "Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)",
+    "sm_121",
+    "sm_121a",
+    "compute_120f",
+    "compute_121f",
+    "NVIDIA GB10 (DGX Spark)",
+    "CUDA Toolkit 12.9 adds compiler target support for SM architecture 10.3 (sm_103, sm_103f, sm_103a) and 12.1 (sm_121)"
+   ],
+   "source_url": "https://docs.ultralytics.com/guides/nvidia-dgx-spark"
+  },
+  {
+   "what": "Detect RTX Spark (N1X) on Windows on Arm",
+   "how": "On Windows aarch64 (PROCESSOR_ARCHITECTURE=ARM64), enumerate display adapters: PCI VEN_10DE&DEV_2E03 or DEV_2E06 => 'NVIDIA RTX Spark N1X'; driver branch 616.xx Arm64 package. Expect unified-memory semantics like GB10 (memory reporting likely N/A) but this is unverified.",
+   "exact_strings": [
+    "NVIDIA RTX Spark N1X",
+    "NVIDIA_DEV.2E03",
+    "NVIDIA_DEV.2E06",
+    "616.00"
+   ],
+   "source_url": "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "SPARK-PLATFORM-ID",
+   "severity": "INFO",
+   "trigger": "aarch64 Linux AND (DMI product_name == 'NVIDIA_DGX_Spark' OR nvidia-smi name == 'NVIDIA GB10' OR lspci has 10de:2e12) ",
+   "evidence_template": "Detected NVIDIA GB10 platform: DMI '{sys_vendor} / {product_name} / {product_version}', GPU '{gpu_name}' CC {cc}, kernel {uname_r}, DGX OS {DGX_SWBUILD_VERSION}/OTA {DGX_OTA_VERSION} ({dgx_release_path or 'no /etc/dgx-release: non-DGX-OS image'}).",
+   "why_it_matters": "Downstream rules (memory reporting, driver pairing, missing NVSM) only make sense once the platform is known; OEM GB10 units (ASUS/HP/Lenovo/Dell/MSI/Acer) share firmware quirks but may lag NVIDIA OTA releases.",
+   "next_steps": [
+    "Record variant (FE vs OEM) from DMI vendor for later rules",
+    "If /etc/dgx-release absent, note that Dashboard/OTA checker/telemetry are not expected and skip DGX-OS-only rules"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/363849",
+    "https://forums.developer.nvidia.com/t/dgx-spark-variant-oem-hardware-information/352023",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+   ]
+  },
+  {
+   "id": "SPARK-SMI-MEM-NA-EXPECTED",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND nvidia-smi memory.total == [N/A] / 'Not Supported'",
+   "evidence_template": "nvidia-smi reports Memory-Usage 'Not Supported' on NVIDIA GB10 — expected on unified-memory iGPU (no dedicated framebuffer). Unified pool: free -h total {mem_total}, available {mem_available}; cudaMemGetInfo may under-report because SWAP-reclaimable memory is excluded.",
+   "why_it_matters": "Prevents false CRIT alerts from generic 'GPU memory unreadable' logic and from NVML-based tools (dcgm-exporter, k8s device plugin < v0.17.4, gpustat) that abort on NVML_ERROR_NOT_SUPPORTED.",
+   "next_steps": [
+    "Report system memory via /proc/meminfo (MemTotal/MemAvailable) and /proc/pressure/memory instead of NVML",
+    "If a monitoring tool crashes on NVML memory calls, suggest upgrading (k8s-device-plugin >= v0.17.4) or the community nvml-unified-shim as a workaround, and point to DGX Dashboard http://localhost:11000",
+    "Do not treat 'ECCSupported: 0' / 'Error Correction Type: None' as a fault (Spark has no ECC)"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322",
+    "https://github.com/NVIDIA/k8s-device-plugin/issues/1482",
+    "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765"
+   ]
+  },
+  {
+   "id": "SPARK-OTA-TORN",
+   "severity": "CRIT",
+   "trigger": "DGX OS Spark AND nvidia-spark-ota-check present AND (torn-score JSON torn > 0 OR summary 'failed:' list non-empty) OR (nvidia-smi 'No devices were found' AND journal has 'GSP_INIT_DONE' timeout / 'SEC2 secure boot partition timed out')",
+   "evidence_template": "OTA pairing is torn: nvidia-spark-ota-check reports {installed_name} with failed components {failed_list}; installed driver {driver_pkg_version} vs expected {expected_driver}. Kernel log: '{gsp_line}'.",
+   "why_it_matters": "GB10 GSP/SEC2 firmware is paired with a specific driver build; an apt-only upgrade (e.g. to 580.173.02 on OTA2607) leaves the GPU unable to boot ('No devices were found').",
+   "next_steps": [
+    "Run the DGX Dashboard update (http://localhost:11000) to restore the paired driver/firmware set",
+    "Or: sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot",
+    "After firmware capsules, fully unplug AC for 30+ seconds (warm reboot can leave GSP corrupted)",
+    "Collect 'sudo nvidia-bug-report.sh' and 'sudo nvidia-spark-ota-check summary' output for NVIDIA support"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+    "https://forums.developer.nvidia.com/t/364160",
+    "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html",
+    "https://forums.developer.nvidia.com/t/gb10-spontaneous-reboots-after-july-2026-update-gsp-health-check-fail-nvrm-assert-flood-gpu-user-shared-data-c-373/379959"
+   ]
+  },
+  {
+   "id": "SPARK-UNSUPPORTED-DRIVER-KERNEL",
+   "severity": "WARN",
+   "trigger": "GB10 AND (driver major != 580 OR uname -r not matching '-nvidia' flavour OR nvidia-driver-*-open version lacks '-0ubuntu0.24.04' suffix (CUDA-repo/.run driver) OR pin file /etc/apt/preferences.d/cuda-compute-repo-lowpri* missing on DGX OS)",
+   "evidence_template": "Driver/kernel outside NVIDIA's supported Spark set: driver {driver_version} ({driver_pkg}), kernel {uname_r}. NVIDIA (Mar 2026): 'Driver 590 and hwe kernels are not yet supported on the Spark'.",
+   "why_it_matters": "Spark GPU modules are pre-built into Ubuntu's linux-nvidia kernel flavour; installing CUDA-repo or .run drivers or generic HWE kernels breaks GSP pairing and is unsupported ('We cannot support any systems that have a different OS installed').",
+   "next_steps": [
+    "Prefer Dashboard/OTA updates; avoid 'apt install nvidia-driver-590-open' or .run installers",
+    "If already broken, follow DGX Spark System Recovery (recovery image USB) rather than manual driver surgery"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/upgrading-the-gpu-driver-from-580-to-590-on-dgx-spark-using-cli/363299",
+    "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655",
+    "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311"
+   ]
+  },
+  {
+   "id": "SPARK-DASHBOARD-HEALTH",
+   "severity": "WARN",
+   "trigger": "DGX OS Spark AND (systemctl is-active dgx-dashboard.service != active OR dgx-dashboard-admin.service != active OR TCP 127.0.0.1:11000 closed OR fwupd.service failed OR >3 lingering 'check_ota_status.py is-ota-available' processes)",
+   "evidence_template": "DGX Dashboard degraded: dgx-dashboard.service={state1}, dgx-dashboard-admin.service={state2}, port 11000 {open/closed}, fwupd.service={fwupd_state} ('{fwupd_error_line}'), {n} stuck check_ota_status.py processes.",
+   "why_it_matters": "The Dashboard is NVIDIA's primary update path; a hung fwupd (e.g. 'libfwupd version 1.9.34 does not match daemon 1.9.30') makes the Updates page spin forever and blocks firmware/driver pairing fixes.",
+   "next_steps": [
+    "journalctl -u dgx-dashboard.service -u dgx-dashboard-admin.service -u fwupd.service --since -1h",
+    "timeout 15 fwupdmgr get-devices --json ; echo $?  (124 => fwupd hang)",
+    "sudo systemctl restart fwupd.service dgx-dashboard.service dgx-dashboard-admin.service",
+    "For JupyterLab-per-user failures check /opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml and that the user is in the sudo group"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/375537",
+    "https://forums.developer.nvidia.com/t/issues-setup-and-update-of-new-dgx-spark/379261",
+    "https://forums.developer.nvidia.com/t/350641",
+    "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html"
+   ]
+  },
+  {
+   "id": "SPARK-GPU-REQUIRES-RESET",
+   "severity": "CRIT",
+   "trigger": "GB10 AND (nvidia-smi -q contains 'GPU requires reset' OR dmesg contains 'regvalue: 0xbadf5600' OR Xid 120 'GSP task exception' OR 'kgspHealthCheck' OR docker 'nvml error: gpu requires reset')",
+   "evidence_template": "GPU in bad state: '{smi_or_dmesg_line}'. Driver {driver_version}, kernel {uname_r}, EC/SBIOS {fw_versions}.",
+   "why_it_matters": "These signatures on GB10 have led to RMAs (hardware defect) or required full AC power-cycle after firmware updates; NVIDIA asks for nvidia-bug-report while in the bad state plus fieldiag results.",
+   "next_steps": [
+    "Before rebooting: sudo nvidia-bug-report.sh (keep nvidia-bug-report.log.gz)",
+    "Attempt reset: sudo systemctl stop nvidia-persistenced && sudo nvidia-smi -r -i 0",
+    "Full AC unplug 30+ s if the fault followed a firmware/OTA update",
+    "Install and run field diagnostics: sudo apt install dgx-spark-fieldiag; sudo init 3; cd /opt/nvidia/dgx-spark-fieldiag; sudo ./partnerdiag --field (Secure Boot must be disabled); a FAIL banner is RMA-qualifying",
+    "Open a case at https://www.nvidia.com/en-us/support/dgx-spark/ with the bug report and logs-<timestamp>/summary.json"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499",
+    "https://forums.developer.nvidia.com/t/gb10-spontaneous-reboots-after-july-2026-update-gsp-health-check-fail-nvrm-assert-flood-gpu-user-shared-data-c-373/379959",
+    "https://forums.developer.nvidia.com/t/354395",
+    "https://docs.nvidia.com/pdf/userguide-dgx-spark-fieldiag.pdf",
+    "https://docs.nvidia.com/dgx/dgx-spark/support.html"
+   ]
+  },
+  {
+   "id": "SPARK-UNCLEAN-SHUTDOWN-NO-LOGS",
+   "severity": "WARN",
+   "trigger": "GB10 AND journalctl --list-boots shows previous boot(s) with no shutdown target reached AND last-boot journal lacks panic/OOM/Xid AND /sys/fs/pstore empty",
+   "evidence_template": "{n} unclean shutdown(s) with no crash evidence (last line before reset: '{last_line}'); pstore empty; kdump crashkernel='{crashkernel}' (default 1G-:0M => kdump unsupported); sbsa_gwdt blacklisted={bool}.",
+   "why_it_matters": "GB10 hard power-offs are cut by the embedded controller faster than the OS can log; NVIDIA needs fieldiag (PowerStress/ThermalStress) results and a bug report, and thermal sensor failures (MODS 020000600139) qualify for RMA.",
+   "next_steps": [
+    "Run fieldiag as above; inspect logs-*/summary.json for 'Acceptable temperature limits exceeded'",
+    "Verify firmware current: sudo fwupdmgr get-updates; sudo nvidia-spark-ota-check is-ota-available",
+    "Optional forensic capture: add 'crash_kexec_post_notifiers=1 pstore.kmsg_bytes=65536' and sysctl kernel.panic_on_rcu_stall=1; check /var/lib/systemd/pstore/*/001/dmesg-efi_pstore-*",
+    "Mitigation seen in the field: sudo nvidia-smi -lgc 300,2200 (revert with -rgc)"
+   ],
+   "sources": [
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-hard-freeze-under-sustained-load-rcu-stall-on-cpu-11-watchdog-kdump-both-fail-working-pstore-only-crash-capture-recipe-eviden/381655",
+    "https://forums.developer.nvidia.com/t/dgx-spark-failing-fieldiag-powerstress/373342",
+    "https://forums.developer.nvidia.com/t/dgx-spark-hangs-under-vllm-load-fieldiag-fails-on-the-thermal-sensor/369381"
+   ]
+  },
+  {
+   "id": "SPARK-SM121-BUILD-MISMATCH",
+   "severity": "WARN",
+   "trigger": "GB10 (CC 12.1) AND (torch built for CUDA < 12.9 OR arch list lacks sm_121/sm_120/compute_120f PTX OR PyTorch prints the 12.0-max warning)",
+   "evidence_template": "CUDA build lacks GB10 (sm_121) kernels: torch {torch_version} cu{cuda_build}, arch list {arch_list}; driver CUDA {driver_cuda}. Warning seen: '{pytorch_warning}'.",
+   "why_it_matters": "sm_121 exists only from CUDA 12.9/13.0; 10.x-family (B200) binaries never run on 12.x, and 12.0-only SASS without PTX fails or falls back to JIT. RTX PRO 6000 (12.0) wheels are the common near-miss.",
+   "next_steps": [
+    "Use CUDA 13 / cu130 aarch64 wheels or NGC containers (PyTorch, vLLM, TensorRT-LLM)",
+    "Build with -gencode arch=compute_120f,code=sm_121 (or sm_121a for arch-specific) when compiling locally",
+    "Check nvcc on PATH is not older than the driver's CUDA version"
+   ],
+   "sources": [
+    "https://developer.nvidia.com/cuda-gpus",
+    "https://docs.nvidia.com/cuda/archive/13.0.1/cuda-features-archive/index.html",
+    "https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html",
+    "https://docs.ultralytics.com/guides/nvidia-dgx-spark",
+    "https://github.com/joeynyc/spark-doctor"
+   ]
+  },
+  {
+   "id": "SPARK-NO-NVSM-EXPECTED",
+   "severity": "INFO",
+   "trigger": "DGX Spark detected AND (nvsm missing/'Failed to find a matching definition file' OR /usr/local/nvidia/dgx/diagnostics/dgxdiag missing OR /dev/ipmi0 missing)",
+   "evidence_template": "NVSM/dgxdiag/BMC not present — expected on DGX Spark ('there is no BMC on the DGX Spark and there is no pre-installed diagnostic suite'). RMA pre-check tool is dgx-spark-fieldiag ({installed_version or 'not installed'}).",
+   "why_it_matters": "Generic DGX health logic (nvsm show health, ipmitool sel list) must be skipped on Spark; the supported path is Dashboard + fieldiag + nvidia-bug-report.sh.",
+   "next_steps": [
+    "Offer 'sudo apt install dgx-spark-fieldiag' (from the DGX Spark repo; requires official DGX OS image)",
+    "Do not recommend Fabric Manager or NVSwitch checks on Spark"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/memtester-failures-and-missing-nvidia-dgx-diagnostics-suite/353950",
+    "https://docs.nvidia.com/dgx/dgx-spark/support.html",
+    "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655"
+   ]
+  },
+  {
+   "id": "SPARK-NSYS-UVM-TRACE-UNSUPPORTED",
+   "severity": "INFO",
+   "trigger": "GB10 AND nsys invoked with --cuda-um-cpu-page-faults/--cuda-um-gpu-page-faults OR nsys output contains 'Unified Memory trace is not supported'",
+   "evidence_template": "Nsight Systems {nsys_version}: 'CUDA device 0: Unified Memory trace is not supported by the current driver version or configuration.' (driver {driver_version}). NVIDIA: 'UVM profiling is not supported on Spark but is currently being worked on for a future release'.",
+   "why_it_matters": "Avoids users chasing a local misconfiguration; other nsys/ncu profiling works on GB10.",
+   "next_steps": [
+    "Drop UM page-fault tracing flags; use standard CUDA trace and GPU metrics",
+    "Track Nsight Systems release notes for GB10 UVM support"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/nsight-systems-unified-memory-trace-support-for-gb10-sm121/357848",
+    "https://docs.nvidia.com/dgx/dgx-spark/nsight.html"
+   ]
+  },
+  {
+   "id": "JETSON-VS-SPARK-DISAMBIGUATION",
+   "severity": "INFO",
+   "trigger": "aarch64 AND (/etc/nv_tegra_release exists OR dpkg nvidia-l4t-core installed OR /proc/device-tree/compatible contains 'nvidia,tegra')",
+   "evidence_template": "Jetson/L4T platform: model '{dt_model}', L4T R{rel}.{rev} (JetPack {jp}), SoC {soc} (CC {cc}); nvidia-smi {present/absent} (present on Thor/JetPack 7 openrm). Skipping DGX Spark rules.",
+   "why_it_matters": "Jetson has no DMI, no /etc/dgx-release, uses tegrastats/nvpmodel/jetson_clocks and nvidia-bug-report-tegra.sh; Thor (CC 11.0) has nvidia-smi like Spark, so device-tree/L4T markers—not nvidia-smi presence—must drive classification.",
+   "next_steps": [
+    "Use tegrastats and jetson_release (jetson-stats) for telemetry",
+    "For bug reports run 'sudo ./nvidia-bug-report-tegra.sh' and attach the .log"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/rbonghi/jetson_stats/master/jtop/core/jetson_variables.py",
+    "https://forums.developer.nvidia.com/t/missing-gpu-utilization-gr3d-in-tegrastats-on-jetpack-7-0-thor/347333",
+    "https://forums.developer.nvidia.com/t/jetpack-7-0-jetson-linux-38-2-for-nvidia-jetson-thor-is-now-live/343128",
+    "https://docs.nvidia.com/jetson/archives/r35.6.2/DeveloperGuide/AT/HowToSubmitABugReport.html"
+   ]
+  },
+  {
+   "id": "GH200-VS-SPARK-DISAMBIGUATION",
+   "severity": "INFO",
+   "trigger": "aarch64 AND nvidia-smi name matches 'GH200' (or Grace C2/GB200 FRU) AND memory.total is numeric",
+   "evidence_template": "Grace Hopper GH200 detected: '{gpu_name}' {memory_total} MiB HBM, CC 9.0, lscpu NUMA node(s) {numa}, BMC {present}. Unified-memory NVML caveats of GB10 do not apply.",
+   "why_it_matters": "GH200 shares aarch64 + coherent memory with Spark but is a datacenter dGPU with ECC, real framebuffer, BMC/IPMI and NVSM/DCGM support; Spark-specific 'expected N/A' suppressions must not be applied.",
+   "next_steps": [
+    "Apply standard datacenter GPU rules (ECC, NVLink-C2C, DCGM)",
+    "Use 'sudo ipmitool fru print' to distinguish PG530 (GH200) / PG535 (C2) / GB200 boards"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dccpu/grace-perf-tuning-guide/system.html",
+    "https://www.stephendiehl.com/posts/setup_gh200_tutorial/"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "DGX OS version/state on Spark",
+   "command": "cat /etc/dgx-release; cat /etc/fastos-release; apt-cache policy dgx-release",
+   "notes": "Keys: DGX_NAME, DGX_SWBUILD_VERSION (factory ISO), DGX_OTA_VERSION/DGX_OTA_DATE (appended per OTA), DGX_SERIAL_NUMBER ('Not Specified' until first OTA), DGX_PLATFORM ('DGX Server for KVM' quirk). fastos-release VERSION is the recovery image (e.g. 1.91.51).",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-nvidia-driver-issue/351828"
+  },
+  {
+   "context": "OTA pairing check (DGX OS Spark, package nvidia-spark-ota-check)",
+   "command": "sudo nvidia-spark-ota-check summary; sudo nvidia-spark-ota-check torn-score; sudo nvidia-spark-ota-check installed-name; sudo nvidia-spark-ota-check is-ota-available",
+   "notes": "Subcommands: is-ota-available, torn-score, installed-name, installed-versions, ota-versions, summary. torn-score 0 = fully applied. is-ota-available may self-update the tool and shells out to 'fwupdmgr get-devices --json' (hangs if fwupd.service is broken). Script: /opt/nvidia/spark-ota-check/check_ota_status.py.",
+   "source_url": "https://forums.developer.nvidia.com/t/364160"
+  },
+  {
+   "context": "Official manual update path (Spark)",
+   "command": "sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot",
+   "notes": "Dashboard is 'the primary and recommended way'; manual path is documented as working. Never mix in CUDA-repo drivers (pinned -1 via /etc/apt/preferences.d/cuda-compute-repo-lowpri*).",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+  },
+  {
+   "context": "Dashboard service health",
+   "command": "systemctl status dgx-dashboard.service dgx-dashboard-admin.service fwupd.service; ss -ltnp | grep 11000; cat /opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml; journalctl -u dgx-dashboard.service -u dgx-dashboard-admin.service",
+   "notes": "Older builds: 'sudo systemctl restart dgx-dashboard-service'. Dashboard listens on localhost:11000 only; remote via 'ssh -L 11000:localhost:11000 user@spark-abcd.local'. API: GET /api/v1/ota/status.",
+   "source_url": "https://forums.developer.nvidia.com/t/issues-setup-and-update-of-new-dgx-spark/379261"
+  },
+  {
+   "context": "Field diagnostics (RMA pre-check)",
+   "command": "sudo apt-get install dgx-spark-fieldiag; dpkg -l | grep dgx-spark-fieldiag; sudo mokutil --sb-state; sudo init 3; cd /opt/nvidia/dgx-spark-fieldiag; sudo ./partnerdiag --field",
+   "notes": "Secure Boot must be disabled (sudo systemctl reboot --firmware-setup); if 'nvidia_drm is in use', 'sudo systemctl disable gdm3 --now'. ~30-40 min; PASS/FAIL banner; logs in logs-<yyyymmdd-hhnnss>/ (output.log, run.log, summary.json, GPU<n>_<bdf>/output.log). Interrupting requires a power cycle before re-running. CX7Stress needs doca-ofed + kernel-mft-dkms (ofed_uninstall.sh afterwards can rip out Spark metapackages—avoid).",
+   "source_url": "https://docs.nvidia.com/pdf/userguide-dgx-spark-fieldiag.pdf"
+  },
+  {
+   "context": "Bug report for NVIDIA support (works on aarch64 DGX OS; not on Jetson)",
+   "command": "sudo nvidia-bug-report.sh",
+   "notes": "Writes nvidia-bug-report.log.gz in cwd; 'it will not run when GPU is crashed' / may come back empty—collect before reboot. NVIDIA also asked for 'sos report' and kernel logs. Jetson equivalent: 'sudo ./nvidia-bug-report-tegra.sh' (.log).",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gpu-crash/348223"
+  },
+  {
+   "context": "GPU reset on Spark",
+   "command": "sudo systemctl stop nvidia-persistenced && sudo nvidia-smi -r -i 0",
+   "notes": "NVIDIA-provided sequence (aniculescu, Dec 2025). nvidia-persistenced is enabled by default (Persistence-M: On).",
+   "source_url": "https://forums.developer.nvidia.com/t/354395"
+  },
+  {
+   "context": "GB10 unified-memory-aware telemetry",
+   "command": "nvidia-smi --query-gpu=name,compute_cap,utilization.gpu,temperature.gpu,power.draw,clocks.sm --format=csv; free -h; cat /proc/pressure/memory; nvidia-smi --query-compute-apps=pid,used_memory --format=csv",
+   "notes": "memory.total/used/free return [N/A] on GB10; per-process used_memory is still listed. Use /proc/meminfo MemAvailable and PSI for pressure. Drop caches workaround from NVIDIA: sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'.",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "context": "Platform identification (DMI/PCI/CPU)",
+   "command": "cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name /sys/class/dmi/id/product_version /sys/class/dmi/id/bios_version; lspci -nn | grep -i nvidia; lscpu | grep -E 'Vendor ID|Model name|CPU\\(s\\)|NUMA node\\(s\\)'; cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver; uname -r",
+   "notes": "FE Spark: NVIDIA / NVIDIA_DGX_Spark / A.7 / 5.36_0ACUM0xx; GPU 10de:2e12 at 000f:01:00.0; cppc_cpufreq; kernel *-nvidia. GH200: GPU 'GH200 480GB', NUMA node(s) 9. Jetson: /sys/class/dmi absent; use /sys/firmware/devicetree/base/model.",
+   "source_url": "https://forums.developer.nvidia.com/t/362513"
+  },
+  {
+   "context": "Jetson identification",
+   "command": "cat /etc/nv_tegra_release; cat /sys/firmware/devicetree/base/model; cat /proc/device-tree/compatible; dpkg-query --showformat='${Version}' --show nvidia-l4t-core; tegrastats",
+   "notes": "nv_tegra_release format '# R<rel> (release), REVISION: <rev>, GCID: ..., BOARD: ...'; parse per jetson_stats. Thor (JetPack 7, L4T R38/R39) additionally has nvidia-smi (openrm) and tegrastats shows 'GR3D_FREQ @[...]' without utilization.",
+   "source_url": "https://raw.githubusercontent.com/rbonghi/jetson_stats/master/jtop/core/jetson_variables.py"
+  },
+  {
+   "context": "Firmware inventory on Spark",
+   "command": "sudo fwupdmgr get-devices; sudo fwupdmgr get-updates; sudo dmidecode -s bios-version; sudo dmidecode -s bios-release-date",
+   "notes": "FE GUIDs: EC 3d13c989-e6a8-4ead-95ee-921f09868f65, SoC UEFI b488217b-3895-4fc0-b1bf-ab7005a2d45a, USB-PD dd1a238a-5f8e-46bd-9401-a88da99c5a96. Release-notes firmware set (Aug 2026): UEFI 1.110.13, EC 3.5.8, USB PD 0.5.22, TPM 7.516.1, SoC 2.155.11. AMI BIOS string is 'stale' and only changes with SoC FW. LVFS upload may be rejected ('machine identifier is banned') harmlessly.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-bios-update-request-5-36-0acum018-0acum023/369711"
+  },
+  {
+   "context": "Baseline capture script circulated in forum (useful template)",
+   "command": "cat /etc/dgx-release; lsb_release -a; uname -a; mokutil --sb-state; nvidia-smi; cat /proc/driver/nvidia/version; sudo fwupdmgr get-updates; sudo fwupdmgr get-devices; apt-cache policy dgx-release; apt list --upgradable | egrep -i 'dgx|nvidia|cuda'",
+   "notes": "Community-authored, but each command is a standard DGX OS surface; matches what NVIDIA staff request in threads.",
+   "source_url": "https://forums.developer.nvidia.com/t/368734"
+  },
+  {
+   "context": "Clock cap mitigation for hard power-offs (community, reversible)",
+   "command": "sudo nvidia-smi -lgc 300,2200; nvidia-smi -q -d CLOCK | head -20; sudo nvidia-smi -rgc",
+   "notes": "Not an NVIDIA recommendation; documented field workaround. Persisted via a oneshot systemd unit After=/Wants=nvidia-persistenced.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  }
+ ],
+ "open_questions": [
+  "Exact live contents of a Spark /etc/nv_tegra_release-equivalent do not exist; for Jetson, an authoritative sample line of /etc/nv_tegra_release (e.g. '# R36 (release), REVISION: 4.3, GCID: ...') was not captured from an NVIDIA page—only the field structure via jetson_stats' parser.",
+  "Does NVIDIA officially support DCGM / dcgm-exporter on GB10? DCGM 4.x changelog has no GB10 entry; installation works but memory fields inherit NVML 'Not Supported'. No NVIDIA statement found.",
+  "Which NVML calls beyond nvmlDeviceGetMemoryInfo fail on GB10 (power limit, fan, ECC, BAR1)? Only memory, power cap (N/A), fan (N/A), ECC (ECCSupported: 0) are confirmed.",
+  "Windows RTX Spark (N1X): compute capability (12.1 like GB10, or new 12.x), whether nvidia-smi.exe ships in the Arm64 driver, and how unified memory is reported—unverified (product not yet shipping; nvidia.com product page 404 at time of research).",
+  "The nvidia.custhelp.com KB articles (5767 Field Diagnostics, 5775 nvidia-smi 'Not Supported', 5728 Unexpected Available Memory) and the DGX Spark forum FAQ #7 returned 403/404 to automated fetch; their exact wording should be verified manually.",
+  "Whether NVIDIA Sync installs anything persistent on the Spark beyond SSH authorized_keys (docs say it only needs hostname + credentials); client-side log paths unknown.",
+  "nvidia-dgx-telemetry service: exact systemd unit name and opt-out mechanism not confirmed (journal shows process 'nvidia-dgx-telemetry[pid]' posting to events.telemetry.data.nvidia.com).",
+  "GH200 /proc/cpuinfo 'CPU part' values (Neoverse V2 0xd4f) vs GB10 Cortex-X925/A725 part IDs were not confirmed from an NVIDIA source; GB10 boot log shows MIDR 0x410fd871.",
+  "Whether dgx-spark-fieldiag is available on OEM GB10 units running OEM images (NVIDIA: 'We cannot support any systems that have a different OS installed'; ASUS GX10 users did run it).",
+  "Exact DGX Dashboard package/service layout drift: /opt/nvidia/dgx-dashboard-service (2025) vs /opt/nvidia/dgx-dashboard/dashboard-admin (2026) — confirm which paths exist per dgx-dashboard version.",
+  "Does Jetson Thor's JetPack 7 image include /etc/nv_tegra_release and nvidia-l4t-core like earlier L4T (jetson_stats claims Thor support, implying yes)?"
+ ],
+ "sources": [
+  "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/nvidia-sync.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/support.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/index.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/nsight.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/hardware.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/system-recovery.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/enterprise-fleet-lifecycle.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/first-boot.html",
+  "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html",
+  "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/upgrading-the-os.html",
+  "https://docs.nvidia.com/pdf/userguide-dgx-spark-fieldiag.pdf",
+  "https://docs.nvidia.com/sync/latest/index.html",
+  "https://docs.nvidia.com/sync/latest/getting-started.html",
+  "https://docs.nvidia.com/dccpu/grace-perf-tuning-guide/system.html",
+  "https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html",
+  "https://docs.nvidia.com/cuda/archive/13.0.1/cuda-features-archive/index.html",
+  "https://developer.nvidia.com/cuda-gpus",
+  "https://developer.nvidia.com/blog/nvidia-blackwell-and-nvidia-cuda-12-9-introduce-family-specific-architecture-features/",
+  "https://docs.nvidia.com/datacenter/dcgm/latest/release-notes/changelog.html",
+  "https://docs.nvidia.com/nsight-systems/ReleaseNotes/index.html",
+  "https://docs.nvidia.com/nsight-compute/ReleaseNotes/index.html",
+  "https://docs.nvidia.com/jetson/archives/r35.6.2/DeveloperGuide/AT/HowToSubmitABugReport.html",
+  "https://www.nvidia.com/en-us/products/workstations/dgx-spark/",
+  "https://github.com/NVIDIA/dgx-spark-playbooks",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/dgx-dashboard",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-to-your-spark/README.md",
+  "https://github.com/NVIDIA/k8s-device-plugin/issues/1482",
+  "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/1073",
+  "https://github.com/CINOAdam/nvml-unified-shim",
+  "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+  "https://github.com/joeynyc/spark-doctor",
+  "https://github.com/bidual/awesome-dgx-spark",
+  "https://raw.githubusercontent.com/rbonghi/jetson_stats/master/jtop/core/jetson_variables.py",
+  "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+  "https://forums.developer.nvidia.com/t/364160",
+  "https://forums.developer.nvidia.com/t/375537",
+  "https://forums.developer.nvidia.com/t/issues-setup-and-update-of-new-dgx-spark/379261",
+  "https://forums.developer.nvidia.com/t/350641",
+  "https://forums.developer.nvidia.com/t/380503",
+  "https://forums.developer.nvidia.com/t/378945",
+  "https://forums.developer.nvidia.com/t/381767",
+  "https://forums.developer.nvidia.com/t/349544",
+  "https://forums.developer.nvidia.com/t/352525",
+  "https://forums.developer.nvidia.com/t/dgx-spark-nvidia-driver-issue/351828",
+  "https://forums.developer.nvidia.com/t/359785",
+  "https://forums.developer.nvidia.com/t/363849",
+  "https://forums.developer.nvidia.com/t/362513",
+  "https://forums.developer.nvidia.com/t/dgx-spark-bios-update-request-5-36-0acum018-0acum023/369711",
+  "https://forums.developer.nvidia.com/t/ecc-on-dgx-spark/354376",
+  "https://forums.developer.nvidia.com/t/dgx-spark-variant-oem-hardware-information/352023",
+  "https://forums.developer.nvidia.com/t/memtester-failures-and-missing-nvidia-dgx-diagnostics-suite/353950",
+  "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311",
+  "https://forums.developer.nvidia.com/t/dgx-spark-failing-fieldiag-powerstress/373342",
+  "https://forums.developer.nvidia.com/t/dgx-spark-hangs-under-vllm-load-fieldiag-fails-on-the-thermal-sensor/369381",
+  "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322",
+  "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765",
+  "https://forums.developer.nvidia.com/t/nvml-support-for-dgx-spark-grace-blackwell-unified-memory-community-solution/358869",
+  "https://forums.developer.nvidia.com/t/nsight-systems-unified-memory-trace-support-for-gb10-sm121/357848",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gpu-crash/348223",
+  "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499",
+  "https://forums.developer.nvidia.com/t/gb10-spontaneous-reboots-after-july-2026-update-gsp-health-check-fail-nvrm-assert-flood-gpu-user-shared-data-c-373/379959",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-hard-freeze-under-sustained-load-rcu-stall-on-cpu-11-watchdog-kdump-both-fail-working-pstore-only-crash-capture-recipe-eviden/381655",
+  "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655",
+  "https://forums.developer.nvidia.com/t/upgrading-the-gpu-driver-from-580-to-590-on-dgx-spark-using-cli/363299",
+  "https://forums.developer.nvidia.com/t/354395",
+  "https://forums.developer.nvidia.com/t/347792",
+  "https://forums.developer.nvidia.com/t/358951",
+  "https://forums.developer.nvidia.com/t/370007",
+  "https://forums.developer.nvidia.com/t/368734",
+  "https://forums.developer.nvidia.com/t/dgx-spark-os-7-4-0-kernel-6-17-0-1014-nvidia-aarch64-snapd-service-repeatedly-timing-out-and-consuming-high-cpu/366287",
+  "https://forums.developer.nvidia.com/t/dgx-spark-dashboard-update-available-changelog/348538",
+  "https://forums.developer.nvidia.com/t/missing-gpu-utilization-gr3d-in-tegrastats-on-jetpack-7-0-thor/347333",
+  "https://forums.developer.nvidia.com/t/jetpack-7-0-jetson-linux-38-2-for-nvidia-jetson-thor-is-now-live/343128",
+  "https://forums.developer.nvidia.com/t/380191",
+  "https://forums.developer.nvidia.com/t/351797",
+  "https://forums.developer.nvidia.com/t/get-l4t-version-information/110395",
+  "https://forums.developer.nvidia.com/t/read-l4t-version-from-jetpack-4-2-1/78405",
+  "https://forums.developer.nvidia.com/t/whats-command-could-show-the-name-of-jetson-modules-jetson-developer-kits/219887/9",
+  "https://developer.ridgerun.com/wiki/index.php/NVIDIA_Jetson_AGX_Thor/JetPack_7.0/Performance_Tuning/Evaluating_Performance",
+  "https://developer.ridgerun.com/wiki/index.php/NVIDIA_Jetson_AGX_Thor/JetPack_7.0/Getting_Started/Components",
+  "https://technotim.com/posts/ubuntu-gb10/",
+  "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists",
+  "https://docs.ultralytics.com/guides/nvidia-dgx-spark",
+  "https://rebjak.com/en/blog/nvidia-dgx-spark-first-boot/",
+  "https://www.stephendiehl.com/posts/setup_gh200_tutorial/",
+  "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark",
+  "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/",
+  "https://www.igorslab.de/en/nvidia-updates-dgx-spark-ota-update-brings-more-performance-stability-and-better-peripheral-integration/",
+  "https://deepwiki.com/NVIDIA/dgx-spark-playbooks/2.4-dgx-dashboard",
+  "https://build.nvidia.com/spark/dgx-dashboard/troubleshooting"
+ ]
+}

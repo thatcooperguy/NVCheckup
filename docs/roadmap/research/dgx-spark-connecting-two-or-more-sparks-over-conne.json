@@ -1,0 +1,895 @@
+{
+ "topic": "DGX Spark: connecting two (or more) Sparks over ConnectX-7 and networking/NCCL diagnostics",
+ "facts": [
+  {
+   "claim": "DGX Spark has two rear QSFP ports, each capped at 200 Gb/s; NVIDIA lists approved cables Amphenol NJAAKK-N911 (QSFP to QSFP112, 32AWG, 400mm, LSZH; 0.5m variant NJAAKK0006) and Luxshare LMTQF022-SD-R (QSFP112 400G DAC, 400mm, 30AWG) and says to use cables known to provide at least 200 Gb/s.",
+   "detail": "Left port (closest to the RJ45 Ethernet port) = port 0, right port = port 1. A plain 200G QSFP56 passive DAC has also been reported by users to link at 200 Gb/s.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html"
+  },
+  {
+   "claim": "Each physical QSFP port appears as TWO Linux netdevs and TWO RoCE devices because the CX-7 runs in multi-host mode aggregating two PCIe Gen5 x4 links (the GB10 SoC cannot provide more than x4 per device).",
+   "detail": "Mapping (docs.nvidia.com): Left/port0: PCI p1s0f0 -> enp1s0f0np0 / rocep1s0f0 and P2p1s0f0 -> enP2p1s0f0np0 / roceP2p1s0f0. Right/port1: enp1s0f1np1 / rocep1s0f1 and enP2p1s0f1np1 / roceP2p1s0f1. PCI addresses are 0000:01:00.0/.1 and 0002:01:00.0/.1 (two PCI domains). NVIDIA engineer isdias (2025-11-06): 'we had to use the Cx7's multi-host mode, aggregating 2 separate x4-wide PCIe links'. Some tools (ArgentAIOS) show the RoCE devices as mlx5_0..mlx5_3 instead of rocep* naming.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-nic-in-dgx-spark/350417"
+  },
+  {
+   "claim": "Expected `ibdev2netdev` output on a cabled Spark uses the format `rocep1s0f0 port 1 ==> enp1s0f0np0 (Up)`; with one cable in port 0 the f0 pair is (Up) and the f1 pair is (Down).",
+   "detail": "Single-cable example (sparkrun/forum): 'rocep1s0f0 port 1 ==> enp1s0f0np0 (Up)', 'rocep1s0f1 port 1 ==> enp1s0f1np1 (Down)', 'roceP2p1s0f0 port 1 ==> enP2p1s0f0np0 (Up)', 'roceP2p1s0f1 port 1 ==> enP2p1s0f1np1 (Down)'. The two-Sparks playbook states the Up interfaces are 'enp1s0f1np1 / enP2p1s0f1np1 (each physical port has two logical interface)' when port 1 is used. Empty ibdev2netdev output means the NIC is not enumerated at all.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/README.md"
+  },
+  {
+   "claim": "Healthy link signature: `ibstat` shows 'State: Active', 'Physical state: LinkUp', 'Rate: 200'; `ethtool <if>` shows 'Speed: 200000Mb/s' and 'Link detected: yes'.",
+   "detail": "Multi-sparks-through-switch playbook: `sudo ethtool enp1s0f1np1 | grep Speed` must show 'Speed: 200000Mb/s', not '100000Mb/s'. lspci for the CX-7 controllers shows 'Speed 32GT/s (ok), Width x4 (ok)'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-edgexpert-nccl-only-17-gb-s-over-200gbe/366055"
+  },
+  {
+   "claim": "One QSFP cable delivers the full 200 Gb/s. Connecting two cables does NOT give 400 Gb/s: each port then gets 100 Gb/s, and the playbook says 'Running the playbook with a second cable will limit your bandwidth to 100Gbps' unless all four interfaces are configured.",
+   "detail": "Playbook README: 'Full bandwidth can be achieved with just one QSFP cable. When two QSFP cables are connected, all four interfaces must be assigned IP addresses to obtain full bandwidth.' eugr (2025-11-20): 'you won't be able to achieve 400G using two ports - when both ports are active, each will get 100G.' aniculescu (2026-03-04) in the 100 Gbps cap thread.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nccl-single-cable-test-caps-at-100gbps/362403"
+  },
+  {
+   "claim": "Each logical twin is a ~100 Gb/s path; raw RDMA (`ib_write_bw`) yields ~92-98 Gb/s per twin and ~190-196 Gb/s aggregate when both twins run concurrently. NCCL must be told to use BOTH twins (NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1) to reach ~200 Gb/s.",
+   "detail": "NVIDIA performance_benchmarking_guide.md: 'ib_write_bw -d <device> -i 1 -p <port> -F --report_gbits', expected ~92-97 Gbps per link, dual links total ~190 Gbps; latency via ib_write_lat / ib_read_lat (per link, do not aggregate). Community (route179): 98.04 Gb/s per twin, ~196 Gb/s both. eugr: 'In order to get full bandwidth in NCCL RDMA mode, we need to utilize both RoCE twins.'",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/assets/performance_benchmarking_guide.md"
+  },
+  {
+   "claim": "Expected NCCL bus bandwidth between two Sparks over one cable is ~22-24 GB/s (all_gather_perf -b 16G -e 16G); the Feb-2026 firmware regression capped it at ~15.6-17 GB/s and was 'Fixed with the February 2026 system update' (Founders Edition first; OEMs later).",
+   "detail": "Observed strings: 'Avg bus bandwidth: 15.6474' (regressed) vs 'Avg bus bandwidth: 24.227' (fixed). route179 log: '# Avg bus bandwidth : 22.1205', peak busbw 24.20 GB/s. A 4-node thread attributes ~16 GB/s on FE to SoC firmware 10500->10600 update with downgrade to 0x02009009 as workaround.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nccl-single-cable-test-caps-at-100gbps/362403"
+  },
+  {
+   "claim": "GPUDirect RDMA is NOT supported on DGX Spark; nvidia-peermem, dma-buf and GDRCopy do not work, because pinned device memory cannot be coherently accessed by the CPU complex or PCIe peripherals. NCCL stages through host memory.",
+   "detail": "NVIDIA (mfatica, 2025-11-20): 'GPUDirect RDMA technology is not supported, and the mechanisms for direct I/O based on that technology...do not work.' Recommendation: allocate comm buffers with cudaHostAlloc and register with ib_reg_mr. NCCL_DEBUG=INFO shows \"NET/IB : GPU Direct RDMA Disabled for HCA 0 'rocep1s0f0'\" and 'Connected all rings, use ring PXN 0 GDR 0'. Exact failure strings: `modprobe: ERROR: could not insert 'nvidia_peermem': Invalid argument`; dmesg `nvidia_peermem: Unknown symbol ib_register_peer_memory_client`; /sys/kernel/mm/memory_peers/ absent. NVIDIA KB a_id 5780 ('Is GPUDirect RDMA supported on DGX Spark?') states the same but returned HTTP 403 to fetch.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/enabling-gpu-direct-rdma-for-dgx-spark-clustering/352051"
+  },
+  {
+   "claim": "Official IP configuration is via netplan file /etc/netplan/40-cx7.yaml with dhcp4: no and each twin on a DIFFERENT /24 (e.g. 192.168.100.10/24 on enp1s0f1np1 and 192.168.101.10/24 on enP2p1s0f1np1; node 2 uses .11). Temporary alternative: `sudo ip addr add <IP>/24 dev <if>` + `sudo ip link set <if> up` (lost on reboot).",
+   "detail": "Verbatim Node 1 YAML: network: version: 2 / ethernets: / enp1s0f1np1: addresses: [192.168.100.10/24] dhcp4: no / enP2p1s0f1np1: addresses: [192.168.101.10/24] dhcp4: no. Playbook does not set mtu. The repo asset cx7-netplan.yaml instead configures enp1s0f0np0 and enp1s0f1np1 with IPv4 link-local (169.254.x.x). Multi-switch playbook: assigning 'two distinct network interfaces to the same subnet causes networking and software conflicts'; eugr: 'DO NOT use the same subnet on both twins - it will confuse autodiscovery and mess up routing.'",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+  },
+  {
+   "claim": "NVIDIA's playbooks do not specify an MTU, but every community guide sets mtu: 9000 on both twins and validates with `ping -M do -s 8972`; MTU mismatch between nodes was the diagnosed cause in a 3-node 'NCCL not working' thread (spark2 at 1500 vs 9000 elsewhere).",
+   "detail": "eugr NETWORKING.md netplan: dhcp4: no, dhcp6: no, link-local: [], mtu: 9000. sparkrun: 'An MTU mismatch anywhere in the path may result in packets being silently dropped.' ArgentAIOS: switch ports must also be 9000. docs.nvidia.com spark-clustering says nothing about MTU; NVIDIA Sync Cluster Assistant applies 'MTU settings appropriate for the detected topology' (value not published).",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/3-cluster-nvidia-dgx-spark-cluster-nccl-not-working/376215"
+  },
+  {
+   "claim": "discover-sparks (playbook asset) discovers peers via mDNS: it finds Up CX-7 netdevs with `ibdev2netdev | awk '/Up\\)/ {print $5}' | tr -d '()'`, browses `avahi-browse -p -r -f -t _ssh._tcp` on them, generates $HOME/.ssh/id_ed25519_shared, then pushes it with scp/ssh -o StrictHostKeyChecking=accept-new. It refuses to run as root.",
+   "detail": "Exact messages: 'Error: This script should not be run as root or with sudo' / 'Please run as a regular user'; 'No active interfaces found via ibdev2netdev.'; 'avahi-browse not found. Please install avahi-utils package'; 'Warning: No services found on any specified interface'; 'No IPv4 addresses found.'; 'Generating shared SSH key for all nodes...'; 'Setting up shared SSH access across all nodes.' Requires identical usernames on all nodes. Run as `bash ./discover-sparks`.",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/discover-sparks"
+  },
+  {
+   "claim": "NVIDIA Sync (GUI) discovers Sparks via mDNS (.local hostnames) and its Cluster Assistant validates SSH, hardware, OS version (April 2026+ software), matching username/UID/GID, detects CX-7 cabling, configures IPs/SSH/MTU, and runs a link speed test with target 200 Gbit/s and 'lower bound of 184 Gbit/s'.",
+   "detail": "Supports 2-4 devices: direct 2 (one cable), direct 3 (ring, three cables), direct 4 not supported, switch 2-4; 'Do not mix connection types'. Missing/unseated cable is a blocking condition. docs note mDNS may not work on networks with multicast filtering.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/sync/latest/cluster-assistant.html"
+  },
+  {
+   "claim": "Known mDNS bug: CX-7 interfaces with cable but no DHCP server flap and make avahi see its own announcements as conflicts, so the host renames itself spark1-2.local, spark1-3.local, ...",
+   "detail": "journalctl: 'avahi-daemon[1464]: Host name conflict, retrying with spark1-2'. Attempted workaround in /etc/avahi/avahi-daemon.conf: [server] deny-interfaces=enP2p1s0f1np1,enp1s0f1np1 (reported as not fully effective).",
+   "confidence": "medium",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/issues/56"
+  },
+  {
+   "claim": "NVIDIA NCCL playbook builds NCCL v2.30.7-1 from source with NVCC_GENCODE=\"-gencode=arch=compute_121,code=sm_121\", nccl-tests with MPI=1, and runs all_gather_perf -b 16G -e 16G -f 2 via mpirun; bootstrap variables point at the MANAGEMENT NIC (enP7s7 10GbE or wlP9s9 Wi-Fi), not the CX-7.",
+   "detail": "Exports: CUDA_HOME=/usr/local/cuda; MPI_HOME=/usr/lib/aarch64-linux-gnu/openmpi; NCCL_HOME=$HOME/nccl/build/; UCX_NET_DEVICES=enP7s7; NCCL_SOCKET_IFNAME=enP7s7; OMPI_MCA_btl_tcp_if_include=enP7s7. 3-node ring additionally: NCCL_IB_SUBNET_AWARE_ROUTING=1 and NCCL_NET_PLUGIN=none. Troubleshooting rows: 'mpirun hangs or times out' -> SSH connectivity (`mpirun -np 2 -H <IP1>:1,<IP2>:1 hostname`); 'Network interface not found' -> 'Wrong interface name or down status', check ibdev2netdev; 'NCCL build fails' -> missing OpenMPI/CUDA. Switch playbook adds 'libnccl.so.2: cannot open shared object file' -> NCCL not built on all nodes.",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md"
+  },
+  {
+   "claim": "Community-validated NCCL env for two Sparks: NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1 (both twins of the cabled port), NCCL_IB_DISABLE=0, NCCL_SOCKET_IFNAME=<cabled twin netdev>, UCX_NET_DEVICES=<same>, GLOO_SOCKET_IFNAME=<same> (for Ray/vLLM), optionally NCCL_IB_GID_INDEX=3 (RoCEv2/IPv4), NCCL_IB_MERGE_NICS=1, NCCL_NET_PLUGIN=none.",
+   "detail": "eugr (2026-01-27): 'Both rocep1s0f1 and roceP2p1s0f1 are two parts of one physical NIC.' route179 uses exact-match form `NCCL_IB_HCA==rocep1s0f1,roceP2p1s0f1` plus NCCL_IB_MERGE_NICS=1, NCCL_CROSS_NIC=1, NCCL_IB_GID_INDEX=3. Verify in NCCL_DEBUG=INFO: 'Using network IB' / 'NET/IB' channels rather than 'NET/Socket'. Note: NCCL_IB_MERGE_NICS and NCCL_IB_SUBNET_AWARE_ROUTING are not documented on the official NCCL env page as of fetch.",
+   "confidence": "medium",
+   "source_url": "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md"
+  },
+  {
+   "claim": "NGC containers bundle the aws-ofi-nccl net plugin, which fails on GB10 unified memory and makes NCCL silently fall back to TCP sockets (~1-3 GB/s busbw) with no error; stock NGC NCCL 2.27.7 lacks sm_121 support and collectives hang. Fix: NCCL_NET_PLUGIN=none and a NCCL >= 2.28.x built for sm_121.",
+   "detail": "route179: 'AWS OFI plugin silently downgrades to TCP (~3 GB/s vs ~20 GB/s) with no error message'; 'Stock NGC container NCCL 2.27.7 lacks GB10 (sm_121) support - collectives hang indefinitely'. Sangiorgi: 'force the native path with NCCL_NET_PLUGIN=none + NCCL_IB_MERGE_NICS=1, then read the debug log to confirm NET/IB'. Forum 349496 also reports 'ptxas fatal : Value 'sm_121a' is not defined for option 'gpu-name''.",
+   "confidence": "medium",
+   "source_url": "https://route179.dev/2026/07/21/dgx-spark-nccl-roce-benchmarking/"
+  },
+  {
+   "claim": "NCCL error 'NCCL WARN Call to ibv_modify_qp failed with 110 Connection timed out, on dev rocep1s0f0:1' occurs when RoCE peers are not L2-adjacent (routed hops in 6-node ring) or NCCL picks an unreachable twin/subnet in 3+ node rings; fix was NCCL_IB_MERGE_NICS=0 together with NCCL_IB_SUBNET_AWARE_ROUTING=1.",
+   "detail": "perftest equivalent: 'Failed to modify QP to RTR / Unable to Connect the HCA's through the link'. eugr issue #252 shows same error with NCCL 2.30.4 in a 3-node ring where NCCL listed 'NET/IB : Using [0]rocep1s0f0:1/RoCE [1]rocep1s0f1:1/RoCE [2]roceP2p1s0f0:1/RoCE [3]roceP2p1s0f1:1/RoCE' but then used NET/IB/4 and NET/IB/5 (merged devices).",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/6-node-dgx-spark-ring-topology-nccl-fails-on-non-adjacent-node-pairs-routed-rdma/377435"
+  },
+  {
+   "claim": "Other exact NCCL/MPI failure strings seen on two-Spark setups and their causes.",
+   "detail": "'IB device enp1s0f0np0 not found' / 'Unable to find the Infiniband/RoCE device' -> NCCL_IB_HCA given a netdev name instead of rocep*/mlx5_* name (forum 359593). 'NCCL WARN NET/IB : No device found' -> container missing --device=/dev/infiniband or mlx5_ib not loaded (ArgentAIOS troubleshooting; forum 349496 'No device found' on worker). 'WARNING: Open MPI accepted a TCP connection from what appears to be another Open MPI process but cannot find a corresponding process entry for that peer.' -> identical docker0 IP on both hosts; pin --mca oob_tcp_if_include/btl_tcp_if_include (forum 365582, route179). 'Invalid number of GPUs: 2 requested but only 1 were found.' -> nccl-tests launched with wrong -g/-np (forum 365582). 'peer 192.168.100.11<56630> message truncated : receiving 8 bytes instead of 4.' -> NCCL version/transport mismatch, secondary IPs on CX-7 ports confusing NCCL_SOCKET_IFNAME (forum 356280). '[Rank 1] Watchdog caught collective operation timeout' -> TCP rendezvous port (29500) blocked by ufw or node launched late (ArgentAIOS). 'Authorization required, but no authorization protocol specified' -> X11/xhost noise under mpirun, harmless (forum 359593).",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/why-is-my-nccl-broken/359593"
+  },
+  {
+   "claim": "dmesg 'mlx5_core 0000:01:00.0: mlx5_pcie_event: Detected insufficient power on the PCIe slot (27W).' is emitted on Sparks; NVIDIA support called it non-critical, but it co-occurs with a severe throttle where ib_write_bw shows ~13 Gb/s instead of ~98 Gb/s per twin. Fix reported: reboot both nodes with the QSFP cable already connected, and/or firmware update plus full cold power drain.",
+   "detail": "lspci showed 'SlotPowerLimit 0W' (firmware reporting bogus slot power limit). Before: 13.39-13.76 Gbps per interface; after reboot with cable connected: 98.01 Gbps per interface (196.02 aggregate) (ccatzin 2026-08-06). Thread 370035: ~12.7-13.5 Gbps ib_write_bw and 'Avg bus bandwidth: ~2.8 GB/s' NCCL fixed by firmware 1.108.20 + hard power cycle. Ank-Chy (2026-08-17): 'the issue is resolved.'",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-inter-spark-link-capped-at-13-gbps-expected-200-gbps-pcie-power-throttling-27w/363461"
+  },
+  {
+   "claim": "CX-7 NICs can vanish entirely: (a) PCIe training failure 'pci 0000:00:00.0: broken device, retraining non-functional downstream link at 2.5GT/s' / 'pci 0000:00:00.0: retraining failed' -> NIC absent from lspci, RMA needed; (b) kernel regression in 6.17.0-1021-nvidia and 6.17.0-1029-nvidia where 'cx7-pcie-hotplug MTKP0001:00: Cable removal' fires 5-22 s after boot and removes all four NICs; fixed on 6.14.0-1015-nvidia (and original 6.11.0-1016-nvidia works).",
+   "detail": "Other strings in the hotplug case: 'Port module event: ... Cable unplugged', 'E-Switch: Unload/Disable/cleanup'. CX-7 firmware seen: 28.45.4028. Fix: `sudo apt-get install -y linux-image-6.14.0-1015-nvidia linux-modules-6.14.0-1015-nvidia linux-modules-nvidia-580-open-6.14.0-1015-nvidia` then apt-mark hold. Cable-not-powered case: 'QSFP module not powered', 'Port module 0: Cable unplugged', ibdev2netdev empty; unqualified DAC suspected.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-network-cards-disappear-after-dgx-spark-system-update-due-to-cx7-pcie-hotplug-driver-issue/374275"
+  },
+  {
+   "claim": "Linux bonding/LAG of the two twins does not work for the inter-Spark link: bond shows 'MII Status: up' and 'Speed: 200000 Mbps' on both slaves but ping fails, and bonding 'either broke RoCE reachability or only one link ever carried a given flow'.",
+   "detail": "eugr 2025-11-21 (balance-xor of enp1s0f1np1 + enP2p1s0f1np1); AndrewMyers 2025-11-26. The supported model is two separate subnets and NCCL_IB_HCA listing both twins.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-nic-in-dgx-spark/350417?page=2"
+  },
+  {
+   "claim": "Plain TCP over the link is CPU-bound and not a valid link test: iperf3 single stream ~16-33 Gb/s, ~100-111 Gb/s only with parallel streams; RDMA (ib_write_bw) is required to see ~200 Gb/s.",
+   "detail": "Forum 376298: 'TCP (iperf3, 8 streams) ~16 Gb/s - Limited by Grace CPU, not link'; 'plain TCP pushing' constrained ~16 Gb/s; both CX-7 ports share one L2 domain via the NIC eSwitch. geerlingguy: 27-33 Gbps single stream, 106 Gbps with -P 4. Ping RTT over fabric ~0.12-0.4 ms.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/two-dgx-sparks-over-the-connectx-7-direct-link-setup-notes-throughput-numbers-and-two-questions-federated-vs-cluster-telemetry/376298"
+  },
+  {
+   "claim": "Community firewall guidance: torch.distributed/vLLM rendezvous on the fabric needs TCP 29500 (default MASTER_PORT) open; ArgentAIOS runbook fixes 'connection refused / timeout' with `sudo ufw allow 29500/tcp` and `sudo ufw allow from 10.0.0.0/24`.",
+   "detail": "Also lists: hang at dist.init_process_group() when GDR assumed (set NCCL_NET_GDR_LEVEL=0, NCCL_DMABUF_ENABLE=0), NCCL_IB_TIMEOUT=22 and NCCL_TIMEOUT=600 because 'Grace Blackwell init is slower'. Whether DGX OS 7 enables ufw by default could not be confirmed.",
+   "confidence": "medium",
+   "source_url": "https://raw.githubusercontent.com/ArgentAIOS/dgx-spark-cluster/main/docs/03-troubleshooting.md"
+  },
+  {
+   "claim": "Tools that group CX-7 ports by PCI address break on Spark: stripping the function from 0000:01:00.0 and 0002:01:00.0 yields two 'physical ports' for one QSFP cage; correct grouping is by function index (f0 across domains 0000 and 0002 = one cage).",
+   "detail": "NemoClaw issue: 'one cable head in one QSFP receptacle brings up two independent RoCE-capable Ethernet interfaces on two distinct PCIe controllers'; detector produced physicalPortId=pci-0000:01:00 vs pci-0002:01:00.",
+   "confidence": "medium",
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/8520"
+  },
+  {
+   "claim": "Switch-based clustering requires a single L2 bridge, fixed 200G speed (autoneg off if needed), MTU 9000 end-to-end; on MikroTik CRS804 RoCE collapsed to ~5-10 Gb/s until bridge HW offload was restored, PFC/QoS disabled (`pfc=disabled`, `trust-l3=ignore`), l2mtu=9216/mtu=9000, and duplicate fabric IPs removed; host side `mlnx_qos -i <netdev> --pfc 0,0,0,0,0,0,0,0`.",
+   "detail": "NVIDIA switch playbook: 'QSFP switch with at least 4 QSFP56-DD ports (at least 200Gbps each)'; recommends using the second (further from Ethernet) port on all nodes; APT error 'E: The list of sources could not be read.' listed in its troubleshooting table.",
+   "confidence": "medium",
+   "source_url": "https://itadmin.blog/?p=568"
+  },
+  {
+   "claim": "NVIDIA field diagnostic package for Spark is `dgx-spark-fielddiag` (seen at 1.0.9-1) from the CUDA repo https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/, installing /opt/nvidia/dgx-spark-fieldiag/ with a `partnerdiag` script.",
+   "detail": "Note the on-disk directory name is spelled 'fieldiag' in the thread while the package is 'fielddiag'.",
+   "confidence": "low",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311"
+  },
+  {
+   "claim": "Independent script (spark2_nccl_check.sh) detects live CX-7 ports purely from sysfs: iterate /sys/class/infiniband/*/ports/1/state, strip prefix with `sed 's/.*: //'` to get ACTIVE/DOWN, map to netdev via /sys/class/infiniband/<dev>/device/net, prefer devices that are ACTIVE and have an IPv4; gates ib_write_bw >= 90 Gbps and ib_write_lat <= 3 us; confirms RoCE by grepping NCCL log for 'NET/IB' vs 'NET/Socket'.",
+   "detail": "Also notes 'PCI enumeration can name the live port differently on each box' (rocep1s0f0 on one node, rocep1s0f1 on the other), so NCCL_IB_HCA may need both names.",
+   "confidence": "medium",
+   "source_url": "https://contact.alessandrosangiorgi.net/posts/dgx-spark-roce-link-validation/"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "ConnectX-7 present on a DGX Spark (GB10) system",
+   "how": "Enumerate PCI vendor 0x15b3 (Mellanox) devices via `lspci -Dnn -d 15b3:` or /sys/bus/pci/devices/*/vendor == 0x15b3; expect four functions at 0000:01:00.0, 0000:01:00.1, 0002:01:00.0, 0002:01:00.1. Cross-check /sys/class/infiniband/ has entries matching ^roce[pP]|^mlx5_ and /sys/class/net/ has names matching ^en[pP]2?p1s0f[01]np[01]$. Zero 15b3 devices on a GB10 => NIC not enumerated (CRIT).",
+   "exact_strings": [
+    "15b3",
+    "0000:01:00.0",
+    "0002:01:00.0",
+    "rocep1s0f0",
+    "rocep1s0f1",
+    "roceP2p1s0f0",
+    "roceP2p1s0f1",
+    "enp1s0f0np0",
+    "enp1s0f1np1",
+    "enP2p1s0f0np0",
+    "enP2p1s0f1np1",
+    "mlx5_0"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html"
+  },
+  {
+   "what": "Group the four logical interfaces into two physical QSFP cages",
+   "how": "Pair by PCI function index across domains: functions .0 in domain 0000 and 0002 => cage/port 0 (left, near RJ45); functions .1 => cage/port 1. Do NOT group by stripping function from the PCI address (NemoClaw bug). Twins of a cage must have identical link state; one twin Up and its twin Down is anomalous.",
+   "exact_strings": [
+    "p1s0f0",
+    "P2p1s0f0",
+    "p1s0f1",
+    "P2p1s0f1"
+   ],
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/8520"
+  },
+  {
+   "what": "Link up/down per RoCE device and netdev",
+   "how": "Read /sys/class/infiniband/<dev>/ports/1/state (format 'N: NAME'; '4: ACTIVE' = up, '1: DOWN' = no link) and /sys/class/infiniband/<dev>/ports/1/phys_state ('5: LinkUp'); read /sys/class/net/<if>/operstate ('up'/'down') and /sys/class/net/<if>/carrier. Fallback: parse `ibdev2netdev` lines '<dev> port 1 ==> <if> (Up|Down)'. If a management link (enP7s7) is up but all four CX-7 interfaces are Down, report 'no QSFP link' (INFO unless the user asked for cluster checks).",
+   "exact_strings": [
+    "ACTIVE",
+    "DOWN",
+    "LinkUp",
+    "(Up)",
+    "(Down)",
+    "State: Active",
+    "Physical state: LinkUp",
+    "Link detected: yes"
+   ],
+   "source_url": "https://contact.alessandrosangiorgi.net/posts/dgx-spark-roce-link-validation/"
+  },
+  {
+   "what": "Negotiated link speed",
+   "how": "Read /sys/class/net/<if>/speed (Mb/s) or `ethtool <if> | grep Speed`. Expect 200000 per Up interface. 100000 indicates a 100G-only cable/switch port or a split; -1/unknown with operstate down means no link.",
+   "exact_strings": [
+    "Speed: 200000Mb/s",
+    "Speed: 100000Mb/s",
+    "200000",
+    "100000",
+    "Rate: 200"
+   ],
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/multi-sparks-through-switch/README.md"
+  },
+  {
+   "what": "PCIe link to each CX-7 controller and power-throttle symptom",
+   "how": "`lspci -vv -s 0000:01:00.0` and `-s 0002:01:00.0`: LnkSta should contain 'Speed 32GT/s' and 'Width x4'. Scan dmesg/journal for the 27W message and 'SlotPowerLimit 0W'. The 27W line alone is INFO (NVIDIA calls it non-critical) but if present together with a link Up and the user reports low bandwidth, suggest the 'reboot with cable connected / cold power drain' remedy.",
+   "exact_strings": [
+    "Detected insufficient power on the PCIe slot (27W)",
+    "mlx5_pcie_event",
+    "SlotPowerLimit 0W",
+    "Speed 32GT/s (ok), Width x4 (ok)"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-inter-spark-link-capped-at-13-gbps-expected-200-gbps-pcie-power-throttling-27w/363461"
+  },
+  {
+   "what": "CX-7 disappearing due to kernel hotplug regression or PCIe training failure",
+   "how": "Check `uname -r` for 6.17.0-1021-nvidia / 6.17.0-1029-nvidia; grep dmesg/journal for the strings below. If NICs are absent AND kernel is 6.17.x => WARN with kernel-downgrade guidance; if 'broken device, retraining' present => CRIT hardware.",
+   "exact_strings": [
+    "cx7-pcie-hotplug MTKP0001:00: Cable removal",
+    "broken device, retraining non-functional downstream link at 2.5GT/s",
+    "retraining failed",
+    "Port module 0: Cable unplugged",
+    "Port module 1: Cable unplugged",
+    "QSFP module not powered",
+    "E-Switch: Unload/Disable/cleanup",
+    "6.17.0-1021-nvidia",
+    "6.17.0-1029-nvidia",
+    "6.14.0-1015-nvidia",
+    "6.11.0-1016-nvidia"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-network-cards-disappear-after-dgx-spark-system-update-due-to-cx7-pcie-hotplug-driver-issue/374275"
+  },
+  {
+   "what": "IP configuration on CX-7 twins",
+   "how": "`ip -4 -o addr show <if>` for each Up twin. Flag: Up interface with no IPv4; both twins of a cage in the same /24 (compare network prefixes); 169.254.0.0/16 link-local addresses (valid but unstable across reboots; produced by cx7-netplan.yaml link-local: [ipv4]); parse /etc/netplan/40-cx7.yaml for dhcp4/link-local/mtu keys.",
+   "exact_strings": [
+    "/etc/netplan/40-cx7.yaml",
+    "dhcp4: no",
+    "link-local: [ipv4]",
+    "169.254.",
+    "192.168.100.",
+    "192.168.101."
+   ],
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+  },
+  {
+   "what": "MTU consistency",
+   "how": "Read /sys/class/net/<if>/mtu for all four CX-7 interfaces; twins of a cage should match; the de-facto value is 9000 (NVIDIA playbook leaves default 1500). For each Up twin with a peer IP in its /24, run `ping -c 3 -M do -s 8972 -I <if> <peer>`; failure with 'Message too long' or 100% loss while `ping -s 1472` succeeds => path MTU mismatch.",
+   "exact_strings": [
+    "mtu 9000",
+    "mtu: 9000",
+    "-M do -s 8972",
+    "Message too long"
+   ],
+   "source_url": "https://sparkrun.dev/getting-started/networking/"
+  },
+  {
+   "what": "NCCL misconfiguration in the environment or launch scripts",
+   "how": "Inspect env vars (and optionally ~/.bashrc, docker run -e). NCCL_IB_HCA containing 'enp'/'enP' => netdev name instead of HCA name. NCCL_IB_HCA listing only one of a cage's twins => 100G cap. NCCL_IB_DISABLE=1 => forced TCP. NCCL_NET_GDR_LEVEL>0 or NCCL_DMABUF_ENABLE=1 => assumes GDR which is unsupported. NCCL_SOCKET_IFNAME unset with >2 IPv4 interfaces (mgmt + wlan + twins + docker0) => risk of wrong bootstrap NIC. Inside a container: presence of libnccl-net.so / aws-ofi-nccl and NCCL_NET_PLUGIN != none => silent socket fallback risk. libnccl.so.2 version < 2.28 => no sm_121.",
+   "exact_strings": [
+    "NCCL_IB_HCA",
+    "NCCL_SOCKET_IFNAME",
+    "NCCL_IB_DISABLE",
+    "NCCL_NET_GDR_LEVEL",
+    "NCCL_DMABUF_ENABLE",
+    "NCCL_NET_PLUGIN",
+    "NCCL_IB_MERGE_NICS",
+    "NCCL_IB_SUBNET_AWARE_ROUTING",
+    "NCCL_IB_GID_INDEX",
+    "GLOO_SOCKET_IFNAME",
+    "UCX_NET_DEVICES",
+    "OMPI_MCA_btl_tcp_if_include",
+    "libnccl-net.so",
+    "libnccl.so.2"
+   ],
+   "source_url": "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md"
+  },
+  {
+   "what": "NCCL runtime transport verification from NCCL_DEBUG=INFO logs (if user supplies a log)",
+   "how": "Grep for 'NET/IB' channel lines (good) vs 'NET/Socket' or 'Using network Socket' (TCP fallback). 'GDR 0' and 'GPU Direct RDMA Disabled for HCA' are EXPECTED on Spark and must not be flagged as errors. Match known error strings to the causes listed in facts.",
+   "exact_strings": [
+    "NET/IB",
+    "NET/Socket",
+    "Using network IB",
+    "Using network Socket",
+    "Connected all rings, use ring PXN 0 GDR 0",
+    "NET/IB : GPU Direct RDMA Disabled for HCA",
+    "NCCL WARN Call to ibv_modify_qp failed with 110",
+    "NCCL WARN NET/IB : No device found",
+    "not found",
+    "Unable to find the Infiniband/RoCE device",
+    "cannot find a corresponding process entry for that peer",
+    "Invalid number of GPUs",
+    "message truncated",
+    "Watchdog caught collective operation timeout",
+    "libnccl.so.2: cannot open shared object file"
+   ],
+   "source_url": "https://route179.dev/2026/07/21/dgx-spark-nccl-roce-benchmarking/"
+  },
+  {
+   "what": "GPUDirect RDMA misexpectation",
+   "how": "Check `lsmod | grep nvidia_peermem` (absent is normal), dmesg for the Unknown symbol line, /sys/kernel/mm/memory_peers/ (absent is normal). Any of these is informational: GDR is unsupported by design on GB10; do not recommend installing nvidia-peermem.",
+   "exact_strings": [
+    "nvidia_peermem: Unknown symbol ib_register_peer_memory_client",
+    "modprobe: ERROR: could not insert 'nvidia_peermem': Invalid argument",
+    "/sys/kernel/mm/memory_peers"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/gpu-direct-rdma-not-working-on-dgx-spark-systems-nvidia-peermem-module-fails-to-load/349837"
+  },
+  {
+   "what": "Discovery (mDNS/avahi) health for discover-sparks and NVIDIA Sync",
+   "how": "`dpkg -s avahi-utils` / `command -v avahi-browse`; `systemctl is-active avahi-daemon`; `avahi-browse -p -r -f -t _ssh._tcp` on the Up twin and expect at least one line with a peer IPv4; journalctl -u avahi-daemon for hostname conflicts; check /etc/avahi/avahi-daemon.conf for deny-interfaces containing CX-7 twins (that would hide the peer from discover-sparks).",
+   "exact_strings": [
+    "avahi-browse not found. Please install avahi-utils package",
+    "Warning: No services found on any specified interface",
+    "No active interfaces found via ibdev2netdev.",
+    "No IPv4 addresses found.",
+    "Host name conflict, retrying with",
+    "deny-interfaces=",
+    "_ssh._tcp"
+   ],
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/discover-sparks"
+  },
+  {
+   "what": "Firewall blocking discovery or rendezvous",
+   "how": "`ufw status verbose` (if installed): if 'Status: active' and no ALLOW rule for 5353/udp (mDNS), 22/tcp on the fabric subnets, or 29500/tcp (torch MASTER_PORT), flag. Also `nft list ruleset`/`iptables -S` for DROP/REJECT policies on the twins. Also check `sysctl net.ipv4.conf.<if>.rp_filter` (strict rp_filter with two same-subnet twins breaks replies).",
+   "exact_strings": [
+    "Status: active",
+    "5353/udp",
+    "29500/tcp",
+    "ufw allow 29500/tcp",
+    "rp_filter"
+   ],
+   "source_url": "https://raw.githubusercontent.com/ArgentAIOS/dgx-spark-cluster/main/docs/03-troubleshooting.md"
+  },
+  {
+   "what": "Bonding of CX-7 twins (unsupported pattern)",
+   "how": "Check /sys/class/net/bond*/bonding/slaves for any CX-7 twin name, or `ip -d link show type bond`.",
+   "exact_strings": [
+    "bond",
+    "balance-xor",
+    "MII Status: up"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-nic-in-dgx-spark/350417?page=2"
+  },
+  {
+   "what": "RDMA userspace tooling availability for optional active tests",
+   "how": "`dpkg -s perftest rdma-core ibverbs-utils infiniband-diags`; commands ib_write_bw, ib_write_lat, ibstat, ibdev2netdev, show_gids, mlnx_qos. Optional active test only with user consent: ib_write_bw per twin >= 90 Gb/s (gate), ib_write_lat t_typical <= 3 us.",
+   "exact_strings": [
+    "perftest",
+    "rdma-core",
+    "ibverbs-utils",
+    "infiniband-diags",
+    "ib_write_bw",
+    "ib_write_lat",
+    "show_gids"
+   ],
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/assets/performance_benchmarking_guide.md"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "SPARK-NET-CX7-NOT-ENUMERATED",
+   "severity": "CRIT",
+   "trigger": "Platform is DGX Spark/GB10 (DMI or nvidia-smi GB10) AND no PCI 15b3 devices found (or ibdev2netdev prints nothing) AND dmesg contains 'broken device, retraining non-functional downstream link' or 'cx7-pcie-hotplug MTKP0001:00: Cable removal'.",
+   "evidence_template": "ConnectX-7 not enumerated: lspci -d 15b3: returned {count} devices; kernel {kernel}; dmesg: '{matched_line}'",
+   "why_it_matters": "Without the CX-7 the 200 Gb/s inter-Spark link, RoCE and NCCL multi-node are impossible. On kernels 6.17.0-1021/1029-nvidia this is a known hotplug regression; with the PCIe retraining message it has required RMA.",
+   "next_steps": [
+    "If kernel is 6.17.0-1021-nvidia or 6.17.0-1029-nvidia: install linux-image-6.14.0-1015-nvidia + linux-modules-6.14.0-1015-nvidia + linux-modules-nvidia-580-open-6.14.0-1015-nvidia and apt-mark hold",
+    "Full cold power cycle: unplug power and QSFP for 30-60 s, press power while unplugged, reconnect",
+    "Run `sudo fwupdmgr refresh && sudo fwupdmgr update`",
+    "If 'retraining failed' persists after cold boot, run dgx-spark-fielddiag/partnerdiag and open an RMA"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/connectx-7-network-cards-disappear-after-dgx-spark-system-update-due-to-cx7-pcie-hotplug-driver-issue/374275",
+    "https://forums.developer.nvidia.com/t/connectx-7-nics-no-longer-appear/363193"
+   ]
+  },
+  {
+   "id": "SPARK-NET-KERNEL-617-CX7-REGRESSION",
+   "severity": "WARN",
+   "trigger": "uname -r matches 6.17.0-1021-nvidia or 6.17.0-1029-nvidia (CX-7 may be present now but can drop 5-22 s after boot).",
+   "evidence_template": "Running kernel {kernel} has a known cx7-pcie-hotplug regression that removes ConnectX-7 devices after boot",
+   "why_it_matters": "Users report all four CX-7 interfaces disappearing after a system update; the fixed kernel is 6.14.0-1015-nvidia.",
+   "next_steps": [
+    "Check `journalctl -k | grep cx7-pcie-hotplug` for 'Cable removal' events",
+    "Install and pin kernel 6.14.0-1015-nvidia with matching nvidia-580-open modules"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/connectx-7-network-cards-disappear-after-dgx-spark-system-update-due-to-cx7-pcie-hotplug-driver-issue/374275"
+   ]
+  },
+  {
+   "id": "SPARK-NET-CX7-LINK-DOWN-TWIN-MISMATCH",
+   "severity": "WARN",
+   "trigger": "CX-7 present; within one QSFP cage one twin's /sys/class/infiniband/<dev>/ports/1/state is ACTIVE while the other twin is DOWN (or operstate differs), OR dmesg shows 'QSFP module not powered' / 'Cable unplugged' while carrier is expected.",
+   "evidence_template": "QSFP port {port}: {twin_a} {state_a} but {twin_b} {state_b}; ibdev2netdev: '{line_a}' / '{line_b}'",
+   "why_it_matters": "Each cage exposes two 100 Gb/s twins; if only one is up the link is capped at ~100 Gb/s and NCCL_IB_HCA lists a dead device. Both twins of a cabled port should read (Up).",
+   "next_steps": [
+    "Reseat the QSFP DAC on both ends (pull-tab up, do not force); use an approved >=200 Gb/s cable (Amphenol NJAAKK-N911 or Luxshare LMTQF022-SD-R)",
+    "Reboot both Sparks with the cable already connected",
+    "Check dmesg for 'Detected insufficient power on the PCIe slot (27W)' and PCIe 'Speed 32GT/s, Width x4' on both 0000:01:00.x and 0002:01:00.x"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311"
+   ]
+  },
+  {
+   "id": "SPARK-NET-CX7-NO-LINK",
+   "severity": "INFO",
+   "trigger": "CX-7 present and all four twins DOWN (no cable) while user requested cluster/network checks, or a netplan 40-cx7.yaml / NCCL_IB_HCA references the CX-7 (intent to cluster).",
+   "evidence_template": "All ConnectX-7 ports report DOWN ({dev_list}); no QSFP link detected although {config_hint} is configured",
+   "why_it_matters": "Configured cluster networking cannot work without a link; distinguishes 'no cable' from a broken NIC.",
+   "next_steps": [
+    "Connect a QSFP cable between the SAME physical port on both Sparks (playbook: 'use the same physical port on each device to prevent issues with NCCL tests')",
+    "Re-run `ibdev2netdev` and expect '(Up)' on both twins of that port"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+   ]
+  },
+  {
+   "id": "SPARK-NET-LINK-SPEED-DEGRADED",
+   "severity": "WARN",
+   "trigger": "An Up CX-7 twin reports /sys/class/net/<if>/speed != 200000 (e.g. 100000).",
+   "evidence_template": "{if} negotiated {speed} Mb/s; expected 200000 Mb/s",
+   "why_it_matters": "NVIDIA's switch playbook requires 'Speed: 200000Mb/s'; 100G indicates a 100G cable/module, switch autoneg to 100G, or a split configuration, halving NCCL bandwidth.",
+   "next_steps": [
+    "Use a cable rated >=200 Gb/s (QSFP56 200G or QSFP112 400G DAC)",
+    "On a switch: set the port to fixed 200G and disable auto-negotiation; single L2 bridge for all Spark ports",
+    "Verify with `sudo ethtool <if> | grep Speed`"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/multi-sparks-through-switch/README.md"
+   ]
+  },
+  {
+   "id": "SPARK-NET-PCIE-POWER-27W",
+   "severity": "INFO",
+   "trigger": "dmesg contains 'mlx5_pcie_event: Detected insufficient power on the PCIe slot (27W)' or lspci shows 'SlotPowerLimit 0W' for the CX-7.",
+   "evidence_template": "dmesg: '{line}' on {pci_addr}; NVIDIA support describes this as non-critical, but it has co-occurred with ~13 Gb/s throttling",
+   "why_it_matters": "Alone it is benign, but multiple threads tie it to a state where the 200G link only carries ~13 Gb/s until both nodes are rebooted with the cable attached (or after firmware update + cold power drain).",
+   "next_steps": [
+    "If ib_write_bw shows ~13 Gb/s instead of ~92-98 Gb/s per twin: reboot both Sparks with the QSFP cable connected",
+    "Apply latest DGX Spark system/firmware update (fwupdmgr) and do a full power drain"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/connectx-7-inter-spark-link-capped-at-13-gbps-expected-200-gbps-pcie-power-throttling-27w/363461",
+    "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035"
+   ]
+  },
+  {
+   "id": "SPARK-NET-TWINS-SAME-SUBNET",
+   "severity": "WARN",
+   "trigger": "Both twins of a cage have IPv4 addresses in the same subnet (identical network prefix).",
+   "evidence_template": "{twin_a}={ip_a} and {twin_b}={ip_b} share subnet {subnet}; NVIDIA and eugr require distinct subnets per twin",
+   "why_it_matters": "Same-subnet twins confuse routing/ARP and NCCL autodiscovery ('causes networking and software conflicts'); traffic may all land on one twin or fail.",
+   "next_steps": [
+    "Edit /etc/netplan/40-cx7.yaml so each twin has its own /24 (e.g. 192.168.100.x and 192.168.101.x), `sudo chmod 600` and `sudo netplan apply`",
+    "Mirror the scheme on the peer with a different host octet"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/multi-sparks-through-switch/README.md",
+    "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md"
+   ]
+  },
+  {
+   "id": "SPARK-NET-UP-NO-IP",
+   "severity": "WARN",
+   "trigger": "A CX-7 twin is ACTIVE/Up but has no IPv4 address.",
+   "evidence_template": "{if} is Up (200000 Mb/s) but has no IPv4 address; NCCL/discover-sparks cannot use it",
+   "why_it_matters": "'Network unreachable' errors in the playbook troubleshooting table map to unconfigured interfaces; with two cables all four interfaces need IPs for full bandwidth.",
+   "next_steps": [
+    "Create /etc/netplan/40-cx7.yaml with dhcp4: no and a static address, then `sudo netplan apply`",
+    "Or temporarily `sudo ip addr add <IP>/24 dev <if>` (not persistent)"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+   ]
+  },
+  {
+   "id": "SPARK-NET-LINKLOCAL-ONLY",
+   "severity": "INFO",
+   "trigger": "A CX-7 twin's only IPv4 is 169.254.x.x (cx7-netplan.yaml asset uses link-local: [ipv4]).",
+   "evidence_template": "{if} uses link-local {ip}; addresses may change across reboots and complicate static NCCL/mpirun host lists",
+   "why_it_matters": "Works for discover-sparks, but community reports show autoconfigured link-local IPs on different subnets caused NCCL to fall back to slow paths until static IPs were used.",
+   "next_steps": [
+    "Prefer static addresses per twin in /etc/netplan/40-cx7.yaml"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/cx7-netplan.yaml",
+    "https://forums.developer.nvidia.com/t/why-is-my-nccl-broken/359593"
+   ]
+  },
+  {
+   "id": "SPARK-NET-MTU-MISMATCH",
+   "severity": "WARN",
+   "trigger": "MTU differs between the two twins of a cage, or (active probe) `ping -M do -s 8972` to the peer fails while a 1472-byte ping succeeds, or MTU on a CX-7 twin is 1500 while netplan/peer uses 9000.",
+   "evidence_template": "MTU {twin_a}={mtu_a}, {twin_b}={mtu_b}; jumbo probe to {peer}: {result}",
+   "why_it_matters": "Mismatched MTU 'causes silent packet drops and degraded throughput'; a 3-node NCCL failure was traced to one node at 1500 vs 9000.",
+   "next_steps": [
+    "Set mtu: 9000 on all CX-7 twins on every node (and on switch ports: l2mtu 9216 / mtu 9000)",
+    "Verify end-to-end with `ping -M do -s 8972 -c 3 <peer>`"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/3-cluster-nvidia-dgx-spark-cluster-nccl-not-working/376215",
+    "https://sparkrun.dev/getting-started/networking/"
+   ]
+  },
+  {
+   "id": "SPARK-NET-BONDED-TWINS",
+   "severity": "WARN",
+   "trigger": "Any CX-7 twin is a slave of a Linux bond/team.",
+   "evidence_template": "{if} is enslaved to {bond}; bonding the CX-7 twins is reported to break RoCE reachability",
+   "why_it_matters": "eugr/AndrewMyers found balance-xor bonds show up but ping fails or only one link carries a flow; the supported pattern is two subnets + NCCL_IB_HCA with both twins.",
+   "next_steps": [
+    "Remove the bond; give each twin its own /24 and list both RoCE devices in NCCL_IB_HCA"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/connectx-7-nic-in-dgx-spark/350417?page=2"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-HCA-USES-NETDEV-NAME",
+   "severity": "WARN",
+   "trigger": "NCCL_IB_HCA contains a netdev name (matches en[pP]) or UCX_NET_DEVICES contains a rocep*/mlx5_* name.",
+   "evidence_template": "NCCL_IB_HCA='{value}' names an Ethernet interface; NCCL expects RoCE device names (rocep1s0f1,roceP2p1s0f1)",
+   "why_it_matters": "Produces 'IB device enp1s0f0np0 not found' / 'Unable to find the Infiniband/RoCE device' and silent TCP fallback.",
+   "next_steps": [
+    "Set NCCL_IB_HCA to the RoCE devices of the cabled port, e.g. NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1 (names from `ibdev2netdev`)",
+    "Keep NCCL_SOCKET_IFNAME/UCX_NET_DEVICES/GLOO_SOCKET_IFNAME as netdev names"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/why-is-my-nccl-broken/359593"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-SINGLE-TWIN",
+   "severity": "WARN",
+   "trigger": "NCCL_IB_HCA is set and lists exactly one of a cage's two twins (e.g. only rocep1s0f1).",
+   "evidence_template": "NCCL_IB_HCA='{value}' uses one of two twins on port {port}; expect ~100 Gb/s (~12 GB/s) instead of ~200 Gb/s (~22-24 GB/s)",
+   "why_it_matters": "Each twin is a 100G PCIe x4 path; NCCL needs both to reach the advertised 200 Gb/s.",
+   "next_steps": [
+    "Add the second twin: NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1 (optionally NCCL_IB_MERGE_NICS=1)"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md",
+    "https://forums.developer.nvidia.com/t/nccl-single-cable-test-caps-at-100gbps/362403"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-IB-DISABLED",
+   "severity": "WARN",
+   "trigger": "NCCL_IB_DISABLE=1 while CX-7 twins are Up.",
+   "evidence_template": "NCCL_IB_DISABLE=1 forces TCP sockets over the 200G link (~1-3 GB/s) despite RoCE being available",
+   "why_it_matters": "Throws away ~10x bandwidth.",
+   "next_steps": [
+    "Unset or set NCCL_IB_DISABLE=0 and pin NCCL_IB_HCA to both twins"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-GDR-ASSUMED",
+   "severity": "INFO",
+   "trigger": "NCCL_NET_GDR_LEVEL set to a value other than 0/LOC, or NCCL_DMABUF_ENABLE=1, or nvidia_peermem load attempted (dmesg 'Unknown symbol ib_register_peer_memory_client').",
+   "evidence_template": "{var}={value}; GPUDirect RDMA is not supported on DGX Spark (unified memory), NCCL will log 'GDR 0'",
+   "why_it_matters": "Community runbooks report init_process_group hanging when GDR is assumed; users also waste time trying to install nvidia-peermem. 'GPU Direct RDMA Disabled for HCA' is the expected state.",
+   "next_steps": [
+    "Set NCCL_NET_GDR_LEVEL=0 and NCCL_DMABUF_ENABLE=0 if hangs occur",
+    "Do not install nvidia-peermem/GDRCopy on Spark"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/enabling-gpu-direct-rdma-for-dgx-spark-clustering/352051",
+    "https://raw.githubusercontent.com/ArgentAIOS/dgx-spark-cluster/main/docs/03-troubleshooting.md"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-PLUGIN-SOCKET-FALLBACK",
+   "severity": "WARN",
+   "trigger": "Running inside a container (or host) where an NCCL net plugin library (libnccl-net.so / aws-ofi-nccl) is on the library path and NCCL_NET_PLUGIN is not 'none'.",
+   "evidence_template": "Found {plugin_path} and NCCL_NET_PLUGIN={value}; on GB10 the aws-ofi plugin fails and NCCL silently falls back to NET/Socket (~3 GB/s)",
+   "why_it_matters": "Benchmarks appear to run but report 1-3 GB/s busbw with no error.",
+   "next_steps": [
+    "export NCCL_NET_PLUGIN=none (and NCCL_IB_MERGE_NICS=1)",
+    "Run with NCCL_DEBUG=INFO and confirm 'NET/IB' not 'NET/Socket'"
+   ],
+   "sources": [
+    "https://route179.dev/2026/07/21/dgx-spark-nccl-roce-benchmarking/",
+    "https://contact.alessandrosangiorgi.net/posts/dgx-spark-nccl-collective-latency/"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-VERSION-NO-SM121",
+   "severity": "WARN",
+   "trigger": "libnccl.so.2 version < 2.28 detected (e.g. NCCL 2.27.7 in older NGC images, or 2.18.2 as seen in a forum thread).",
+   "evidence_template": "NCCL {version} found at {path}; GB10 (sm_121) support requires a newer NCCL (playbook builds v2.30.7-1 with -gencode=arch=compute_121,code=sm_121)",
+   "why_it_matters": "Old NCCL hangs indefinitely on GB10 collectives.",
+   "next_steps": [
+    "Build NCCL per the playbook: git clone -b v2.30.7-1 https://github.com/NVIDIA/nccl.git; make -j src.build NVCC_GENCODE=\"-gencode=arch=compute_121,code=sm_121\"",
+    "Or use a 26.xx NGC container"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md",
+    "https://route179.dev/2026/07/21/dgx-spark-nccl-roce-benchmarking/"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-SOCKET-IFNAME-UNSET",
+   "severity": "INFO",
+   "trigger": "More than two IPv4-bearing interfaces (mgmt enP7s7, wlP9s9, docker0, CX-7 twins) and NCCL_SOCKET_IFNAME / GLOO_SOCKET_IFNAME / OMPI_MCA_btl_tcp_if_include are unset.",
+   "evidence_template": "{n} IPv4 interfaces present ({list}); NCCL_SOCKET_IFNAME unset - bootstrap may pick docker0/Wi-Fi",
+   "why_it_matters": "Leads to 'Open MPI accepted a TCP connection ... cannot find a corresponding process entry' (identical docker0 IPs) and Ray/vLLM rendezvous over the wrong NIC.",
+   "next_steps": [
+    "export NCCL_SOCKET_IFNAME=<iface> UCX_NET_DEVICES=<iface> OMPI_MCA_btl_tcp_if_include=<iface> GLOO_SOCKET_IFNAME=<iface> (playbook uses enP7s7; community uses the cabled CX-7 twin)"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md",
+    "https://forums.developer.nvidia.com/t/troubles-with-nccl-connecting-2-dgx-sparks/365582"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-RING-NEEDS-SUBNET-AWARE",
+   "severity": "INFO",
+   "trigger": "Three or more Sparks / both cages cabled (all four twins Up with IPs on four subnets) and NCCL_IB_SUBNET_AWARE_ROUTING is unset.",
+   "evidence_template": "Ring/multi-port topology detected ({n} Up twins) without NCCL_IB_SUBNET_AWARE_ROUTING=1",
+   "why_it_matters": "Playbook mandates NCCL_IB_SUBNET_AWARE_ROUTING=1 and NCCL_NET_PLUGIN=none for 3-node rings; missing it yields 'ibv_modify_qp failed with 110 Connection timed out'. 6-node users also needed NCCL_IB_MERGE_NICS=0.",
+   "next_steps": [
+    "export NCCL_IB_SUBNET_AWARE_ROUTING=1 NCCL_NET_PLUGIN=none (and NCCL_IB_MERGE_NICS=0 for rings)",
+    "Ensure every pair of directly cabled twins shares a subnet and non-adjacent nodes are not expected to talk RoCE over L3 routes"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md",
+    "https://forums.developer.nvidia.com/t/6-node-dgx-spark-ring-topology-nccl-fails-on-non-adjacent-node-pairs-routed-rdma/377435"
+   ]
+  },
+  {
+   "id": "SPARK-NET-AVAHI-MISSING",
+   "severity": "WARN",
+   "trigger": "avahi-browse not installed or avahi-daemon not active on a Spark with CX-7 twins Up (discover-sparks / NVIDIA Sync rely on mDNS _ssh._tcp).",
+   "evidence_template": "avahi-utils installed: {pkg}; avahi-daemon: {state}; discover-sparks will print 'avahi-browse not found. Please install avahi-utils package' or 'No services found on any specified interface'",
+   "why_it_matters": "discover-sparks and NVIDIA Sync discovery both depend on mDNS on the CX-7 link.",
+   "next_steps": [
+    "sudo apt-get install -y avahi-utils; sudo systemctl enable --now avahi-daemon",
+    "Fallback: `ssh-copy-id -i ~/.ssh/id_rsa.pub <user>@<peer-ip>` on both nodes"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/discover-sparks"
+   ]
+  },
+  {
+   "id": "SPARK-NET-MDNS-HOSTNAME-CONFLICT",
+   "severity": "WARN",
+   "trigger": "journalctl -u avahi-daemon contains 'Host name conflict, retrying with', or `avahi-resolve`/hostname shows a -2/-3 suffix.",
+   "evidence_template": "avahi renamed host to {new_name}: '{log_line}'; peers using {hostname}.local will fail to connect",
+   "why_it_matters": "Known DGX Spark issue #56: cabled CX-7 twins without DHCP flap and trigger repeated mDNS conflicts, breaking .local reachability for Sync and SSH aliases.",
+   "next_steps": [
+    "Give the CX-7 twins static addresses (dhcp4: no) so they stop flapping",
+    "Optionally add deny-interfaces=<twins> under [server] in /etc/avahi/avahi-daemon.conf (note: this hides the host from discover-sparks on that link and did not fully fix the issue)",
+    "sudo systemctl restart avahi-daemon"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/dgx-spark-playbooks/issues/56"
+   ]
+  },
+  {
+   "id": "SPARK-NET-FIREWALL-BLOCKS-CLUSTER",
+   "severity": "WARN",
+   "trigger": "ufw 'Status: active' (or nftables DROP policy) and no allow rule covering: 5353/udp (mDNS), 22/tcp from the CX-7 subnets, 29500/tcp (torch MASTER_PORT), or the fabric subnets in general.",
+   "evidence_template": "Firewall active with default {policy}; no rule for {missing_ports} on {twin_subnets}",
+   "why_it_matters": "Blocks discover-sparks/NVIDIA Sync discovery, mpirun SSH launch ('mpirun hangs or times out'), and torch.distributed rendezvous ('Watchdog caught collective operation timeout').",
+   "next_steps": [
+    "sudo ufw allow from <fabric-subnet>/24 (both twin subnets) or at least `sudo ufw allow 29500/tcp`, `sudo ufw allow 5353/udp`, `sudo ufw allow 22/tcp`",
+    "Re-run `avahi-browse -p -r -f -t _ssh._tcp` and `mpirun -np 2 -H <ip1>:1,<ip2>:1 hostname`"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/ArgentAIOS/dgx-spark-cluster/main/docs/03-troubleshooting.md",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md"
+   ]
+  },
+  {
+   "id": "SPARK-NET-RDMA-TOOLS-MISSING",
+   "severity": "INFO",
+   "trigger": "perftest (ib_write_bw/ib_write_lat) or infiniband-diags (ibstat) or ibdev2netdev not installed while CX-7 is present.",
+   "evidence_template": "Missing {pkgs}; cannot run NVIDIA's recommended RDMA bandwidth/latency checks",
+   "why_it_matters": "NVIDIA's benchmarking guide says to confirm ~200 Gb/s with ib_write_bw before any NCCL test; without it users mistake TCP or socket numbers for link problems.",
+   "next_steps": [
+    "sudo apt-get install -y perftest infiniband-diags rdma-core ibverbs-utils"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/assets/performance_benchmarking_guide.md"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Map RoCE devices to netdevs and link state (authoritative per NVIDIA playbooks)",
+   "command": "ibdev2netdev",
+   "notes": "Output lines: 'rocep1s0f0 port 1 ==> enp1s0f0np0 (Up)'. discover-sparks parses it with: ibdev2netdev | awk '/Up\\)/ {print $5}' | tr -d '()'. Empty output = NIC not enumerated.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+  },
+  {
+   "context": "Port state and speed",
+   "command": "ibstat rocep1s0f1; sudo ethtool enp1s0f1np1 | grep -E 'Speed|Link detected'",
+   "notes": "Healthy: 'State: Active', 'Physical state: LinkUp', 'Rate: 200'; 'Speed: 200000Mb/s', 'Link detected: yes'. sysfs equivalents: /sys/class/infiniband/<dev>/ports/1/state ('4: ACTIVE'), /sys/class/net/<if>/speed (200000), /sys/class/net/<if>/operstate.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-edgexpert-nccl-only-17-gb-s-over-200gbe/366055"
+  },
+  {
+   "context": "PCIe enumeration of the two CX-7 controllers",
+   "command": "lspci -Dnn -d 15b3: ; sudo lspci -vv -s 0000:01:00.0 | grep -E 'LnkSta|SlotPowerLimit'",
+   "notes": "Expect 0000:01:00.0/.1 and 0002:01:00.0/.1; 'Speed 32GT/s (ok), Width x4 (ok)'. 'SlotPowerLimit 0W' seen alongside the 27W throttle symptom.",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-inter-spark-link-capped-at-13-gbps-expected-200-gbps-pcie-power-throttling-27w/363461"
+  },
+  {
+   "context": "Kernel log triage for CX-7",
+   "command": "journalctl -k | grep -E 'mlx5|cx7-pcie-hotplug|retraining|Cable unplugged|insufficient power'",
+   "notes": "Match: 'Detected insufficient power on the PCIe slot (27W)', 'cx7-pcie-hotplug MTKP0001:00: Cable removal', 'broken device, retraining non-functional downstream link at 2.5GT/s', 'retraining failed', 'Port module 0: Cable unplugged', 'QSFP module not powered'.",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-nics-no-longer-appear/363193"
+  },
+  {
+   "context": "Persistent IP config (NVIDIA playbook)",
+   "command": "sudo tee /etc/netplan/40-cx7.yaml <<'EOF'\nnetwork:\n  version: 2\n  ethernets:\n    enp1s0f1np1:\n      addresses: [192.168.100.10/24]\n      dhcp4: no\n    enP2p1s0f1np1:\n      addresses: [192.168.101.10/24]\n      dhcp4: no\nEOF\nsudo chmod 600 /etc/netplan/40-cx7.yaml && sudo netplan apply",
+   "notes": "Node 2 uses .11. Community adds 'mtu: 9000', 'dhcp6: no', 'link-local: []'. Twins must be on different subnets. Rollback: remove the file or `sudo ip addr del`.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+  },
+  {
+   "context": "Temporary IP (lost at reboot)",
+   "command": "sudo ip addr add 192.168.100.10/24 dev enp1s0f1np1 && sudo ip link set enp1s0f1np1 up",
+   "notes": "Playbook 'Option 2'.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md"
+  },
+  {
+   "context": "NetworkManager alternative",
+   "command": "nmcli con add type ethernet ifname enp1s0f0np0 con-name cx7-cluster ipv4.method manual ipv4.addresses 10.77.0.1/24 ipv6.method disabled connection.autoconnect yes",
+   "notes": "Community example; DGX OS desktop uses NetworkManager for the mgmt NIC.",
+   "source_url": "https://forums.developer.nvidia.com/t/two-dgx-sparks-over-the-connectx-7-direct-link-setup-notes-throughput-numbers-and-two-questions-federated-vs-cluster-telemetry/376298"
+  },
+  {
+   "context": "MTU / jumbo verification",
+   "command": "ip -o link show enp1s0f1np1 | grep -o 'mtu [0-9]*'; ping -c 3 -M do -s 8972 -I enp1s0f1np1 <peer_ip>",
+   "notes": "8972 + 28 header bytes = 9000. Failure with 'Message too long' or 100% loss => MTU mismatch in path.",
+   "source_url": "https://sparkrun.dev/getting-started/networking/"
+  },
+  {
+   "context": "Peer discovery + shared SSH key (NVIDIA asset)",
+   "command": "bash ./discover-sparks",
+   "notes": "Must NOT be run as root. Requires avahi-utils. Internally: avahi-browse -p -r -f -t _ssh._tcp; creates ~/.ssh/id_ed25519_shared; scp/ssh with -o StrictHostKeyChecking=accept-new. Manual fallback: ssh-copy-id -i ~/.ssh/id_rsa.pub <user>@<ip> on both nodes.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/discover-sparks"
+  },
+  {
+   "context": "mDNS health",
+   "command": "systemctl is-active avahi-daemon; avahi-browse -p -r -f -t _ssh._tcp; journalctl -u avahi-daemon | grep 'Host name conflict'",
+   "notes": "Conflict line: 'avahi-daemon[PID]: Host name conflict, retrying with spark1-2'.",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/issues/56"
+  },
+  {
+   "context": "Raw RDMA bandwidth (NVIDIA benchmarking guide)",
+   "command": "# server\nib_write_bw -d rocep1s0f1 -i 1 -p 18515 -F --report_gbits\n# client\nib_write_bw -d rocep1s0f1 -i 1 -p 18515 -F --report_gbits <server_ip>",
+   "notes": "Expected ~92-97 Gbps per twin; run both twins concurrently (second pair on -p 18516 with roceP2p1s0f1) for ~190 Gbps aggregate. eugr variant: `-q 4 -R --force-link IB` (111.72 Gb/s peak). ~13 Gb/s = power/firmware throttle. ib_write_lat / ib_read_lat for latency (t_typical ~1.4-2 us), per link only.",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/assets/performance_benchmarking_guide.md"
+  },
+  {
+   "context": "Build NCCL + nccl-tests for GB10 (NVIDIA NCCL playbook)",
+   "command": "sudo apt-get install -y libopenmpi-dev\ngit clone -b v2.30.7-1 https://github.com/NVIDIA/nccl.git ~/nccl && cd ~/nccl && make -j src.build NVCC_GENCODE=\"-gencode=arch=compute_121,code=sm_121\"\ngit clone https://github.com/NVIDIA/nccl-tests.git ~/nccl-tests && cd ~/nccl-tests && make MPI=1 MPI_HOME=/usr/lib/aarch64-linux-gnu/openmpi NCCL_HOME=$HOME/nccl/build",
+   "notes": "export CUDA_HOME=/usr/local/cuda MPI_HOME=/usr/lib/aarch64-linux-gnu/openmpi NCCL_HOME=$HOME/nccl/build/ LD_LIBRARY_PATH=$NCCL_HOME/lib:$CUDA_HOME/lib64/:$MPI_HOME/lib:$LD_LIBRARY_PATH. Cleanup: rm -rf ~/nccl ~/nccl-tests.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md"
+  },
+  {
+   "context": "Run NCCL test across two Sparks (NVIDIA playbook env)",
+   "command": "export UCX_NET_DEVICES=enP7s7 NCCL_SOCKET_IFNAME=enP7s7 OMPI_MCA_btl_tcp_if_include=enP7s7\nmpirun -np 2 -H <ip1>:1,<ip2>:1 --mca plm_rsh_agent \"ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no\" -x LD_LIBRARY_PATH=$LD_LIBRARY_PATH $HOME/nccl-tests/build/all_gather_perf -b 16G -e 16G -f 2",
+   "notes": "enP7s7 = 10GbE mgmt; wlP9s9 = Wi-Fi. 3-node ring adds -x NCCL_IB_SUBNET_AWARE_ROUTING=1 -x NCCL_NET_PLUGIN=none (and community: NCCL_IB_MERGE_NICS=0, NCCL_IB_HCA listing all four). Expected 'Avg bus bandwidth' ~22-24 (GB/s); ~15.6-17 = firmware regression; ~1-3 = socket fallback. Sanity: `mpirun -np 2 -H <ip1>:1,<ip2>:1 hostname`.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md"
+  },
+  {
+   "context": "Community NCCL env for full 200G RoCE (vLLM/Ray, nccl-tests)",
+   "command": "export NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1 NCCL_IB_DISABLE=0 NCCL_SOCKET_IFNAME=enp1s0f1np1 UCX_NET_DEVICES=enp1s0f1np1 GLOO_SOCKET_IFNAME=enp1s0f1np1 NCCL_NET_PLUGIN=none NCCL_IB_MERGE_NICS=1 NCCL_IB_GID_INDEX=3 NCCL_DEBUG=INFO",
+   "notes": "Use `NCCL_IB_HCA==dev1,dev2` for exact match. Check log for 'NET/IB' and 'Using network IB'; 'GDR 0' is expected. Optional robustness: NCCL_IB_TIMEOUT=22 NCCL_TIMEOUT=600 NCCL_NET_GDR_LEVEL=0 NCCL_DMABUF_ENABLE=0.",
+   "source_url": "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md"
+  },
+  {
+   "context": "Firewall opening for cluster traffic (community)",
+   "command": "sudo ufw status verbose; sudo ufw allow 29500/tcp; sudo ufw allow from 192.168.100.0/24; sudo ufw allow from 192.168.101.0/24; sudo ufw allow 5353/udp",
+   "notes": "29500 = torch.distributed default MASTER_PORT; 5353/udp = mDNS for discover-sparks / NVIDIA Sync. Whether ufw is active by default on DGX OS 7 is unconfirmed.",
+   "source_url": "https://raw.githubusercontent.com/ArgentAIOS/dgx-spark-cluster/main/docs/03-troubleshooting.md"
+  },
+  {
+   "context": "Kernel downgrade for cx7-pcie-hotplug regression",
+   "command": "sudo apt-get install -y linux-image-6.14.0-1015-nvidia linux-modules-6.14.0-1015-nvidia linux-modules-nvidia-580-open-6.14.0-1015-nvidia && sudo apt-mark hold linux-image-6.14.0-1015-nvidia linux-modules-6.14.0-1015-nvidia linux-modules-nvidia-580-open-6.14.0-1015-nvidia",
+   "notes": "Affected: 6.17.0-1021-nvidia, 6.17.0-1029-nvidia. CX-7 fw seen 28.45.4028.",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-7-network-cards-disappear-after-dgx-spark-system-update-due-to-cx7-pcie-hotplug-driver-issue/374275"
+  },
+  {
+   "context": "Firmware update path used to fix CX-7 throughput regressions",
+   "command": "sudo fwupdmgr refresh && sudo fwupdmgr update",
+   "notes": "EdgeXpert users also enabled lvfs-testing. FE Sparks fixed via 'February 2026 system update'. SoC firmware 10600 regression reported; 0x02009009 downgrade workaround.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-edgexpert-nccl-only-17-gb-s-over-200gbe/366055"
+  },
+  {
+   "context": "Field diagnostics",
+   "command": "sudo apt-get install dgx-spark-fielddiag && sudo /opt/nvidia/dgx-spark-fieldiag/partnerdiag",
+   "notes": "Package from https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/ (version 1.0.9-1 seen). Directory spelling 'fieldiag' as reported; verify.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311"
+  },
+  {
+   "context": "Host-side RoCE QoS when a switch is involved",
+   "command": "sudo mlnx_qos -i enp1s0f1np1 --pfc 0,0,0,0,0,0,0,0",
+   "notes": "Lossy RoCE with PFC disabled was the working end state on MikroTik CRS804; switch: MTU 9000 / l2mtu 9216, pfc=disabled, trust-l3=ignore, HW offload on bridge.",
+   "source_url": "https://itadmin.blog/?p=568"
+  }
+ ],
+ "open_questions": [
+  "Exact string format of /sys/class/infiniband/roce*/ports/1/rate and `ibstat` 'Link layer:' on Spark (presumably 'Link layer: Ethernet' for RoCE) was not seen verbatim in any fetched page; confirm on hardware before matching.",
+  "Whether DGX OS 7 ships with ufw enabled by default (community runbooks add ufw rules, implying it can be active, but no NVIDIA doc confirms).",
+  "NCCL_IB_MERGE_NICS and NCCL_IB_SUBNET_AWARE_ROUTING are used by NVIDIA's playbook/community but are not on the official NCCL env-var page fetched; default values unconfirmed.",
+  "ArgentAIOS claims NCCL_DMABUF_ENABLE=1 + NCCL_NET_GDR_LEVEL=5 yields 22-23 vs 18-20 GB/s, contradicting NVIDIA's statement that dma-buf does not work on Spark; unverified.",
+  "Known-good ConnectX-7 firmware version string (ethtool -i firmware-version) after the Feb-2026 fix, and the exact DGX OS / SoC firmware version strings (e.g. 10500/10600, 0x02009009) as reported by fwupdmgr, were not captured verbatim.",
+  "Which TCP/UDP ports NVIDIA Sync and its Cluster Assistant require (docs list none); only mDNS (.local) discovery and SSH are documented.",
+  "Whether DGX OS's default netplan/NetworkManager applies DHCP or link-local to the CX-7 twins out of the box (issue #56 implies DHCP attempts on cabled twins).",
+  "Official NVIDIA KB a_id 5780 ('Is GPUDirect RDMA supported on DGX Spark?') returned HTTP 403; wording taken from the forum post by NVIDIA staff instead.",
+  "build.nvidia.com/spark/connect-two-sparks and /spark/nccl pages timed out twice; assumed identical to the GitHub playbooks.",
+  "Whether the mDNS deny-interfaces workaround for hostname conflicts has an official fix in a later DGX OS release.",
+  "RTX Spark / N1X (Windows on Arm) networking: nothing found; none of the CX-7/RoCE material applies to Windows on Arm devices, which have no QSFP ports as far as sources show."
+ ],
+ "sources": [
+  "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/discover-sparks",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-two-sparks/assets/cx7-netplan.yaml",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/assets/performance_benchmarking_guide.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nccl/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/connect-three-sparks/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/multi-sparks-through-switch/README.md",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/issues/56",
+  "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html",
+  "https://docs.nvidia.com/sync/latest/cluster-assistant.html",
+  "https://docs.nvidia.com/sync/latest/index.html",
+  "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html",
+  "https://forums.developer.nvidia.com/t/connectx-7-nic-in-dgx-spark/350417",
+  "https://forums.developer.nvidia.com/t/connectx-7-nic-in-dgx-spark/350417?page=2",
+  "https://forums.developer.nvidia.com/t/gpu-direct-rdma-not-working-on-dgx-spark-systems-nvidia-peermem-module-fails-to-load/349837",
+  "https://forums.developer.nvidia.com/t/enabling-gpu-direct-rdma-for-dgx-spark-clustering/352051",
+  "https://forums.developer.nvidia.com/t/connectx-7-inter-spark-link-capped-at-13-gbps-expected-200-gbps-pcie-power-throttling-27w/363461",
+  "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035",
+  "https://forums.developer.nvidia.com/t/connectx-7-nics-no-longer-appear/363193",
+  "https://forums.developer.nvidia.com/t/connectx-7-network-cards-disappear-after-dgx-spark-system-update-due-to-cx7-pcie-hotplug-driver-issue/374275",
+  "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311",
+  "https://forums.developer.nvidia.com/t/nccl-single-cable-test-caps-at-100gbps/362403",
+  "https://forums.developer.nvidia.com/t/why-is-my-nccl-broken/359593",
+  "https://forums.developer.nvidia.com/t/troubles-with-nccl-connecting-2-dgx-sparks/365582",
+  "https://forums.developer.nvidia.com/t/3-cluster-nvidia-dgx-spark-cluster-nccl-not-working/376215",
+  "https://forums.developer.nvidia.com/t/nccl-socket-transport-fails-with-pipeline-parallelism-mesh-pp-on-dgx-spark/356280",
+  "https://forums.developer.nvidia.com/t/6-node-dgx-spark-ring-topology-nccl-fails-on-non-adjacent-node-pairs-routed-rdma/377435",
+  "https://forums.developer.nvidia.com/t/dgx-spark-edgexpert-nccl-only-17-gb-s-over-200gbe/366055",
+  "https://forums.developer.nvidia.com/t/one-of-four-dgx-sparks-shows-35-lower-nccl-bandwidth-cant-figure-out-why/360591",
+  "https://forums.developer.nvidia.com/t/two-spark-cluster-with-vllm-using-tensor-parallel-size-2-causes-one-node-to-drop-while-the-others-gpu-goes-100-forever/358755",
+  "https://forums.developer.nvidia.com/t/install-and-use-vllm-for-inference-on-two-sparks-does-not-work/349496",
+  "https://forums.developer.nvidia.com/t/two-spark-cluster-tensor-parallel-size-2-causing-engine-initialization-failure-with-qwen3-vl-30b-ray-vllm/362518",
+  "https://forums.developer.nvidia.com/t/two-dgx-sparks-over-the-connectx-7-direct-link-setup-notes-throughput-numbers-and-two-questions-federated-vs-cluster-telemetry/376298",
+  "https://forums.developer.nvidia.com/t/stacking-sparks-qsfp56-or-qsfp112-or-both/349818",
+  "https://raw.githubusercontent.com/eugr/spark-vllm-docker/main/docs/NETWORKING.md",
+  "https://github.com/eugr/spark-vllm-docker/issues/252",
+  "https://github.com/NVIDIA/NemoClaw/issues/8520",
+  "https://github.com/ArgentAIOS/dgx-spark-cluster",
+  "https://raw.githubusercontent.com/ArgentAIOS/dgx-spark-cluster/main/docs/03-troubleshooting.md",
+  "https://route179.dev/2026/07/21/dgx-spark-nccl-roce-benchmarking/",
+  "https://multimodalflow.net/en/blog/dgx-spark-dual-node-nccl-rdma/",
+  "https://contact.alessandrosangiorgi.net/posts/dgx-spark-roce-link-validation/",
+  "https://contact.alessandrosangiorgi.net/posts/dgx-spark-nccl-collective-latency/",
+  "https://sparkrun.dev/getting-started/networking/",
+  "https://itadmin.blog/?p=568"
+ ]
+}

@@ -1,0 +1,1461 @@
+{
+ "topic": "DGX Spark / GB10 failure-mode corpus (NVIDIA Developer Forums \"DGX Spark / GB10\" + GitHub issues, Oct 2025 - Sep 2026): symptoms, exact log strings, root causes, affected versions, fixes, and candidate NVCheckup rules",
+ "facts": [
+  {
+   "claim": "cuDNN/cuBLAS internal errors under batch load on GB10 are fixed by driver 580.173.02 (DGX OS 7.5.0, kernel 6.17.0-1031).",
+   "detail": "Exact strings: \"CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED\" (Conv node), \"CUBLAS failure 14: CUBLAS_STATUS_INTERNAL_ERROR\" (FusedMatMul), and after the crash respawned workers see \"CUDA failure 100: no CUDA-capable device is detected\". Failing: driver 580.126.09 / 580.95.05, kernels 6.17.0-1008 / 6.14.0-1015, DGX OS 7.4.0 / 7.3.1. Working: 580.142, 580.173.02 with kernel 6.17.0-1018 / 6.17.0-1031, DGX OS 7.5.0. Workload: ONNX Runtime CUDA EP self-built (CUDA 13, sm_121, aarch64). Fix was plain `apt full-upgrade`. Posted 2026-08-22.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948"
+  },
+  {
+   "claim": "apt upgrade from nvidia-driver-580-open 580.159.03 to 580.173.02 on firmware OTA2607 broke GPU init (\"No devices were found\"); fixed by downgrading + apt-mark hold, and later by re-running the DGX Dashboard update (2026-07-28).",
+   "detail": "dmesg: \"NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!\", \"NVRM: ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out.\", \"NVRM: RmInitAdapter: Cannot initialize GSP firmware RM\". nvidia-smi: \"No devices were found\". Packages: nvidia-driver-580-open 580.159.03-0ubuntu0.24.04.1 -> 580.173.02-0ubuntu0.24.04.1; linux-modules-nvidia-580-open-6.17.0-1026-nvidia 6.17.0-1026.26+3. OTA2607 (2026-07-15) pairs with 580.159.03. /etc/dgx-release showed DGX OS 7.2.3 with DGX_OTA_VERSION=7.3.1. OTA check: \"detected_ota OTA2607, match 99.3%, total_checks 153, passed_checks 152, failed: [\\\"driver\\\"]\". Fix: dpkg -i archived 580.159.03 debs, apt-mark hold, cold restart.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "claim": "An earlier (Nov 2025) \"No devices were found\" after a Dashboard update had the same GSP/SEC2 signature and was a driver/firmware package mismatch fixed by a manual apt dist-upgrade + fwupdmgr upgrade.",
+   "detail": "dmesg: \"ksec2SendBootCommands_GB20B: SEC2 boot cmds failed. RM cannot boot.\", \"Cannot initialize GSP firmware RM\", \"RmInitAdapter failed! (0x62:0x1a:2015)\". Versions: nvidia-driver-580-open 580.95.05-0ubuntu0.24.04.2, nvidia-firmware-580-580.95.05, kernel 6.14.0-1013-nvidia, DGX 7.2.3 -> OTA 7.3.1. Fix: `sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr upgrade && sudo reboot`. Resolved 2025-12-02.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-smi-no-devices-were-found/352963"
+  },
+  {
+   "claim": "GPU can disappear on a later boot with the same GSP signature even when Secure Boot is disabled; NVIDIA asks for nvidia-bug-report.sh and fielddiag; no root cause posted.",
+   "detail": "Strings: \"NVRM: RmInitAdapter: Cannot initialize GSP firmware RM\", \"ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out\", \"NV_ERR_TIMEOUT\", \"rm_init_adapter failed, device minor number 0\"; Docker test: \"CUDA failed to initialize, error 999\". GPU still enumerates at PCI 000f:01:00.0.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171"
+  },
+  {
+   "claim": "nvidia-smi output \"NVIDIA-GB10 not supported\" appeared after a user restored and installed server/DKMS/fabricmanager driver packages; DGX Spark has no NVSwitch and Fabric Manager is not needed; fixed by System Recovery image.",
+   "detail": "Packages installed by the user: nvidia-driver-580-open, nvidia-dkms-580-open-server, nvidia-fabricmanager-580, nvidia-system-station, nvidia-nvswitch-580. Moderator: \"DGX Spark does not have an NVSwitch, so Nvidia Fabric Manager is not needed.\" Guidance: \"only use the driver that is provided with the OS image\". Dates 2026-04-23/24.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655"
+  },
+  {
+   "claim": "nvidia-smi showing \"Not Supported\" in the Memory-Usage column on GB10 is expected (unified memory), per NVIDIA staff and the official Known Issues page.",
+   "detail": "User nvidia-smi row: \"NVIDIA GB10 On | 0000000F:01:00.0 On | N/A | N/A 38C P8 4W / N/A | Not Supported | 0% Default\" (driver 580.95.05, CUDA 13.0). Moderator aniculescu: \"this is due to how nvidia-smi interacts with the unified memory\". Known Issues: \"nvidia-smi reports 'Memory-Usage: Not Supported'\" is expected on iGPU platforms; per-process GPU memory still appears.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322"
+  },
+  {
+   "claim": "Official DGX Spark Known Issues: use supplied power adapter; Memory-Usage Not Supported is expected; cudaMemGetInfo may underreport (workaround drop_caches); HDMI display deep sleep does not wake (press monitor button).",
+   "detail": "Verbatim: \"Use the supplied power adapter for optimal performance\" (other adapters \"may reduce performance, prevent boot, or cause unexpected shutdowns\"); \"nvidia-smi reports 'Memory-Usage: Not Supported'\"; cudaMemGetInfo workaround \"sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'\" then restart app; \"Attached HDMI display goes into deep sleep mode after an extended period of inactivity and does not wake\" - press a physical button on the monitor.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "Release notes (fetched 2026-09-02) list current stack as DGX OS 7.5.0, GPU driver 580.159.03, CUDA 13.0.2, kernel 6.17, UEFI 1.110.13; monthly releases Nov 2025 - Jul 2026.",
+   "detail": "Jan 2026: CX7 hot plug power management (~18 W saving), Bluetooth audio, Wi-Fi/BT disable in UEFI. Feb 2026: fixed multi-Spark performance regression after 7.4.0. Apr 2026: Bluetooth keyboard pairing modal fix, Wi-Fi/Ethernet setup fixes. Jun 2026: OTA no longer auto-installed during setup, NCCL 2.30u1 three-system ring, Sync Cluster Assistant (up to 4). Jul 2026: display hot-plug instability fixed, OOM handling improved, Display Reserved Memory 2-4 GB in BIOS. Note: the 580.173.02 driver in the wild came via Ubuntu apt ahead of NVIDIA's OTA pairing.",
+   "confidence": "medium",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "claim": "Official update path is DGX Dashboard; manual path is `sudo apt update; sudo apt dist-upgrade; sudo fwupdmgr refresh; sudo fwupdmgr upgrade; sudo reboot`.",
+   "detail": "\"The DGX Dashboard is the primary and recommended way to perform system updates\". Pre-update warnings: stable power, close apps, have a recovery plan. No documented apt-mark hold guidance.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+  },
+  {
+   "claim": "GB10 hard power-off under sustained load is log-less (EC cuts power before kernel logs); workaround `sudo nvidia-smi -lgc 300,2200` (~5% decode cost); NVIDIA staff confirmed it as a known issue.",
+   "detail": "Signature: `last -Fx` shows no shutdown records (every boot ends \"still running\"); journal ends on a mundane line; no OOM/panic/hung-task/MCE/Xid/thermal messages; /sys/fs/pstore empty; kernel taint 4096. Forum repro: \"step 16384 82 C 91.81 W throttle 0x4 <-- SwPowerCap --- SYSTEM POWERS OFF ---\"; with cap: \"throttle 0x20 <-- SwThermalSlowdown ... all steps completed, no crash\". Firmware on failing unit: BIOS 5.36_0ACUM018 (2025-08-06), SOCFW 2.155.11, EC 3.5.8, USBPD 0.5.22, OTA2607; driver 580.159.03, kernel 6.17.0-1021-nvidia. Staff: \"a know issue\", workaround clock reduction, run Field Diag. Repo also: persist via systemd gb10-clock-cap.service depending on nvidia-persistenced; revert `sudo nvidia-smi -rgc`; fielddiag typically reports thermal error 082-000-1-020000600139 on RMA'd units.",
+   "confidence": "high",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "claim": "Forum thread 378315 reproduces hard power-off above ~90 W with default clocks and completion with 2200 MHz cap, all on fully updated OTA2607 firmware.",
+   "detail": "See tonyd2wild fact for exact lines. Unit rated ~140 W but dies at ~90 W; \"it goes from 0x0 straight to power-off\".",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/hard-power-off-under-sustained-gpu-load-at-90w-persists-after-full-platform-firmware-update/378315"
+  },
+  {
+   "claim": "The long \"temperature too high, automatic shutdown\" thread (Feb-Aug 2026): shutdowns with \"no error logs\", \"acpitz 88->97.8C in 5s\"; community attributes to GPU power spike / overcurrent + swap thrashing rather than pure thermal; clock cap 2100-2400 MHz stops it; NVIDIA could not reproduce and requested RMA units.",
+   "detail": "Adapters: HP/ASUS 240 W vs Dell 280 W noted. Users report \"0 shutdowns for the past few days\" after capping at 2100 MHz.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgxspark-temperature-too-high-automatic-shutdown/363370"
+  },
+  {
+   "claim": "EC firmware 0x03000508 (3.5.8) is associated by one user with fans not ramping and 96-97C ACPI zones; rolling back to EC 0x02004e18 via fwupdmgr downgrade fixed fan curve; blanket `fwupdmgr update` re-pushes the newer EC.",
+   "detail": "Check: `sudo fwupdmgr get-devices`, find \"Embedded Controller\" Device ID; `sudo fwupdmgr downgrade <DEVICE_ID>` select 0x02004e18; reboot. Timeline: EC updated 2026-08-16, hard shutdown 2026-08-29, rollback 2026-08-31 (PowerStress still failed at 97.4C so root cause not fully resolved).",
+   "confidence": "low",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069"
+  },
+  {
+   "claim": "Field diagnostics PowerStress failure code for thermal: \"MODS-020000610139: acceptable temperature limits exceeded or thermal sensor broken/miscalibrated\"; NVIDIA uses this for RMA eligibility.",
+   "detail": "System: DGX OS 7.5.0, kernel 6.17.0-1029-nvidia, driver 580.173.02, EC 3.5.8. Hard-freezes without OOM/Xid/panic. GPU 84C, hottest ACPI/SoC zone 93.1C in ~2 min. Fielddiag path \"/opt/nvidia/dgx-spark-fieldiag\". Another user fixed by firmware downgrade + 2000 MHz cap.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-hard-freezes-under-sustained-few-minutes-inference-powerstress-thermal-failure-support-portal-unavailable/379195"
+  },
+  {
+   "claim": "ASUS Ascent GX10 can sit permanently in ~30 W safety mode due to USB-C PD negotiation failure; NVIDIA redirected to ASUS RMA.",
+   "detail": "dmesg: \"mlx5_core 0000:01:00.0: mlx5_pcie_event:326:(pid 165): Detected insufficient power\" (27 W). BIOS 0102, EC 2.75.3.3, DGX OS 7.2.3. GPU stays <55C under gpu-burn. ASUS \"Double Flash\" PD procedure (Flash -> Reboot -> Flash -> Reboot) did not help.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/asus-ascent-gx10-dgx-spark-permanent-power-throttle-at-30w-safety-mode-pd-firmware-negotiation-failure/355255"
+  },
+  {
+   "claim": "The 'PD wedge' signature: GPU clock pinned at 611 MHz (or 513 MHz), ~13-16 W, ~50C, no throttle reason active; primary fix is a full cold drain of the power brick (not a warm reboot); recurs after sleep/resume.",
+   "detail": "Healthy vs wedged: 2200-2600 MHz vs 611; ~80-100 W vs ~13 W; power limit ~140 W vs <=30 W; bf16 GEMM ~55-60 TFLOPS vs ~18. Cold drain: unplug all USB-C, `sudo shutdown -h now`, unplug PSU both ends, hold power 30 s, wait 60+ s, replug PSU only. ASUS GX10 PD target 0x00000507 (LVFS 133405). `fwupdmgr get-devices` may keep showing old PD version after flash (ESRT quirk). Prevention: `sudo systemctl mask sleep.target suspend.target`, `sudo systemctl enable --now nvidia-persistenced`. \"No firmware version has been reported as a permanent fix\".",
+   "confidence": "medium",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "claim": "513 MHz cap thread: nvidia-smi shows all throttle reasons \"Not Active\" while clocks pinned at 513 MHz / 4.39 W in P0; hwmon power limits drop to pl1=20W / syspl1=30W from 140/231W; power-cycle fixes.",
+   "detail": "Quoted: \"Idle : Not Active\", \"Applications Clocks Setting : Not Active\", \"SW Power Cap : Not Active\", \"HW Slowdown : Not Active\", \"HW Thermal Slowdown : Not Active\"; \"19 %, 513 MHz, 513 MHz, 4.39 W, 39, P0\". Monitor with `nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,clocks.current.graphics`. First reported 2026-02-22, confirmations through Aug 2026.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/investigating-513mhz-cap-for-gpu/361296"
+  },
+  {
+   "claim": "Alternative recovery for the clock bug: power off, disconnect brick at both ends, wait 5 minutes (or hold power button 5-10 s with brick unplugged from wall).",
+   "detail": "Attributed to power-control circuits in the PSU rather than the GPU. July 9-10, 2026.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/gpu-clock-bug-looks-like-5-min-wait-is-enough/376239"
+  },
+  {
+   "claim": "Stale driver 550.54.15 + CUDA 12.4 on GB10 shows GPU stuck at ~5 W / 0% utilization / Power limit N/A; fixed by upgrading to 580.95.05 + CUDA 13.0 via apt dist-upgrade + fwupdmgr.",
+   "detail": "Expected healthy gpu-burn reference: 28 W, 96%, P0. Resolved 2026-01-14.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426"
+  },
+  {
+   "claim": "Quick throttle triage: `nvidia-smi --query-gpu=power.draw,utilization.gpu,clocks.sm --format=csv,noheader` healthy ~\"35.65 W, 96 %, 2522 MHz\"; 30 W safety mode ~\"4.80 W, 2 %, 2411 MHz\"; thermal slowdown via clocks.throttle_reasons.sw_thermal_slowdown = Active.",
+   "detail": "Blog states 30 W PD defect is not software-fixable (RMA); driver-related 5 W case fixed by 580.x + CUDA 13; ASUS BIOS v0103 (2026/03/18), PD 0x507.",
+   "confidence": "low",
+   "source_url": "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+  },
+  {
+   "claim": "Community throttle checker uses a 1400 MHz threshold under cuBLAS load: PASS at ~2446 MHz avg, FAIL when clocks stay 481-858 MHz.",
+   "detail": "Output strings: \"PASS — GPU clocks look healthy under load\" / \"FAIL — GPU IS THROTTLED\". Suspected cause: faulty USB PD negotiation; fix: disconnect brick from wall and Spark, wait a minute.",
+   "confidence": "medium",
+   "source_url": "https://github.com/hoesing/spark-gpu-throttle-check"
+  },
+  {
+   "claim": "\"GPU requires reset\" in nvidia-smi with dmesg \"gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x611ef0, regvalue: 0xbadf5600\" recurred despite PD firmware fix (1 -> 0x507) and led to RMA.",
+   "detail": "Ubuntu 24.04.4, kernel 6.17.0-1014-nvidia, driver 580.142 (also 580.159.03). HP PD controller GUID fcdb2933-d16b-406d-ae0a-b913d0c3e1bf shipped at version 1 (< min 1024). `nvidia-smi --gpu-reset` fails because GB10 is the primary GPU; reboot can hang 6-8 min.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499"
+  },
+  {
+   "claim": "\"ImportError: libcudart.so.12: cannot open shared object file: No such file or directory\" on Spark means a CUDA 12 wheel was installed; Spark has only libcudart.so.13.",
+   "detail": "Fixes: torch from https://download.pytorch.org/whl/cu130; vLLM from https://wheels.vllm.ai/nightly/cu130; skip flash-attn (use `--attn_implementation sdpa`). Also: PyTorch warning \"Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)\" is safe to ignore (sm_120/sm_121 binary compatible). Missing TRITON_PTXAS_PATH gives \"sm_121a is not defined for option 'gpu-name'\"; set TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas, TORCH_CUDA_ARCH_LIST=\"12.1a\".",
+   "confidence": "high",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "claim": "sgl-kernel prebuilt sm100 binary fails on Spark with \"ImportError: libnvrtc.so.12: cannot open shared object file\" (CUDA 12 linkage) on driver 580.142 / CUDA 13.0.",
+   "detail": "Full banner: \"[sgl_kernel] CRITICAL: Could not load any common_ops library!\". sgl-kernel 0.3.21, torch 2.9.1, triton 3.7.0, Python 3.12.",
+   "confidence": "high",
+   "source_url": "https://github.com/sgl-project/sglang-omni/issues/620"
+  },
+  {
+   "claim": "ONNX Runtime 1.23.0 GPU on DGX Spark fails with \"CUDA error cudaErrorSymbolNotFound:named symbol not found\"; the same build works on A6000/A100/B100/Thor; issue open.",
+   "detail": "Build used CMAKE_CUDA_ARCHITECTURES '80-real;86-real;90-real;100-real;110-real;120' (no 121). No prebuilt ORT GPU wheels exist for aarch64 Linux; community builds ORT 1.24.4 from source for GX10 (forum thread 366157).",
+   "confidence": "high",
+   "source_url": "https://github.com/microsoft/onnxruntime/issues/26096"
+  },
+  {
+   "claim": "Embedding NIM nvcr.io/nim/nvidia/llama-3.2-nv-embedqa-1b-v2:1.10.0 returns HTTP 500 with cudaErrorSymbolNotFound on GB10; NVIDIA says the container predates Spark support.",
+   "detail": "Message: \"Unexpected error: onnx runtime error 1: Non-zero status code returned while running ReduceSum node. Name:'/pooling_module/ReduceSum_1' Status Message: CUDA error cudaErrorSymbolNotFound\". Driver 580.95.05, CUDA 13.0. Recommended: use dgx-spark-playbooks multi-agent-chatbot reference stack. 2025-12-17.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-arm64-embedding-nim-llama-3-2-nv-embedqa-1b-v2-1-10-0-fails-with-cudaerrorsymbolnotfound-onnx-runtime/354998"
+  },
+  {
+   "claim": "NIM llama-3.3-nemotron-super-49b-v1.5 fails on GB10 with Triton/LLVM sm_121 errors; Nemotron Nano 9B NIM needs a NIM license (NGC permission error).",
+   "detail": "Strings: \"'sm_121' is not a recognized processor for this target (ignoring processor)\", \"LLVM ERROR: Cannot select: intrinsic %llvm.nvvm.shfl.sync.bfly.i32\", \"RuntimeError: Engine core initialization failed.\"; NGC: \"Permission error: The requested operation requires permissions that the user does not have...\". Staff 2026-02-06: 49B NIM \"not officially supported on Spark yet\". Container toolkit 1.18.0.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346"
+  },
+  {
+   "claim": "NIM/vLLM on Spark UMA can consume 115-124 GB because cudaMemGetInfo reports the whole 128 GB as GPU memory and vLLM defaults gpu_memory_utilization=0.9; Docker --memory and NIM_GPU_MEM_FRACTION did not constrain it.",
+   "detail": "\"there is no clean OOM error, only the system memory is directly filled up\". Driver 580.126.09, CUDA 13.0. 2026-05-24; no official fix in thread.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/urgent-dgx-spark-gb10-uma-nim-container-memory-runaway-all-limitation-parameters-invalid-memory-occupies-120gb/371180"
+  },
+  {
+   "claim": "vLLM on 8x GB10 (sm_121a) hit \"CUDA error: an illegal memory access\" / CUBLAS_STATUS_INTERNAL_ERROR from an unclamped q-row index in FlashAttentionForwardSm120 and a cross-stream KV write race; fixed in vLLM PR #49681.",
+   "detail": "Affects warmup at max_num_seqs >= 8, TP=8. Distinct from the driver-level cuBLAS bug fixed by 580.173.",
+   "confidence": "medium",
+   "source_url": "https://github.com/vllm-project/vllm/issues/49049"
+  },
+  {
+   "claim": "Docker error \"unknown or invalid runtime name: nvidia\" on Spark is because the toolkit is preinstalled but daemon.json not configured; fix `sudo nvidia-ctk runtime configure --runtime=docker` + restart; staff say `--gpus all` works without the nvidia runtime.",
+   "detail": "nvidia-ctk output: \"INFO[0000] Config file does not exist; using empty config\", \"Wrote updated config to /etc/docker/daemon.json\". Resulting daemon.json: {\"runtimes\":{\"nvidia\":{\"args\":[],\"path\":\"nvidia-container-runtime\"}}}. Moderator 2025-12-11: \"the nvidia runtime is not needed on DGX Spark to have the GPUs visible inside the container, --gpus=all should be sufficient\".",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/invalid-runtime-name-nvidia/350646"
+  },
+  {
+   "claim": "After an update removed Docker, reinstalling via snap breaks GPU access (\"nvidia-container-cli: initialization error: load library failed: libnvidia-ml.so.1: cannot open shared object file\"); fix is docker-ce from apt.",
+   "detail": "Recommended packages: docker-ce 5:28.5.1-1~ubuntu.24.04~noble, docker-ce-cli, docker-compose-plugin, nv-docker-gpus 25.08-1, nv-docker-options 25.05-1. 2026-01-24.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/a-software-update-removed-docker-now-i-am-unable-to-run-docker-with-gpu/358538"
+  },
+  {
+   "claim": "docker.service fails on first run of GX10 due to BuildKit database corruption; fix by moving /var/lib/docker/buildkit aside.",
+   "detail": "journalctl -u docker.service shows \"error initializing buildkit: error creating buildkit instance: invalid database\". Fix: stop/disable docker, `sudo mv /var/lib/docker/buildkit /var/lib/docker/buildkit-bad`, enable/start. 2025-11-30 (raphael.amorim).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/gx10-first-run-docker-failed-to-load/353014"
+  },
+  {
+   "claim": "apt can fail with \"E: Type '<!doctype' is not known on line 1 in source list /etc/apt/sources.list.d/nvidia-container-toolkit.list\" when that file contains an HTML 404 page.",
+   "detail": "Fix: remove the file or restore \"deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /\". 2025-11-08.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/corrupted-nvidia-container-toolkit-list/350645"
+  },
+  {
+   "claim": "A Docker container with restart=always that loads a large model can freeze the Spark at login (unified-memory OOM); staff called it a \"known OOM issue which will be fixed in the next major update\".",
+   "detail": "Workarounds: safe mode CLI to remove model files; kill docker before it crashes; disable docker.service. 2026-01-30. July 2026 release notes list improved OOM handling.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-crashes-immediately-after-login-due-to-docker-container-auto-restart/359196"
+  },
+  {
+   "claim": "DGX Dashboard Updates page hangs after OTA 7.5.0 when fwupd daemon (1.9.30) and libfwupd2 (1.9.34) mismatch; fix `sudo apt install --only-upgrade fwupd`.",
+   "detail": "systemd log: \"libfwupd version 1.9.34 does not match daemon 1.9.30\". fwupdmgr hangs instead of failing, stalling NVIDIA's OTA-check tooling. 2026-07-04.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/had-an-interesting-bug-today-with-the-updates-panel-in-dgx-dashboard-resolution-included/375537"
+  },
+  {
+   "claim": "July 2026 Dashboard update loops (update re-offered after 7+ reboots) on GX10 units because the OTA script tries to install nvidia-firmware-580-580.159.03 while nvidia-firmware-580-580.173.02 is already present; manual `sudo apt install nvidia-firmware-580-580.159.03` clears it.",
+   "detail": "Also observed nv-docker-options missing; kernel 6.17.0-1029-nvidia. Diagnosed 2026-08-19, confirmed 2026-08-20; NVIDIA engineering \"working on the issue\".",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-july-2026-software-update-issue/376981"
+  },
+  {
+   "claim": "A Dashboard \"firmware update failed\" popup was recovered by a full power drain (hold power 90 s, wait 5-10 min, boot with only power + monitor).",
+   "detail": "No exact fwupd string captured; Feb 2026.",
+   "confidence": "low",
+   "source_url": "https://forums.developer.nvidia.com/t/just-updated-my-dgx-spark-and-it-said-firmware-update-failed/360502"
+  },
+  {
+   "claim": "Wi-Fi is MediaTek MT7925 (PCI 14c3:7925, module mt7925e); after a kernel update the module can be absent: \"modprobe: FATAL: Module mt7925e not found in directory /lib/modules/6.11.0-1016-nvidia\" -> \"No Wi-Fi Adapter Found\".",
+   "detail": "Fix: `sudo apt install linux-modules-extra-<kernel>` (and/or reinstall linux-generic) then reboot; or boot the older kernel. Module path drivers/net/wireless/mediatek/mt76/mt7925/mt7925e.ko.zst. 10G Ethernet is Realtek 8127 (r8127). Diagnostics: `lspci -k`, `rfkill list`, `sudo modprobe mt7925e`.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-day-2-failure-to-connect-to-home-wifi-no-wi-fi-adapter-found/348188"
+  },
+  {
+   "claim": "OOBE Wi-Fi failures (\"could not connect to the network\", stall on network search) were worked around via correct BIOS time, mobile hotspot, or recovery USB; April 2026 release notes list Wi-Fi/Ethernet setup fixes.",
+   "detail": "First-boot guide discourages captive portals and hotspots; Bluetooth pairing stops after clicking Get Started; \"Do not shut down or reboot the system during the update process\".",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-will-not-connect-to-wifi-on-initial-setup/352730"
+  },
+  {
+   "claim": "OOBE on FastOS 1.120.38 (2026-02-25) checks connectivity-check.ubuntu.com and forces Wi-Fi setup when that HTTPS check fails even with working Ethernet.",
+   "detail": "Community binary patch to HasInternet(); relevant for corporate networks that block the Ubuntu connectivity check.",
+   "confidence": "medium",
+   "source_url": "https://github.com/sjug/dgx-spark-ethernet-patch"
+  },
+  {
+   "claim": "Secure Boot is enabled by default on DGX Spark; it can be disabled in UEFI.",
+   "detail": "NVIDIA: \"the DGX Spark comes with Secure Boot enabled by default\". Out-of-tree/DKMS driver installs prompt \"A new Machine-Owner Key (MOK) has been generated. You will need to enroll this key in your system's firmware.\"; check with `mokutil --sb-state`, `mokutil --list-new`, `dkms status` (from the Vulkan gist).",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/secure-boot-requirements/350345"
+  },
+  {
+   "claim": "Vulkan on driver 580.95.05 fails on GB10 (\"vkCreateDevice failed with VK_ERROR_INITIALIZATION_FAILED\" / vulkaninfo shows only llvmpipe); fix is driver >= 580.105.08 plus package libnvidia-gl-580.",
+   "detail": "\"The libnvidia-gl-580 package is often not installed automatically but is required for Vulkan support.\"",
+   "confidence": "medium",
+   "source_url": "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a"
+  },
+  {
+   "claim": "dmesg \"Detected insufficient power on the PCIe slot (27W)\" from mlx5_core and correctable AER RxErr on Spark are benign per NVIDIA (host does not advertise a slot power limit).",
+   "detail": "aniculescu 2026-02-04: \"since the host does not advertise power limit it triggers this warning.\" Uncorrectable fatal AER is a separate matter.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/pcie-power-related-and-pcie-aer-errors/353343"
+  },
+  {
+   "claim": "Since the Jan-2026 CX7 hot-plug power-saving feature, the 200G link can fail to train (ibdev2netdev all (Down), ethtool \"Link detected: no\"); removing /etc/nvidia/cx7-hotplug-enabled and rebooting both nodes restores it.",
+   "detail": "Also seen: \"Power set: Off, High Power Class (> 3.5 W) not enabled\". Verify `sudo ethtool enp1s0f1np1 | grep -i 'speed\\|link detected'` -> \"Speed: 200000Mb/s Link detected: yes\". NCCL should log \"NET/IB : Using [0]<roce>:1/RoCE ... Using network IBext\".",
+   "confidence": "medium",
+   "source_url": "https://github.com/digchick/dgx-spark-200g-link-fix"
+  },
+  {
+   "claim": "Direct QSFP between two Sparks showing 200000Mb/s but only ~13-16 Gbps iperf / ~2.8 GB/s NCCL busbw was resolved by CX7 firmware update (to 1.108.20 per user) plus a full power cycle with cables unplugged; staff recommend `sparkrun` and matching cage1<->cage1.",
+   "detail": "PCIe link is 32GT/s x4. After fix ~111 Gbit/s TCP. ib_write_bw was ~12.7-13.5 Gbps before.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035"
+  },
+  {
+   "claim": "Working two-node NCCL/RoCE env from the community: NCCL_IB_HCA=rocep1s0f0, NCCL_SOCKET_IFNAME=enp1s0f0np0, NCCL_IB_GID_INDEX=3, NCCL_NET_GDR_LEVEL=2, MTU 9000; success lines \"Using network IB\", \"Connected all rings\".",
+   "detail": "Playbook pitfall: literal placeholders produce \"-bash: IP: No such file or directory\"; use `ibdev2netdev` and `ip addr show enp1s0f1np1` to find real IPs. Approved cables: Amphenol NJAAKK-N911, Luxshare LMTQF022-SD-R.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/multiple-dgx-qsfp-rdma-nccl/373628"
+  },
+  {
+   "claim": "HDMI/USB-C display not waking after idle is widely reported; NVIDIA suggestions: monitor 'Auto Source Switch', change DP version in OSD, hot-plug cable; users disable screen blanking + screen lock; some switch to USB-C->DP.",
+   "detail": "Firmware on one reporter: 5.36_ACUM018, Ubuntu 24.04.3. Workaround quoted: \"Turned off both screen blanking in 'Power' and Screenlock in 'Privacy & Security'\". July 2026 release fixed display hot-plug instability.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-doesnt-wake-up-display-monitors-after-being-idle-for-few-minutes/358484"
+  },
+  {
+   "claim": "Kubernetes device plugin / DRA driver fail on GB10 with \"error getting device memory: Not Supported\" because nvmlDeviceGetMemoryInfo returns Not Supported on UMA.",
+   "detail": "Full: \"error starting plugins: ... error building GPU device map: error visiting device: error building Device: error getting device memory: Not Supported\". Driver 580.95.05.",
+   "confidence": "high",
+   "source_url": "https://github.com/nvidia/k8s-device-plugin/issues/1482"
+  },
+  {
+   "claim": "DGX OS 7 known issues: kernel upgrade can cause DKMS errors with DOCA < 3.2.1-044418; upgrade may fail on missing iser-dkms/isert-dkms; nvidia-fs DKMS depends on nvidia module built later.",
+   "detail": "Workarounds: `sudo apt install doca-ofed mlnx-nfsrdma-dkms mlnx-nvme-dkms` before kernel upgrade; `sudo apt -f install -y` after error; `sudo dkms autoinstall --force -k <kernel>`.",
+   "confidence": "medium",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/known_issues.html"
+  },
+  {
+   "claim": "Installing a mismatched CUDA toolkit (12.0) over the preinstalled 13.0 broke CUDA in Workbench/JupyterLab (\"Unable to correct problem, you have held broken packages\"); NVIDIA recommended reimage.",
+   "detail": "Driver should be 580.95.05 at that time (2026-01-30).",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-not-installing-cuda-nemotron-vllm-etc/359122"
+  },
+  {
+   "claim": "vLLM's SpinCondition busy loop (1 s) keeps Grace CPU cores spinning during decode, pushing SoC temperature to ~96C while GPU is 74C; patch busy_loop_s=0.002 (or VLLM_BUSY_LOOP_S=0.002) cut SoC temp ~24C at same throughput.",
+   "detail": "OS force-shutdown threshold cited as 104.8C; users report shutdowns near 87C.",
+   "confidence": "medium",
+   "source_url": "https://github.com/drowzeys/vllm-gb10-spin-wait-fix"
+  },
+  {
+   "claim": "GB10 idle temperature can plateau at ~63C / 11 W after sustained load instead of returning to 38-40C / 8-10 W; only a reboot restores baseline; nvidia-smi fan speed is [N/A] and there is no hwmon fan node.",
+   "detail": "Driver 580.173.02, kernel 6.17.0-1031-nvidia. Releasing -lgc had no effect.",
+   "confidence": "low",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065"
+  },
+  {
+   "claim": "nvcr.io/nvidia/tensorflow:25.02-tf2-py3-igpu fails on GB10 (\"Failed to create cuFFT batched plan with scratch allocator\"); the non-igpu image works despite duplicate factory-registration warnings; TensorRT lib libnvinfer.so.10.8.0 missing warning.",
+   "detail": "Nov 2025.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/unable-to-work-with-tensorflow-in-docker-on-dgx-spark/350419"
+  },
+  {
+   "claim": "\"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver\" on Spark after Dashboard update hang; staff fix is apt dist-upgrade + fwupdmgr; `dpkg -l | grep 580` to check the expected set (nvidia-driver-580-open, linux-modules-nvidia-580-open-<kernel>, nvidia-firmware-580-<ver>, nvidia-kernel-common-580, libnvidia-*-580).",
+   "detail": "Missing packages may require reinstall from recovery image.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-unable-to-load-nvidia-drivers-dgx-dashboard-updates-stuck/352122"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Identify a GB10 / DGX Spark (or partner GX10, Dell, HP) platform",
+   "how": "nvidia-smi name == \"NVIDIA GB10\"; PCI device ID 10DE:2E12 at bus 000f:01:00.0; uname -m == aarch64; /etc/dgx-release present (DGX_SWBUILD_VERSION / DGX_OTA_VERSION fields); /sys/class/dmi/id/product_name for ASUS \"Ascent GX10\" etc.; compute capability 12.1 (sm_121).",
+   "exact_strings": [
+    "NVIDIA GB10",
+    "000f:01:00.0",
+    "0x2E1210DE",
+    "DGX_OTA_VERSION",
+    "cuda capability 12.1"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "what": "GSP/SEC2 boot failure (driver vs GSP firmware mismatch)",
+   "how": "nvidia-smi returns \"No devices were found\" AND dmesg/journalctl -k contains any of the NVRM strings. Compare `dpkg -l nvidia-driver-580-open nvidia-firmware-580-*` versions and `linux-modules-nvidia-580-open-$(uname -r)`.",
+   "exact_strings": [
+    "No devices were found",
+    "NVRM: RmInitAdapter: Cannot initialize GSP firmware RM",
+    "ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out",
+    "ksec2SendBootCommands_GB20B: SEC2 boot cmds failed. RM cannot boot.",
+    "RmInitAdapter failed! (0x62:0x1a:2015)",
+    "Xid (PCI:000f:01:00): 119",
+    "Timeout after 6s of waiting for RPC response from GPU0 GSP!",
+    "rm_init_adapter failed, device minor number 0",
+    "CUDA failed to initialize, error 999"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-smi-no-devices-were-found/352963"
+  },
+  {
+   "what": "Driver newer than OTA-paired driver / firmware package mismatch",
+   "how": "Parse `dpkg-query -W nvidia-driver-580-open` and `dpkg-query -W 'nvidia-firmware-580-*'`; if base version strings differ (e.g. 580.173.02 vs 580.159.03) or `apt-mark showhold` is empty while /etc/dgx-release says OTA2607, flag. Check `/var/log/apt/history.log` for nvidia-driver-580-open upgrades.",
+   "exact_strings": [
+    "nvidia-driver-580-open",
+    "nvidia-firmware-580-580.159.03",
+    "nvidia-firmware-580-580.173.02",
+    "580.159.03-0ubuntu0.24.04.1",
+    "580.173.02-0ubuntu0.24.04.1"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-july-2026-software-update-issue/376981"
+  },
+  {
+   "what": "Driver version too old for reliable cuBLAS/cuDNN on GB10",
+   "how": "nvidia-smi --query-gpu=driver_version; if < 580.142 (e.g. 580.95.05, 580.126.09) on GB10, warn. Also scan app logs for the exact strings.",
+   "exact_strings": [
+    "CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED",
+    "CUBLAS failure 14: CUBLAS_STATUS_INTERNAL_ERROR",
+    "CUBLAS_STATUS_INTERNAL_ERROR",
+    "CUDA failure 100: no CUDA-capable device is detected"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948"
+  },
+  {
+   "what": "Stale 550-series driver / CUDA 12.4 on GB10",
+   "how": "driver_version starts with \"550.\" or nvidia-smi header shows CUDA Version 12.x on a GB10; power draw ~5 W and 0% util under load.",
+   "exact_strings": [
+    "550.54.15",
+    "CUDA Version: 12.4"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426"
+  },
+  {
+   "what": "Wrong driver family installed (server/DKMS/FabricManager) -> \"not supported\"",
+   "how": "nvidia-smi output contains \"NVIDIA-GB10 not supported\" OR dpkg shows nvidia-dkms-580-open-server / nvidia-fabricmanager-580 / nvidia-nvswitch-580 on a Spark.",
+   "exact_strings": [
+    "NVIDIA-GB10 not supported",
+    "nvidia-dkms-580-open-server",
+    "nvidia-fabricmanager-580",
+    "nvidia-nvswitch-580"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655"
+  },
+  {
+   "what": "Expected UMA quirks that must NOT be flagged as errors",
+   "how": "On GB10, nvidia-smi Memory-Usage column \"Not Supported\", Power limit \"N/A\", fan \"[N/A]\", NVML nvmlDeviceGetMemoryInfo -> NVML_ERROR_NOT_SUPPORTED, and nvidia-smi --gpu-reset failing (primary GPU) are all normal.",
+   "exact_strings": [
+    "Not Supported",
+    "Memory-Usage: Not Supported",
+    "error getting device memory: Not Supported",
+    "4W / N/A"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "Log-less hard power-off signature (EC power cut)",
+   "how": "`last -Fx | head` shows previous boots without matching shutdown/reboot entries (\"still running\"/\"crash\"); `journalctl -b -1 -n 20` ends on routine lines with no OOM/panic/Xid; /sys/fs/pstore empty; and (optionally) the workload was GPU-heavy. Also check `nvidia-smi -q -d PERFORMANCE` for SwPowerCap active near 90 W before reboot in user logs.",
+   "exact_strings": [
+    "still running",
+    "crash",
+    "throttle 0x4",
+    "SwPowerCap"
+   ],
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "what": "GPU clock cap (workaround) currently applied",
+   "how": "`nvidia-smi -q -d CLOCK`: compare Max Clocks vs Applications/Locked clocks; a max SM clock of 2200 (or 2000/2100/1800) with default max ~2418-2455 indicates -lgc cap. Check for systemd unit gb10-clock-cap.service.",
+   "exact_strings": [
+    "nvidia-smi -lgc 300,2200",
+    "nvidia-smi -lgc 0,2200",
+    "gb10-clock-cap.service",
+    "nvidia-smi -rgc"
+   ],
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "what": "USB-C PD wedge / 30 W safety mode (low clocks with no throttle reason)",
+   "how": "Under a short cuBLAS load, `nvidia-smi --query-gpu=clocks.sm,power.draw,utilization.gpu,clocks_throttle_reasons.active --format=csv` shows clocks <= 1400 MHz (typically exactly 611 or 513 MHz), power <= 30 W while util > 15%, and all throttle reasons \"Not Active\"; `nvidia-smi -q -d POWER` shows a ~20-30 W limit; hwmon pl1=20W/syspl1=30W. Idle-only sample (\"4.80 W, 2 %, 2411 MHz\") is inconclusive - needs load.",
+   "exact_strings": [
+    "611 MHz",
+    "513 MHz",
+    "SW Power Cap : Not Active",
+    "HW Slowdown : Not Active",
+    "HW Thermal Slowdown : Not Active",
+    "P0"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/investigating-513mhz-cap-for-gpu/361296"
+  },
+  {
+   "what": "Benign PCIe power/AER messages on ConnectX-7",
+   "how": "dmesg mlx5_core lines matching these strings should be classified INFO, not error. Escalate only for \"Uncorrectable (Fatal)\".",
+   "exact_strings": [
+    "Detected insufficient power on the PCIe slot (27W)",
+    "mlx5_pcie_event",
+    "Type: Correctable, Physical Layer, Receiver ID",
+    "AER: Multiple Uncorrectable (Fatal) error"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/pcie-power-related-and-pcie-aer-errors/353343"
+  },
+  {
+   "what": "CX7 200G link not training (hot-plug power saving)",
+   "how": "`ibdev2netdev` shows all ports \"(Down)\" while a QSFP cable is present; `ethtool <if>` \"Link detected: no\"; file /etc/nvidia/cx7-hotplug-enabled exists.",
+   "exact_strings": [
+    "(Down)",
+    "Link detected: no",
+    "No partner detected",
+    "/etc/nvidia/cx7-hotplug-enabled",
+    "QSFP module not powered",
+    "Port module: cable unplugged"
+   ],
+   "source_url": "https://github.com/digchick/dgx-spark-200g-link-fix"
+  },
+  {
+   "what": "CX7 link up but throttled throughput",
+   "how": "ethtool reports \"Speed: 200000Mb/s\" but iperf3/ib_write_bw ~13 Gbps; check `mlxfwmanager`/`ethtool -i` firmware version and PCIe \"32GT/s x4\".",
+   "exact_strings": [
+    "Speed: 200000Mb/s",
+    "Link detected: yes",
+    "32GT/s x4"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035"
+  },
+  {
+   "what": "NCCL two-Spark misconfiguration",
+   "how": "NCCL_DEBUG=INFO logs should include \"Using network IB\"/\"IBext\" and \"Connected all rings\"; presence of \"Using network Socket\" on a QSFP-linked pair means RoCE not used. Shell error \"-bash: IP: No such file or directory\" = playbook placeholder not substituted.",
+   "exact_strings": [
+    "-bash: IP: No such file or directory",
+    "Using network IB",
+    "Using network IBext",
+    "Connected all rings",
+    "NET/IB : Using [0]<roce>:1/RoCE"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/error-in-nccl-for-two-sparks-playbook/356885"
+  },
+  {
+   "what": "CUDA 12 Python wheel on a CUDA 13-only system",
+   "how": "Grep Python tracebacks / `pip check` / `ldd` of site-packages *.so for libcudart.so.12 / libnvrtc.so.12; confirm /usr/local/cuda/lib64 has only libcudart.so.13. Also check `pip list` for torch builds tagged +cu12x.",
+   "exact_strings": [
+    "ImportError: libcudart.so.12: cannot open shared object file: No such file or directory",
+    "libnvrtc.so.12: cannot open shared object file",
+    "[sgl_kernel] CRITICAL: Could not load any common_ops library!"
+   ],
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "what": "Binary lacks sm_121 kernels / stale ptxas or Triton",
+   "how": "Scan logs for these strings; check `which ptxas` is /usr/local/cuda/bin/ptxas and TRITON_PTXAS_PATH set; check ORT/NIM versions against Spark-supported lists.",
+   "exact_strings": [
+    "cudaErrorSymbolNotFound",
+    "CUDA error cudaErrorSymbolNotFound:named symbol not found",
+    "sm_121a is not defined for option 'gpu-name'",
+    "'sm_121' is not a recognized processor for this target (ignoring processor)",
+    "LLVM ERROR: Cannot select: intrinsic %llvm.nvvm.shfl.sync.bfly.i32",
+    "RuntimeError: Engine core initialization failed."
+   ],
+   "source_url": "https://github.com/microsoft/onnxruntime/issues/26096"
+  },
+  {
+   "what": "Benign PyTorch capability warning",
+   "how": "Match and downgrade to INFO.",
+   "exact_strings": [
+    "Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.",
+    "Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)"
+   ],
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "what": "Docker GPU integration problems",
+   "how": "Run `docker info --format '{{json .Runtimes}}'` and check /etc/docker/daemon.json; detect snap docker via `snap list docker`; check `systemctl is-active docker` and `journalctl -u docker.service -n 50`; validate apt source file first line starts with \"deb\".",
+   "exact_strings": [
+    "docker: Error response from daemon: unknown or invalid runtime name: nvidia",
+    "nvidia-container-cli: initialization error: load library failed: libnvidia-ml.so.1: cannot open shared object file",
+    "error initializing buildkit: error creating buildkit instance: invalid database",
+    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    "E: Type '<!doctype' is not known on line 1 in source list /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/invalid-runtime-name-nvidia/350646"
+  },
+  {
+   "what": "fwupd daemon/library mismatch (Dashboard Updates hang)",
+   "how": "`systemctl status fwupd` / journalctl -u fwupd for the mismatch string; compare `dpkg -l fwupd libfwupd2 libfwupd3` versions; `timeout 20 fwupdmgr get-devices` hanging is a symptom.",
+   "exact_strings": [
+    "libfwupd version 1.9.34 does not match daemon 1.9.30",
+    "does not match daemon"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/had-an-interesting-bug-today-with-the-updates-panel-in-dgx-dashboard-resolution-included/375537"
+  },
+  {
+   "what": "Firmware inventory (EC / SBIOS / PD / SOCFW) for thermal or PD correlation",
+   "how": "`sudo fwupdmgr get-devices` and parse \"Embedded Controller\" current version (0x03000508 = 3.5.8; 0x02004e18 = older), SBIOS (5.36_0ACUM018 pre-production vs GX10DGX.0104 / ASUS 0102/0103), USB PD (0x507).",
+   "exact_strings": [
+    "Embedded Controller",
+    "0x03000508",
+    "0x02004e18",
+    "5.36_0ACUM018",
+    "GX10DGX.0104",
+    "0x00000507"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069"
+  },
+  {
+   "what": "Field diagnostics thermal failure",
+   "how": "Parse fielddiag logs under /opt/nvidia/dgx-spark-fieldiag for PowerStress result codes.",
+   "exact_strings": [
+    "MODS-020000610139",
+    "acceptable temperature limits exceeded or thermal sensor broken/miscalibrated",
+    "082-000-1-020000600139",
+    "PowerStress"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-hard-freezes-under-sustained-few-minutes-inference-powerstress-thermal-failure-support-portal-unavailable/379195"
+  },
+  {
+   "what": "GPU wedged / requires reset (hardware)",
+   "how": "nvidia-smi -q shows \"GPU requires reset\"; dmesg contains bad register read sentinel.",
+   "exact_strings": [
+    "GPU requires reset",
+    "gpuHandleSanityCheckRegReadError_GH100: Possible bad register read",
+    "0xbadf5600"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499"
+  },
+  {
+   "what": "Wi-Fi module missing for running kernel",
+   "how": "`lspci -nn | grep 14c3:7925` present but `lsmod | grep mt7925e` empty; `modprobe mt7925e` fails; check `dpkg -l linux-modules-extra-$(uname -r)`.",
+   "exact_strings": [
+    "modprobe: FATAL: Module mt7925e not found in directory /lib/modules/",
+    "No Wi-Fi Adapter Found",
+    "[14c3:7925]",
+    "mt7925e"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-day-2-failure-to-connect-to-home-wifi-no-wi-fi-adapter-found/348188"
+  },
+  {
+   "what": "Secure Boot state and unsigned-module risk",
+   "how": "`mokutil --sb-state` -> \"SecureBoot enabled\"; `dkms status` lists nvidia modules (DKMS build implies MOK needed); `mokutil --list-new` non-empty means pending enrollment; dmesg \"Key was rejected by service\"/\"module verification failed\" (generic Linux strings, not confirmed on Spark).",
+   "exact_strings": [
+    "SecureBoot enabled",
+    "A new Machine-Owner Key (MOK) has been generated",
+    "Enroll MOK"
+   ],
+   "source_url": "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a"
+  },
+  {
+   "what": "Vulkan broken (llvmpipe only)",
+   "how": "`vulkaninfo --summary` lists only llvmpipe; `dpkg -l libnvidia-gl-580` not installed; driver < 580.105.08.",
+   "exact_strings": [
+    "vkCreateDevice failed with VK_ERROR_INITIALIZATION_FAILED",
+    "llvmpipe",
+    "libnvidia-gl-580"
+   ],
+   "source_url": "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a"
+  },
+  {
+   "what": "Display deep-sleep configuration exposure",
+   "how": "HDMI/USB-C monitor attached (drm connectors in /sys/class/drm) and `gsettings get org.gnome.desktop.session idle-delay` != 0 or screen lock enabled -> INFO with known-issue reference.",
+   "exact_strings": [
+    "idle-delay",
+    "org.gnome.desktop.screensaver lock-enabled"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-not-waking-up-if-monitor-on-hdmi-switch/357519"
+  },
+  {
+   "what": "UMA memory over-commit risk",
+   "how": "Containers with restart=always (`docker ps --format '{{.Names}} {{.RestartPolicy}}'` via inspect) running vLLM/NIM; vLLM args with gpu-memory-utilization >= 0.9; swap enabled (`swapon --show`); MemAvailable low while GPU util 0.",
+   "exact_strings": [
+    "gpu_memory_utilization=0.9",
+    "restart=always",
+    "there is no clean OOM error"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/urgent-dgx-spark-gb10-uma-nim-container-memory-runaway-all-limitation-parameters-invalid-memory-occupies-120gb/371180"
+  },
+  {
+   "what": "vLLM spin-wait CPU heat",
+   "how": "vLLM process CPU% > 300% while tokens/s is decode-bound and SoC/acpitz temp exceeds GPU temp by >15C; check for VLLM_BUSY_LOOP_S.",
+   "exact_strings": [
+    "shm_broadcast.py",
+    "busy_loop_s",
+    "VLLM_BUSY_LOOP_S"
+   ],
+   "source_url": "https://github.com/drowzeys/vllm-gb10-spin-wait-fix"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "SPARK-GSP-INIT-FAIL",
+   "severity": "CRIT",
+   "trigger": "GB10 detected AND nvidia-smi output contains \"No devices were found\" (or \"couldn't communicate with the NVIDIA driver\") AND dmesg contains \"Cannot initialize GSP firmware RM\" or \"SEC2 secure boot partition timed out\" or \"SEC2 boot cmds failed\" or Xid 119.",
+   "evidence_template": "nvidia-smi: \"{nvsmi_line}\"; dmesg: \"{nvrm_line}\"; nvidia-driver-580-open={drv_ver}; nvidia-firmware-580={fw_pkg_ver}; DGX_OTA_VERSION={ota}; kernel={kernel}",
+   "why_it_matters": "GSP firmware failed to boot, almost always because the userspace/kernel driver version and the GSP firmware package (or platform OTA) are mismatched after a partial apt or Dashboard update; GPU is unusable until versions are re-aligned.",
+   "next_steps": [
+    "Compare `dpkg -l nvidia-driver-580-open 'nvidia-firmware-580-*' 'linux-modules-nvidia-580-open-*'` versions; all should share one 580.x.y version and match the running kernel.",
+    "If a newer driver was pulled by plain apt (e.g. 580.173.02 on OTA2607), either finish the update via DGX Dashboard, or downgrade to the OTA-paired version and `sudo apt-mark hold nvidia-driver-580-open` until the Dashboard offers it.",
+    "Otherwise run the official manual path: `sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot` (cold restart).",
+    "If it persists, collect `sudo nvidia-bug-report.sh`, run Field Diagnostics, and open a DGX Spark forum/support case; recovery image reinstall is the last resort."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+    "https://forums.developer.nvidia.com/t/nvidia-smi-no-devices-were-found/352963",
+    "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171",
+    "https://forums.developer.nvidia.com/t/dgx-spark-unable-to-load-nvidia-drivers-dgx-dashboard-updates-stuck/352122"
+   ]
+  },
+  {
+   "id": "SPARK-DRIVER-FIRMWARE-PKG-MISMATCH",
+   "severity": "WARN",
+   "trigger": "GB10 AND version of nvidia-driver-580-open != version embedded in installed nvidia-firmware-580-* package name, OR linux-modules-nvidia-580-open-<running kernel> missing, OR driver newer than the OTA-paired driver for the detected DGX_OTA_VERSION.",
+   "evidence_template": "nvidia-driver-580-open={drv_ver}; nvidia-firmware-580 pkg={fw_pkg}; running kernel={kernel}; modules pkg={mod_pkg_state}; OTA={ota}",
+   "why_it_matters": "On Spark the Ubuntu archive can ship a newer 580 driver before NVIDIA's OTA pairs it; mismatches cause GSP init failure on next boot or Dashboard update loops (OTA script re-installing nvidia-firmware-580-580.159.03).",
+   "next_steps": [
+    "Prefer DGX Dashboard for updates; avoid unattended `apt upgrade` of nvidia-* packages.",
+    "If the Dashboard loops offering the same update, try `sudo apt install nvidia-firmware-580-580.159.03` (match the OTA's expected version) and reboot.",
+    "Consider `sudo apt-mark hold nvidia-driver-580-open nvidia-firmware-580-<ver>` until the next OTA."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-july-2026-software-update-issue/376981",
+    "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+    "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+   ]
+  },
+  {
+   "id": "SPARK-DRIVER-OLD-CUBLAS-BUG",
+   "severity": "WARN",
+   "trigger": "GB10 AND driver_version < 580.142 (e.g. 580.95.05, 580.126.09), OR application logs contain \"CUDNN_FE failure 11\" / \"CUBLAS failure 14: CUBLAS_STATUS_INTERNAL_ERROR\" / \"CUBLAS_STATUS_INTERNAL_ERROR\".",
+   "evidence_template": "driver={drv_ver}; kernel={kernel}; DGX OS={dgx_os}; matched log: \"{log_line}\"",
+   "why_it_matters": "Older 580 drivers on GB10 produce deterministic cuBLAS/cuDNN internal errors under concurrent/batch load (ONNX Runtime, vLLM); NVIDIA's 580.173.02 (DGX OS 7.5.0, kernel 6.17.0-1031) resolves it.",
+   "next_steps": [
+    "Update via DGX Dashboard (or `sudo apt update && sudo apt full-upgrade && sudo fwupdmgr upgrade && sudo reboot`) to DGX OS 7.5.0 / driver 580.173.02 or later.",
+    "If errors persist on 580.173+, check the framework: vLLM sm_121a bugs were fixed in vLLM PR #49681; rebuild ONNX Runtime for CUDA 13 / sm_121."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948",
+    "https://github.com/vllm-project/vllm/issues/49049"
+   ]
+  },
+  {
+   "id": "SPARK-STALE-550-DRIVER",
+   "severity": "CRIT",
+   "trigger": "GB10 AND (driver_version starts with \"550.\" OR nvidia-smi reports CUDA Version 12.x).",
+   "evidence_template": "driver={drv_ver}; CUDA={cuda_ver}; power.draw={pw} W; utilization={util}%",
+   "why_it_matters": "A 550.x / CUDA 12.4 stack on GB10 leaves the GPU stuck at ~5 W / 0% utilization with Power limit N/A; GB10 requires the 580-open driver and CUDA 13.",
+   "next_steps": [
+    "Run the official update path: `sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot`.",
+    "Verify with `nvidia-smi` (expect 580.x, CUDA 13.0) and a short load test (gpu-burn should show P0, ~28 W+, >90% util).",
+    "If the wrong driver came from a manual install, restore with the System Recovery image."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426"
+   ]
+  },
+  {
+   "id": "SPARK-WRONG-DRIVER-FAMILY",
+   "severity": "CRIT",
+   "trigger": "GB10 AND (nvidia-smi output contains \"NVIDIA-GB10 not supported\" OR dpkg lists nvidia-dkms-580-open-server, nvidia-fabricmanager-580, nvidia-nvswitch-580, or a non-\"-open\" nvidia-driver-* package).",
+   "evidence_template": "nvidia-smi: \"{line}\"; installed: {pkg_list}",
+   "why_it_matters": "DGX Spark supports only the driver shipped in the DGX OS image (nvidia-driver-580-open + nvidia-firmware-580). Server/DKMS/FabricManager/NVSwitch packages do not apply (no NVSwitch) and leave the GPU unusable.",
+   "next_steps": [
+    "Do not install third-party or server driver packages; remove them and reinstall the image driver set, or reimage with the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html).",
+    "Verify `dpkg -l | grep 580` matches: nvidia-driver-580-open, linux-modules-nvidia-580-open-<kernel>, nvidia-firmware-580-<ver>, nvidia-kernel-common-580, libnvidia-*-580."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655",
+    "https://forums.developer.nvidia.com/t/dgx-spark-unable-to-load-nvidia-drivers-dgx-dashboard-updates-stuck/352122"
+   ]
+  },
+  {
+   "id": "SPARK-UMA-NOT-SUPPORTED-EXPECTED",
+   "severity": "INFO",
+   "trigger": "GB10 AND nvidia-smi Memory-Usage == \"Not Supported\" or NVML nvmlDeviceGetMemoryInfo returns NVML_ERROR_NOT_SUPPORTED or power limit shows N/A or fan shows [N/A].",
+   "evidence_template": "nvidia-smi row: \"{row}\"",
+   "why_it_matters": "Expected on unified-memory GB10; existing NVCheckup rules that treat missing memory/power-limit/fan telemetry as faults must be suppressed here. Third-party tools (k8s-device-plugin, DRA driver) that hard-fail on this need UMA-aware versions.",
+   "next_steps": [
+    "Use `free -g`, /proc/meminfo, or per-process listing in nvidia-smi / `nvidia-smi --query-compute-apps=pid,used_memory --format=csv` for memory insight.",
+    "If Kubernetes device plugin logs \"error getting device memory: Not Supported\", upgrade to a UMA-aware plugin release or follow the GitHub issue."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322",
+    "https://github.com/nvidia/k8s-device-plugin/issues/1482"
+   ]
+  },
+  {
+   "id": "SPARK-HARD-POWEROFF-SIGNATURE",
+   "severity": "WARN",
+   "trigger": "GB10 AND previous boot(s) in `last -Fx` / journalctl --list-boots ended without a shutdown/reboot record AND the previous boot's journal tail contains no OOM-killer, panic, Xid, or thermal shutdown lines (and /sys/fs/pstore is empty).",
+   "evidence_template": "{n} unclean power-offs in last {days} days; last journal line of boot -1: \"{line}\"; pstore empty={pstore_empty}; current max SM clock={max_clock} MHz; EC={ec_ver}; SBIOS={sbios}",
+   "why_it_matters": "GB10 units can hard power-off under sustained ~90 W GPU load faster than the kernel can log (EC thermal/overcurrent cut). NVIDIA staff acknowledged it as a known issue; the field workaround is a GPU clock cap, with RMA for units failing PowerStress.",
+   "next_steps": [
+    "Apply the community workaround: `sudo nvidia-smi -lgc 300,2200` (persist with a systemd unit that depends on nvidia-persistenced; revert with `sudo nvidia-smi -rgc`). Expected cost ~1-5% decode throughput.",
+    "Reduce unified-memory pressure: avoid swap thrashing (consider `swapoff -a` for serving), size --gpu-memory-utilization conservatively, periodic `echo 1 > /proc/sys/vm/drop_caches` if streaming large files.",
+    "Ensure firmware is current via DGX Dashboard, then do a full AC cold drain; use only the supplied power adapter; improve airflow.",
+    "Run NVIDIA Field Diagnostics (/opt/nvidia/dgx-spark-fieldiag); if PowerStress reports MODS-020000610139 or 082-000-1-020000600139, open an RMA with NVIDIA (or the partner vendor for GX10/Dell/HP units)."
+   ],
+   "sources": [
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+    "https://forums.developer.nvidia.com/t/hard-power-off-under-sustained-gpu-load-at-90w-persists-after-full-platform-firmware-update/378315",
+    "https://forums.developer.nvidia.com/t/dgxspark-temperature-too-high-automatic-shutdown/363370",
+    "https://forums.developer.nvidia.com/t/dgx-spark-hard-freezes-under-sustained-few-minutes-inference-powerstress-thermal-failure-support-portal-unavailable/379195"
+   ]
+  },
+  {
+   "id": "SPARK-CLOCK-CAP-ACTIVE",
+   "severity": "INFO",
+   "trigger": "GB10 AND `nvidia-smi -q -d CLOCK` shows locked/applications SM clock below the hardware max (e.g. 2200 vs ~2418-2455 MHz) or a gb10-clock-cap.service unit exists.",
+   "evidence_template": "Locked SM clock={locked} MHz (max {max} MHz); unit={unit_name} state={state}",
+   "why_it_matters": "Explains lower-than-expected clocks so they are not misreported as throttling; tells the operator the crash workaround is in place.",
+   "next_steps": [
+    "No action if intentional. To remove: `sudo nvidia-smi -rgc` and disable the systemd unit.",
+    "If crashes recur even with the cap, escalate to firmware/thermal checks and Field Diagnostics."
+   ],
+   "sources": [
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+    "https://github.com/agjs/gb10-clock-cap"
+   ]
+  },
+  {
+   "id": "SPARK-PD-WEDGE-LOW-CLOCK",
+   "severity": "CRIT",
+   "trigger": "GB10 AND under a brief synthetic load SM clock stays <= 1400 MHz (typ. exactly 611 or 513 MHz) with power <= 30 W and utilization > 15%, AND clocks_throttle_reasons all Not Active (or `nvidia-smi -q -d POWER` shows a ~20-30 W limit).",
+   "evidence_template": "under load: clocks.sm={clk} MHz, power.draw={pw} W, util={util}%, throttle_reasons=\"{reasons}\", power limit={plimit}; chassis={vendor_model}; PD fw={pd_ver}; EC={ec_ver}",
+   "why_it_matters": "USB-C Power Delivery negotiation failed or the PD controller is wedged, so the platform runs in a 30 W safety mode; performance drops ~3-5x and CX7 ports may not power. A warm reboot does not clear it; a persistent case is a hardware defect (RMA).",
+   "next_steps": [
+    "Cold drain: shut down, unplug all USB-C peripherals, unplug the brick at both ends, hold power ~30 s, wait 60+ s, reconnect only the supplied power adapter, boot, re-test.",
+    "Update platform firmware via DGX Dashboard/fwupd (ASUS GX10 PD target 0x507), then repeat the cold drain so the PD MCU reloads firmware.",
+    "Avoid suspend/resume (known re-trigger): `sudo systemctl mask sleep.target suspend.target`.",
+    "If the 30 W cap persists after cold drain and firmware, contact NVIDIA Enterprise Support or the chassis vendor (ASUS/Dell/HP) for replacement."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/investigating-513mhz-cap-for-gpu/361296",
+    "https://forums.developer.nvidia.com/t/asus-ascent-gx10-dgx-spark-permanent-power-throttle-at-30w-safety-mode-pd-firmware-negotiation-failure/355255",
+    "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md",
+    "https://forums.developer.nvidia.com/t/gpu-clock-bug-looks-like-5-min-wait-is-enough/376239",
+    "https://github.com/hoesing/spark-gpu-throttle-check"
+   ]
+  },
+  {
+   "id": "SPARK-THERMAL-SLOWDOWN-ACTIVE",
+   "severity": "WARN",
+   "trigger": "GB10 AND clocks_throttle_reasons.sw_thermal_slowdown or hw_thermal_slowdown == Active, or GPU temp >= 84C / acpitz zone >= 93C during load.",
+   "evidence_template": "gpu temp={t}C, acpitz max={tz}C, throttle_reasons={reasons}, EC fw={ec_ver}, fan telemetry={fan}",
+   "why_it_matters": "Sustained thermals near the EC cutoff precede hard power-offs; certain EC firmware (0x03000508) was reported to keep fans quiet at high temperature.",
+   "next_steps": [
+    "Improve airflow/ambient; do not enclose the unit; use the supplied adapter.",
+    "Check EC version with `sudo fwupdmgr get-devices`; one user fixed fan curve by `sudo fwupdmgr downgrade <EC device id>` to 0x02004e18 (low confidence, community-only).",
+    "If serving with vLLM and SoC temp far exceeds GPU temp, set VLLM_BUSY_LOOP_S=0.002 (spin-wait fix).",
+    "Consider the 2200 MHz clock cap; run Field Diagnostics PowerStress for RMA evidence."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069",
+    "https://github.com/drowzeys/vllm-gb10-spin-wait-fix",
+    "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+   ]
+  },
+  {
+   "id": "SPARK-GPU-REQUIRES-RESET",
+   "severity": "CRIT",
+   "trigger": "GB10 AND nvidia-smi -q contains \"GPU requires reset\" OR dmesg contains \"Possible bad register read\" with \"0xbadf5600\".",
+   "evidence_template": "dmesg: \"{line}\"; driver={drv}; PD fw={pd_ver}",
+   "why_it_matters": "MMIO register reads returning the 0xbadf5600 sentinel indicate the GPU fell off the bus; on Spark `nvidia-smi --gpu-reset` cannot be used (primary GPU) and recurring faults after PD firmware fix indicated hardware defect requiring RMA.",
+   "next_steps": [
+    "Capture `sudo nvidia-bug-report.sh` while degraded, then `sudo reboot` (may take 6-8 min).",
+    "Check PD controller firmware via `fwupdmgr get-devices`; update if below minimum.",
+    "If it recurs, run Field Diagnostics and open an RMA."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499"
+   ]
+  },
+  {
+   "id": "SPARK-PCIE-27W-BENIGN",
+   "severity": "INFO",
+   "trigger": "dmesg contains \"Detected insufficient power on the PCIe slot (27W)\" or correctable AER \"Physical Layer, Receiver ID\" on mlx5_core on GB10.",
+   "evidence_template": "dmesg: \"{line}\"",
+   "why_it_matters": "NVIDIA states this warning is benign on Spark (host does not advertise a slot power limit); it should not be reported as a fault, but fatal uncorrectable AER should.",
+   "next_steps": [
+    "Ignore correctable/insufficient-power lines.",
+    "If \"AER: Multiple Uncorrectable (Fatal) error\" appears, power-cycle with QSFP cables unplugged and check CX7 firmware."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/pcie-power-related-and-pcie-aer-errors/353343",
+    "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311"
+   ]
+  },
+  {
+   "id": "SPARK-CX7-LINK-DOWN-HOTPLUG",
+   "severity": "WARN",
+   "trigger": "GB10 AND `ibdev2netdev` shows all rocep1s0f*/roceP2p1s0f* ports (Down) AND /etc/nvidia/cx7-hotplug-enabled exists (or ethtool shows \"Link detected: no\" / \"No partner detected\").",
+   "evidence_template": "ibdev2netdev: {lines}; cx7-hotplug-enabled present={present}; ethtool {if}: {speed} {link}",
+   "why_it_matters": "The Jan-2026 CX7 hot-plug power-saving feature can hold the ConnectX-7 in low power so the 200G lanes never train between two Sparks; NCCL then falls back to sockets or fails.",
+   "next_steps": [
+    "On both nodes: `sudo rm -f /etc/nvidia/cx7-hotplug-enabled && sudo reboot` (accepts ~18 W higher idle).",
+    "Verify: `sudo ethtool enp1s0f1np1 | grep -i 'speed\\|link detected'` expecting \"Speed: 200000Mb/s\" and \"Link detected: yes\"; then NCCL_DEBUG=INFO should print \"Using network IB\".",
+    "Use only approved cables (Amphenol NJAAKK-N911, Luxshare LMTQF022-SD-R) and matching cages (cage1<->cage1)."
+   ],
+   "sources": [
+    "https://github.com/digchick/dgx-spark-200g-link-fix",
+    "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035"
+   ]
+  },
+  {
+   "id": "SPARK-NCCL-NOT-USING-ROCE",
+   "severity": "WARN",
+   "trigger": "Two-Spark cluster detected (CX7 link Up) AND NCCL logs show \"Using network Socket\" or missing \"Using network IB\", OR nccl-tests busbw < 5 GB/s, OR shell error \"-bash: IP: No such file or directory\".",
+   "evidence_template": "NCCL log: \"{line}\"; NCCL_IB_HCA={hca}; NCCL_SOCKET_IFNAME={ifname}; busbw={bw} GB/s",
+   "why_it_matters": "Without RoCE the pair runs at socket speed; the playbook is also easy to misuse (literal placeholders).",
+   "next_steps": [
+    "Find interfaces/IPs: `ibdev2netdev`, `ip addr show enp1s0f0np0`; substitute real IPs in the playbook mpirun command.",
+    "Set NCCL_IB_HCA=rocep1s0f0 NCCL_SOCKET_IFNAME=enp1s0f0np0 NCCL_IB_GID_INDEX=3 NCCL_NET_GDR_LEVEL=2 (match the Up port), MTU 9000; or use `sparkrun` / NVIDIA Sync Cluster Assistant.",
+    "If link is 200G but throughput ~13 Gbps, update CX7 firmware and do a full power cycle with QSFP cables unplugged."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/error-in-nccl-for-two-sparks-playbook/356885",
+    "https://forums.developer.nvidia.com/t/multiple-dgx-qsfp-rdma-nccl/373628",
+    "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035"
+   ]
+  },
+  {
+   "id": "SPARK-CUDA12-WHEEL-ON-CUDA13",
+   "severity": "WARN",
+   "trigger": "GB10 AND (Python traceback contains \"libcudart.so.12: cannot open shared object file\" or \"libnvrtc.so.12\", OR `pip list` shows torch/vllm/flash-attn builds tagged cu12x, OR ldd of site-packages .so files references libcudart.so.12).",
+   "evidence_template": "traceback: \"{line}\"; package={pkg}=={ver}; /usr/local/cuda/lib64 has libcudart.so.{present}",
+   "why_it_matters": "DGX Spark ships CUDA 13 only (libcudart.so.13); default PyPI wheels for many ML packages are CUDA 12 x86-centric and fail to import on aarch64 GB10.",
+   "next_steps": [
+    "Install cu130 aarch64 wheels: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130`; vLLM: `--extra-index-url https://wheels.vllm.ai/nightly/cu130`.",
+    "Skip flash-attn (use `--attn_implementation sdpa`); prefer NGC containers (PyTorch, vLLM, TensorRT-LLM) validated for Spark.",
+    "Do not install a CUDA 12 toolkit over the preinstalled CUDA 13 (caused broken packages and required reimage)."
+   ],
+   "sources": [
+    "https://github.com/natolambert/dgx-spark-setup",
+    "https://github.com/sgl-project/sglang-omni/issues/620",
+    "https://forums.developer.nvidia.com/t/dgx-spark-not-installing-cuda-nemotron-vllm-etc/359122"
+   ]
+  },
+  {
+   "id": "SPARK-SM121-KERNELS-MISSING",
+   "severity": "WARN",
+   "trigger": "GB10 AND logs contain \"cudaErrorSymbolNotFound\" OR \"sm_121a is not defined for option 'gpu-name'\" OR \"'sm_121' is not a recognized processor for this target\" OR \"LLVM ERROR: Cannot select: intrinsic %llvm.nvvm.shfl.sync.bfly.i32\".",
+   "evidence_template": "matched: \"{line}\"; component={onnxruntime|triton|nim image}; TRITON_PTXAS_PATH={val}; ptxas={which_ptxas} ({ptxas_version})",
+   "why_it_matters": "The binary was compiled without sm_121 SASS/PTX or bundles an old ptxas/Triton that does not know sm_121; kernels fail at launch with symbol-not-found or JIT errors.",
+   "next_steps": [
+    "For Triton/PyTorch JIT: `export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas` and `export TORCH_CUDA_ARCH_LIST=\"12.1a\"`; ensure CUDA 13 ptxas is first in PATH.",
+    "For ONNX Runtime: no prebuilt aarch64 GPU wheels; build from source for CUDA 13 with sm_121 (see forum build guide, thread 366157) or use the community prebuilt.",
+    "For NIMs: use only images listed as DGX Spark-supported (e.g. *-dgx-spark tags / dgx-spark-playbooks reference stack); older NIMs such as llama-3.2-nv-embedqa-1b-v2:1.10.0 and nemotron-super-49b-v1.5 predate Spark support."
+   ],
+   "sources": [
+    "https://github.com/microsoft/onnxruntime/issues/26096",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-arm64-embedding-nim-llama-3-2-nv-embedqa-1b-v2-1-10-0-fails-with-cudaerrorsymbolnotfound-onnx-runtime/354998",
+    "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346",
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "SPARK-PYTORCH-CC-WARNING-BENIGN",
+   "severity": "INFO",
+   "trigger": "Log contains \"Found GPU0 NVIDIA GB10 which is of cuda capability 12.1\" and \"Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)\".",
+   "evidence_template": "warning: \"{line}\"",
+   "why_it_matters": "Benign; sm_120 binaries run on sm_121. Prevents false alarms.",
+   "next_steps": [
+    "No action."
+   ],
+   "sources": [
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "SPARK-DOCKER-NVIDIA-RUNTIME-MISSING",
+   "severity": "WARN",
+   "trigger": "GB10 AND (`docker run --runtime=nvidia` fails with \"unknown or invalid runtime name: nvidia\" OR /etc/docker/daemon.json lacks a nvidia runtime while compose files reference runtime: nvidia).",
+   "evidence_template": "docker error: \"{line}\"; daemon.json runtimes={runtimes}; nvidia-container-toolkit={ver}",
+   "why_it_matters": "The toolkit is preinstalled but daemon.json is not always configured; `--gpus all` works without the named runtime, but compose files using `runtime: nvidia` fail.",
+   "next_steps": [
+    "`sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.",
+    "Or use `docker run --gpus all ...` which NVIDIA staff say is sufficient on Spark."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/invalid-runtime-name-nvidia/350646",
+    "https://forums.developer.nvidia.com/t/docker-nvidia-runtime-not-enabled-by-default/349220"
+   ]
+  },
+  {
+   "id": "SPARK-DOCKER-SNAP-NO-GPU",
+   "severity": "WARN",
+   "trigger": "GB10 AND `snap list docker` succeeds (snap Docker installed) OR docker error contains \"libnvidia-ml.so.1: cannot open shared object file\".",
+   "evidence_template": "snap docker={ver}; docker-ce installed={bool}; error: \"{line}\"",
+   "why_it_matters": "Snap-confined Docker cannot load the host NVML library; GPU containers fail. DGX Spark expects docker-ce plus nv-docker-gpus/nv-docker-options.",
+   "next_steps": [
+    "`sudo snap remove docker`; `sudo apt install docker-ce docker-ce-cli docker-compose-plugin nv-docker-gpus nv-docker-options`; verify with `docker run --rm --gpus all nvcr.io/nvidia/cuda:13.0.0-base-ubuntu24.04 nvidia-smi`."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/a-software-update-removed-docker-now-i-am-unable-to-run-docker-with-gpu/358538"
+   ]
+  },
+  {
+   "id": "SPARK-DOCKER-BUILDKIT-CORRUPT",
+   "severity": "WARN",
+   "trigger": "docker.service failed AND `journalctl -u docker.service` contains \"error initializing buildkit\" and \"invalid database\".",
+   "evidence_template": "journalctl: \"{line}\"; docker.service Active: {state}",
+   "why_it_matters": "Known BuildKit database corruption on GX10/Spark first runs; Docker will not start until the buildkit dir is moved aside.",
+   "next_steps": [
+    "`sudo systemctl stop docker && sudo mv /var/lib/docker/buildkit /var/lib/docker/buildkit-bad && sudo systemctl start docker`; verify `sudo docker ps`."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/gx10-first-run-docker-failed-to-load/353014"
+   ]
+  },
+  {
+   "id": "SPARK-APT-CTK-SOURCE-CORRUPT",
+   "severity": "WARN",
+   "trigger": "/etc/apt/sources.list.d/nvidia-container-toolkit.list first line does not start with \"deb\" (e.g. \"<!doctype html>\") or apt reports \"Type '<!doctype' is not known\".",
+   "evidence_template": "first line: \"{line}\"; apt error: \"{err}\"",
+   "why_it_matters": "apt refuses to read any sources, blocking all updates including driver/OTA packages.",
+   "next_steps": [
+    "Remove the file (`sudo rm /etc/apt/sources.list.d/nvidia-container-toolkit.list`) or restore the proper entry: `deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /`, then `sudo apt update`."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/corrupted-nvidia-container-toolkit-list/350645"
+   ]
+  },
+  {
+   "id": "SPARK-FWUPD-LIB-DAEMON-MISMATCH",
+   "severity": "WARN",
+   "trigger": "journalctl -u fwupd contains \"does not match daemon\" OR dpkg versions of fwupd and libfwupd2/libfwupd3 differ in a way that fwupd.service fails, OR `timeout 20 fwupdmgr get-devices` hangs.",
+   "evidence_template": "fwupd={d_ver}; libfwupd={l_ver}; log: \"{line}\"",
+   "why_it_matters": "After OTA 7.5.0 a library/daemon mismatch makes fwupdmgr hang, which stalls NVIDIA's OTA-check and the DGX Dashboard Updates page indefinitely.",
+   "next_steps": [
+    "`sudo apt update && sudo apt install --only-upgrade fwupd && sudo apt autoremove`; then `systemctl restart fwupd` and re-open Dashboard Updates."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/had-an-interesting-bug-today-with-the-updates-panel-in-dgx-dashboard-resolution-included/375537"
+   ]
+  },
+  {
+   "id": "SPARK-DASHBOARD-UPDATE-LOOP",
+   "severity": "WARN",
+   "trigger": "GB10 AND /var/log/apt/history.log shows repeated OTA attempts, or user reports Dashboard re-offers the same update after reboot, AND nvidia-firmware-580 installed version is newer than the OTA-expected version (e.g. 580.173.02 present, script wants 580.159.03), or nv-docker-options missing.",
+   "evidence_template": "installed nvidia-firmware-580={ver}; OTA expects={expected}; nv-docker-options={state}",
+   "why_it_matters": "The July-2026 OTA script fails when a newer firmware package is already present, so the update never completes and keeps re-appearing.",
+   "next_steps": [
+    "`sudo apt install nvidia-firmware-580-580.159.03` (the OTA's expected version), reboot, confirm Dashboard shows \"No Available Updates\".",
+    "Install any missing platform packages (e.g. `sudo apt install nv-docker-options`).",
+    "Collect logs for NVIDIA if it persists (engineering acknowledged the issue)."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-july-2026-software-update-issue/376981"
+   ]
+  },
+  {
+   "id": "SPARK-FIRMWARE-UPDATE-FAILED-POPUP",
+   "severity": "INFO",
+   "trigger": "User reports Dashboard \"firmware update failed\" or fwupdmgr history shows failed capsule; unit still boots.",
+   "evidence_template": "fwupdmgr get-history: {entry}; SBIOS={sbios}; EC={ec}; PD={pd}",
+   "why_it_matters": "Capsule updates on Spark require a true power drain to apply/recover; warm reboots leave the PD MCU and EC state unchanged.",
+   "next_steps": [
+    "Shut down, disconnect all USB-C devices, unplug power, hold the power button 30-90 s, wait 5-10 min, reconnect only power + monitor, boot.",
+    "Re-run `sudo fwupdmgr refresh && sudo fwupdmgr upgrade`; note `fwupdmgr get-devices` may still show the old PD version (ESRT quirk) - trust behavior."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/just-updated-my-dgx-spark-and-it-said-firmware-update-failed/360502",
+    "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md",
+    "https://forums.developer.nvidia.com/t/dgx-spark-running-hot-cannot-update-firmware/370198"
+   ]
+  },
+  {
+   "id": "SPARK-WIFI-MODULE-MISSING",
+   "severity": "WARN",
+   "trigger": "lspci shows MediaTek [14c3:7925] AND mt7925e not loaded AND `modprobe mt7925e` fails with \"Module mt7925e not found in directory /lib/modules/<kernel>\" (or linux-modules-extra-<kernel> not installed).",
+   "evidence_template": "kernel={kernel}; linux-modules-extra-{kernel}={state}; modprobe: \"{line}\"; rfkill: {rfkill}",
+   "why_it_matters": "After a kernel update the Wi-Fi/Bluetooth (MT7925) and sometimes the Realtek r8127 10G Ethernet modules are missing for the new kernel, producing \"No Wi-Fi Adapter Found\".",
+   "next_steps": [
+    "`sudo apt update && sudo apt install linux-modules-extra-$(uname -r)` (optionally `sudo apt install --reinstall linux-generic`) then reboot; or boot the previous kernel from GRUB.",
+    "Check `rfkill list` for soft/hard blocks and UEFI Wi-Fi/Bluetooth disable setting (added Jan 2026)."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-day-2-failure-to-connect-to-home-wifi-no-wi-fi-adapter-found/348188",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+   ]
+  },
+  {
+   "id": "SPARK-OOBE-NETWORK-GOTCHAS",
+   "severity": "INFO",
+   "trigger": "First-boot / OOBE context (FastOS) with Wi-Fi failures, \"could not connect to the network\", or Ethernet not detected.",
+   "evidence_template": "FastOS={ver}; network={type}; error=\"{line}\"",
+   "why_it_matters": "OOBE Wi-Fi is fragile (captive portals/hotspots discouraged; a HTTPS check to connectivity-check.ubuntu.com gates Ethernet detection on FastOS 1.120.38); setup downloads OTA and must not be interrupted.",
+   "next_steps": [
+    "Prefer wired Ethernet on a network that allows connectivity-check.ubuntu.com; set correct BIOS time; avoid captive portals/hotspots.",
+    "Do not power off during the post-OOBE update; allow up to 10+ minutes after the reboot prompt.",
+    "Update to the April 2026+ release which fixed Wi-Fi/Ethernet setup issues."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-will-not-connect-to-wifi-on-initial-setup/352730",
+    "https://github.com/sjug/dgx-spark-ethernet-patch",
+    "https://docs.nvidia.com/dgx/dgx-spark/first-boot.html",
+    "https://forums.developer.nvidia.com/t/unable-to-setup-dgx-spark/362465"
+   ]
+  },
+  {
+   "id": "SPARK-SECUREBOOT-MOK-CHECK",
+   "severity": "INFO",
+   "trigger": "GB10 AND `mokutil --sb-state` == \"SecureBoot enabled\" AND (dkms status lists nvidia modules OR `mokutil --list-new` non-empty OR nvidia kernel module fails to load after a manual driver install).",
+   "evidence_template": "SecureBoot={state}; dkms nvidia={dkms}; pending MOK={pending}; modprobe nvidia: \"{err}\"",
+   "why_it_matters": "Spark ships with Secure Boot enabled; the stock signed nvidia-driver-580-open loads fine, but any locally built/DKMS module needs MOK enrollment or the module is rejected and nvidia-smi fails.",
+   "next_steps": [
+    "Stay on the image driver (signed). If you built a module, complete MOK enrollment at the blue \"Perform MOK management\" screen (or `sudo update-secureboot-policy --enroll-key` then reboot).",
+    "Alternatively disable Secure Boot in UEFI (Security tab) understanding the security trade-off."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/secure-boot-requirements/350345",
+    "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a",
+    "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/initial_setup.html"
+   ]
+  },
+  {
+   "id": "SPARK-DKMS-UPGRADE-ERRORS",
+   "severity": "WARN",
+   "trigger": "DGX OS 7.x AND apt/dpkg log shows DKMS build failures during kernel upgrade (doca/mlnx/nvidia-fs dkms) or \"You have held broken packages\".",
+   "evidence_template": "apt error: \"{line}\"; DOCA={doca_ver}; kernel={kernel}",
+   "why_it_matters": "Documented DGX OS 7 known issues: kernel upgrades with DOCA < 3.2.1 or missing iser/isert dkms leave packages half-configured; on Spark this can also drop network/Wi-Fi modules or the nvidia module.",
+   "next_steps": [
+    "`sudo apt -f install -y`; if needed `sudo dkms autoinstall --force -k $(uname -r)`; update DOCA first (`sudo apt install doca-ofed mlnx-nfsrdma-dkms mlnx-nvme-dkms`).",
+    "If CUDA/driver packages were manually changed (e.g. CUDA 12 installed), reimage with System Recovery."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/known_issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-not-installing-cuda-nemotron-vllm-etc/359122"
+   ]
+  },
+  {
+   "id": "SPARK-VULKAN-LLVMPIPE",
+   "severity": "INFO",
+   "trigger": "GB10 AND vulkaninfo lists only llvmpipe or \"VK_ERROR_INITIALIZATION_FAILED\", OR libnvidia-gl-580 not installed, OR driver < 580.105.08.",
+   "evidence_template": "driver={ver}; libnvidia-gl-580={state}; vulkaninfo devices={list}",
+   "why_it_matters": "Vulkan/graphics apps silently fall back to software rendering on early Spark drivers or when the GL/Vulkan ICD package is absent.",
+   "next_steps": [
+    "Update driver via Dashboard; `sudo apt install libnvidia-gl-580`; re-run `vulkaninfo --summary`."
+   ],
+   "sources": [
+    "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a"
+   ]
+  },
+  {
+   "id": "SPARK-HDMI-DEEP-SLEEP",
+   "severity": "INFO",
+   "trigger": "GB10 with an HDMI/USB-C display attached AND GNOME idle-delay != 0 or screen lock enabled (or user report of black screen that does not wake while SSH works).",
+   "evidence_template": "connectors={drm_connected}; idle-delay={secs}; lock-enabled={bool}; firmware={sbios}",
+   "why_it_matters": "Official known issue: HDMI displays enter deep sleep after inactivity and do not wake from keyboard/mouse; the system is still running (reachable by SSH), so users mistake it for a hang and power-cycle.",
+   "next_steps": [
+    "Press a physical button on the monitor / power-cycle the monitor or hot-plug the cable; enable 'Auto Source Switch' or change DP version in the monitor OSD.",
+    "Optionally disable blanking: `gsettings set org.gnome.desktop.session idle-delay 0` and disable screen lock (security trade-off); some users use USB-C->DP instead of HDMI.",
+    "Keep firmware current (July 2026 release fixed display hot-plug instability)."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-doesnt-wake-up-display-monitors-after-being-idle-for-few-minutes/358484",
+    "https://forums.developer.nvidia.com/t/dgx-spark-not-waking-up-if-monitor-on-hdmi-switch/357519",
+    "https://forums.developer.nvidia.com/t/dgx-spark-hdmi-display-stops-working-every/351461"
+   ]
+  },
+  {
+   "id": "SPARK-UMA-MEMORY-OVERCOMMIT",
+   "severity": "WARN",
+   "trigger": "GB10 AND (a running vLLM/NIM/SGLang uses gpu-memory-utilization >= 0.9 or default, OR a Docker container with restart policy always/unless-stopped runs an LLM server, OR swap is enabled with MemAvailable < 10% during GPU load).",
+   "evidence_template": "container={name} restart={policy}; gpu_memory_utilization={frac}; MemTotal={t} GiB MemAvailable={a} GiB; swap={swap}",
+   "why_it_matters": "On UMA, cudaMemGetInfo reports the whole ~128 GB as GPU memory; vLLM's 0.9 default pre-allocates ~115 GB, Docker --memory limits do not constrain CUDA allocations, and an auto-restarting model container can freeze the box at login. Memory pressure also correlates with log-less hard power-offs.",
+   "next_steps": [
+    "Set an explicit fraction (e.g. `--gpu-memory-utilization 0.5-0.7`) or `--max-model-len`; leave headroom for CPU tenants.",
+    "Avoid restart=always for model servers; if the desktop freezes at login, boot to recovery/safe mode and `docker update --restart=no <container>` or disable docker.service.",
+    "Flush cache if allocatable memory looks low: `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`; consider `swapoff -a` for serving boxes.",
+    "Update to the July 2026 release (improved OOM handling)."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/urgent-dgx-spark-gb10-uma-nim-container-memory-runaway-all-limitation-parameters-invalid-memory-occupies-120gb/371180",
+    "https://forums.developer.nvidia.com/t/dgx-spark-crashes-immediately-after-login-due-to-docker-container-auto-restart/359196",
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+   ]
+  },
+  {
+   "id": "SPARK-NIM-NOT-SUPPORTED",
+   "severity": "INFO",
+   "trigger": "GB10 AND a NIM container image without a dgx-spark tag fails with sm_121 / cudaErrorSymbolNotFound errors, or NGC returns \"Permission error: The requested operation requires permissions that the user does not have\".",
+   "evidence_template": "image={image}; error=\"{line}\"",
+   "why_it_matters": "Many NIMs predate Spark support or require a NIM license; failures are not a platform fault.",
+   "next_steps": [
+    "Use Spark-validated NIMs (e.g. nvcr.io/nim/nvidia/nvidia-nemotron-nano-9b-v2-dgx-spark) and the dgx-spark-playbooks reference stacks; obtain the NIM license for gated models."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-arm64-embedding-nim-llama-3-2-nv-embedqa-1b-v2-1-10-0-fails-with-cudaerrorsymbolnotfound-onnx-runtime/354998"
+   ]
+  },
+  {
+   "id": "SPARK-POWER-ADAPTER",
+   "severity": "INFO",
+   "trigger": "GB10 (always, or when PD wedge / hard power-off rules fire).",
+   "evidence_template": "chassis={vendor}; adapter rating known={bool}",
+   "why_it_matters": "Official known issue: using a non-supplied adapter may reduce performance, prevent boot, or cause unexpected shutdowns; partner units ship 240 W (ASUS/HP) or 280 W (Dell) bricks.",
+   "next_steps": [
+    "Use the supplied adapter directly (no hubs on the PD-IN port); when troubleshooting, disconnect all other USB-C devices."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgxspark-temperature-too-high-automatic-shutdown/363370"
+   ]
+  },
+  {
+   "id": "SPARK-FIELDDIAG-THERMAL-FAIL",
+   "severity": "CRIT",
+   "trigger": "Field diagnostics output contains MODS-020000610139 or 082-000-1-020000600139.",
+   "evidence_template": "fielddiag: \"{line}\"; EC={ec}; SBIOS={sbios}",
+   "why_it_matters": "NVIDIA uses PowerStress failure codes as RMA evidence for thermally defective units.",
+   "next_steps": [
+    "Save fielddiag logs and nvidia-bug-report; open a support case / RMA with NVIDIA or the partner vendor."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-hard-freezes-under-sustained-few-minutes-inference-powerstress-thermal-failure-support-portal-unavailable/379195",
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+   ]
+  },
+  {
+   "id": "SPARK-IDLE-TEMP-PLATEAU",
+   "severity": "INFO",
+   "trigger": "GB10 idle (util 0%) with temperature >= 60C and power >= 11 W for > 30 min after load, versus 38-40C / 8-10 W baseline.",
+   "evidence_template": "idle temp={t}C power={p}W for {mins} min; driver={drv}",
+   "why_it_matters": "Reported on 580.173.02: idle telemetry does not decay after sustained load; only reboot restores baseline. Low confidence, single report; useful as an observability hint.",
+   "next_steps": [
+    "Reboot when convenient; report to NVIDIA with nvidia-bug-report if reproducible."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Official manual OS/driver/firmware update path (DGX Spark)",
+   "command": "sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot",
+   "notes": "Dashboard is the recommended path; plain apt can pull a driver newer than the OTA pairing.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+  },
+  {
+   "context": "Inventory driver packages on Spark",
+   "command": "dpkg -l | grep -E 'nvidia-(driver|firmware|kernel|dkms|fabricmanager|nvswitch)|linux-modules-nvidia'",
+   "notes": "Expect nvidia-driver-580-open, nvidia-firmware-580-<ver>, linux-modules-nvidia-580-open-$(uname -r), nvidia-kernel-common-580; server/fabricmanager/nvswitch packages are wrong on Spark.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-unable-to-load-nvidia-drivers-dgx-dashboard-updates-stuck/352122"
+  },
+  {
+   "context": "DGX OS / OTA version",
+   "command": "cat /etc/dgx-release",
+   "notes": "Fields include DGX_OTA_VERSION (e.g. 7.3.1) even when base image is 7.2.3; OTA identifiers like OTA2607 appear in NVIDIA's OTA check output.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "context": "Hold a driver at the OTA-paired version",
+   "command": "sudo apt-mark hold nvidia-driver-580-open",
+   "notes": "Used after downgrading 580.173.02 -> 580.159.03 with `dpkg -i` archived debs; release the hold once the Dashboard offers the newer driver.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "context": "Fix Dashboard update loop (July 2026 OTA)",
+   "command": "sudo apt install nvidia-firmware-580-580.159.03 && sudo reboot",
+   "notes": "Workaround when a newer nvidia-firmware-580 is already installed and the OTA script fails.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-july-2026-software-update-issue/376981"
+  },
+  {
+   "context": "GSP init failure kernel log search",
+   "command": "sudo dmesg | grep -E 'NVRM|GSP|SEC2|Xid'",
+   "notes": "Look for \"Cannot initialize GSP firmware RM\", \"SEC2 secure boot partition timed out\", \"Xid ... 119\".",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-smi-no-devices-were-found/352963"
+  },
+  {
+   "context": "Hard power-off signature check",
+   "command": "last -Fx | head -20; journalctl -b -1 -n 30 --no-pager; ls -A /sys/fs/pstore; cat /proc/sys/kernel/tainted",
+   "notes": "Unclean boots show no shutdown record; journal ends on mundane lines; pstore empty; taint 4096 = only out-of-tree nvidia.ko.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "context": "GPU clock cap workaround for hard power-off",
+   "command": "sudo nvidia-smi -lgc 300,2200",
+   "notes": "Default max ~2418-2455 MHz; ~1-5% decode cost; not persistent across reboot (use systemd unit after nvidia-persistenced). Revert: `sudo nvidia-smi -rgc`. Verify: `nvidia-smi -q -d CLOCK`.",
+   "source_url": "https://forums.developer.nvidia.com/t/hard-power-off-under-sustained-gpu-load-at-90w-persists-after-full-platform-firmware-update/378315"
+  },
+  {
+   "context": "Quick throttle/PD-wedge triage",
+   "command": "nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,clocks.sm,clocks_throttle_reasons.active,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.sw_power_cap --format=csv",
+   "notes": "Wedged: clocks 611/513 MHz, <=30 W under load, all throttle reasons Not Active. Healthy under load: ~2200-2500 MHz, 80-100 W. Idle sample (\"4.80 W, 2 %, 2411 MHz\") is not diagnostic; apply load first.",
+   "source_url": "https://forums.developer.nvidia.com/t/investigating-513mhz-cap-for-gpu/361296"
+  },
+  {
+   "context": "Power limit / throttle reasons detail",
+   "command": "nvidia-smi -q -d POWER,PERFORMANCE,CLOCK",
+   "notes": "Wedged units show ~20-30 W limits; hwmon pl1=20W/syspl1=30W vs 140/231W normal.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "Cold drain reset of PD controller (primary fix for 611/513 MHz wedge)",
+   "command": "sudo shutdown -h now   # then: unplug all USB-C, unplug brick at wall AND unit, hold power 30 s, wait 60+ s (or 5 min), reconnect power only, boot",
+   "notes": "Warm reboot does not clear the PD MCU state. Repeat after any PD firmware flash.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "Firmware inventory (EC, SBIOS, PD, SOCFW)",
+   "command": "sudo fwupdmgr get-devices",
+   "notes": "EC 0x03000508 (3.5.8) implicated in poor fan curve by one user; EC 0x02004e18 older; ASUS GX10 PD 0x00000507. ESRT may show stale PD version after flash.",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069"
+  },
+  {
+   "context": "EC firmware rollback (community, low confidence)",
+   "command": "sudo fwupdmgr downgrade <EC_DEVICE_ID>   # choose 0x02004e18, then sudo reboot",
+   "notes": "Blanket `sudo fwupdmgr update` re-applies the newer EC.",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069"
+  },
+  {
+   "context": "Field diagnostics",
+   "command": "/opt/nvidia/dgx-spark-fieldiag   # package dgx-spark-fielddiag; PowerStress test",
+   "notes": "Thermal fail codes: MODS-020000610139, 082-000-1-020000600139. One user found the package installed as a meta-package with no binaries and the repo URL 404 (Mar 2026). Official doc URL could not be fetched (404) - see open questions.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-hard-freezes-under-sustained-few-minutes-inference-powerstress-thermal-failure-support-portal-unavailable/379195"
+  },
+  {
+   "context": "Bug report for NVIDIA support",
+   "command": "sudo nvidia-bug-report.sh",
+   "notes": "Requested by NVIDIA moderators in nearly every thread; capture while in the failed state.",
+   "source_url": "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171"
+  },
+  {
+   "context": "CX7 link state between two Sparks",
+   "command": "ibdev2netdev; sudo ethtool enp1s0f1np1 | grep -i 'speed\\|link detected'; ls /etc/nvidia/cx7-hotplug-enabled",
+   "notes": "Expected: \"rocep1s0f0 port 1 ==> enp1s0f0np0 (Up)\" ... and \"Speed: 200000Mb/s\", \"Link detected: yes\". Remove /etc/nvidia/cx7-hotplug-enabled and reboot both nodes if lanes never train.",
+   "source_url": "https://github.com/digchick/dgx-spark-200g-link-fix"
+  },
+  {
+   "context": "Two-node NCCL over RoCE (community-validated env)",
+   "command": "export NCCL_DEBUG=INFO NCCL_IB_DISABLE=0 NCCL_NET_GDR_LEVEL=2 NCCL_IB_HCA=rocep1s0f0 NCCL_SOCKET_IFNAME=enp1s0f0np0 NCCL_IB_GID_INDEX=3",
+   "notes": "Success markers: \"Using network IB\", \"Connected all rings\", \"Made virtual device [0] name=rocep1s0f0 speed=200000\". MTU 9000. Alternative: `sparkrun` or NVIDIA Sync Cluster Assistant.",
+   "source_url": "https://forums.developer.nvidia.com/t/multiple-dgx-qsfp-rdma-nccl/373628"
+  },
+  {
+   "context": "Benign dmesg on CX7",
+   "command": "sudo dmesg | grep -i 'insufficient power\\|AER'",
+   "notes": "\"Detected insufficient power on the PCIe slot (27W)\" and correctable RxErr are benign per NVIDIA; fatal uncorrectable is not.",
+   "source_url": "https://forums.developer.nvidia.com/t/pcie-power-related-and-pcie-aer-errors/353343"
+  },
+  {
+   "context": "CUDA 13 aarch64 PyTorch install",
+   "command": "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130",
+   "notes": "Avoid default cu12x wheels (libcudart.so.12 ImportError).",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "vLLM cu130 aarch64 wheels",
+   "command": "pip install -U vllm --extra-index-url https://wheels.vllm.ai/nightly/cu130",
+   "notes": "Nightly wheel hosting can change; prefer NGC vLLM container for stability.",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "Triton/ptxas for sm_121a",
+   "command": "export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas; export TORCH_CUDA_ARCH_LIST=\"12.1a\"; export PATH=/usr/local/cuda/bin:$PATH; export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH",
+   "notes": "Fixes \"sm_121a is not defined for option 'gpu-name'\".",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "Docker nvidia runtime registration",
+   "command": "sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker",
+   "notes": "Writes /etc/docker/daemon.json runtimes.nvidia; NVIDIA staff: `--gpus all` alone is sufficient on Spark.",
+   "source_url": "https://forums.developer.nvidia.com/t/invalid-runtime-name-nvidia/350646"
+  },
+  {
+   "context": "Replace snap Docker with docker-ce",
+   "command": "sudo snap remove docker; sudo apt install docker-ce docker-ce-cli docker-compose-plugin nv-docker-gpus nv-docker-options",
+   "notes": "Snap Docker cannot load libnvidia-ml.so.1.",
+   "source_url": "https://forums.developer.nvidia.com/t/a-software-update-removed-docker-now-i-am-unable-to-run-docker-with-gpu/358538"
+  },
+  {
+   "context": "Docker BuildKit corruption recovery",
+   "command": "sudo systemctl stop docker && sudo mv /var/lib/docker/buildkit /var/lib/docker/buildkit-bad && sudo systemctl start docker",
+   "notes": "For \"error initializing buildkit: ... invalid database\".",
+   "source_url": "https://forums.developer.nvidia.com/t/gx10-first-run-docker-failed-to-load/353014"
+  },
+  {
+   "context": "fwupd/libfwupd mismatch fix",
+   "command": "sudo apt update && sudo apt install --only-upgrade fwupd && sudo apt autoremove",
+   "notes": "Clears \"libfwupd version 1.9.34 does not match daemon 1.9.30\" and unhangs Dashboard Updates.",
+   "source_url": "https://forums.developer.nvidia.com/t/had-an-interesting-bug-today-with-the-updates-panel-in-dgx-dashboard-resolution-included/375537"
+  },
+  {
+   "context": "Wi-Fi module missing after kernel update",
+   "command": "sudo apt install linux-modules-extra-$(uname -r) && sudo reboot   # diagnose: lspci -k | grep -A3 7925; rfkill list; sudo modprobe mt7925e",
+   "notes": "MT7925 module path drivers/net/wireless/mediatek/mt76/mt7925/mt7925e.ko.zst.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-day-2-failure-to-connect-to-home-wifi-no-wi-fi-adapter-found/348188"
+  },
+  {
+   "context": "UMA allocatable-memory workaround",
+   "command": "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'",
+   "notes": "Official workaround for cudaMemGetInfo underreporting; restart the app afterward.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "Secure Boot / MOK checks",
+   "command": "mokutil --sb-state; mokutil --list-new; dkms status",
+   "notes": "Spark ships Secure Boot enabled; DKMS-built modules need MOK enrollment.",
+   "source_url": "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a"
+  },
+  {
+   "context": "Vulkan ICD",
+   "command": "sudo apt install libnvidia-gl-580; vulkaninfo --summary",
+   "notes": "Needed for Vulkan on GB10; driver >= 580.105.08.",
+   "source_url": "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a"
+  },
+  {
+   "context": "vLLM CPU spin-wait heat mitigation",
+   "command": "export VLLM_BUSY_LOOP_S=0.002   # or patch busy_loop_s in vllm/distributed/device_communicators/shm_broadcast.py",
+   "notes": "Cut SoC temp ~24C at unchanged throughput in TP=2 tests; env var only if the build supports it.",
+   "source_url": "https://github.com/drowzeys/vllm-gb10-spin-wait-fix"
+  },
+  {
+   "context": "Display blanking workaround (HDMI deep sleep)",
+   "command": "gsettings set org.gnome.desktop.session idle-delay 0; gsettings set org.gnome.desktop.screensaver lock-enabled false",
+   "notes": "Trades security for availability; official guidance is to press a physical button on the monitor.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-not-waking-up-if-monitor-on-hdmi-switch/357519"
+  }
+ ],
+ "open_questions": [
+  "Exact mapping of OTA identifiers (OTA2607 etc.) to paired nvidia-driver-580-open versions across all releases; only OTA2607 -> 580.159.03 is confirmed. Which OTA (Aug 2026?) officially pairs 580.173.02 is inferred from the 2026-07-28 Dashboard success and the 2026-08-22 thread, not from release notes (which still list 580.159.03 when fetched).",
+  "Whether the /etc/dgx-release field names are DGX_SWBUILD_VERSION / DGX_OTA_VERSION exactly and whether an OTA name like 'OTA2607' is recorded anywhere machine-readable (the '99.3% match' output came from NVIDIA's OTA-check tooling; its path/command was not captured).",
+  "Official DGX Spark Field Diagnostics documentation URL and exact package/binary names (docs URL guessed returned 404; forum shows /opt/nvidia/dgx-spark-fieldiag and package dgx-spark-fielddiag with inconsistent spelling).",
+  "The DGX Spark FAQ item #7 on nvidia-smi 'Not Supported' could not be fetched (topic ID guessed wrong); wording of the FAQ is unverified.",
+  "Exact Secure Boot failure strings on Spark for unsigned/DKMS nvidia modules (\"Key was rejected by service\", \"module verification failed\") were not found in Spark-specific threads; only generic MOK prompts are confirmed.",
+  "Whether EC firmware 0x03000508 (3.5.8) is causally linked to fan-curve/thermal shutdowns (single-user report; NVIDIA has not confirmed). Also whether the June-Aug 2026 OTAs changed EC behavior.",
+  "Whether the 'GPU idle temperature plateau' on 580.173.02 is widespread or a single-unit anomaly.",
+  "Precise nvidia-smi -q -d CLOCK field names that indicate an active -lgc lock on GB10 (e.g. 'Locked Clocks' vs 'Applications Clocks') were not captured verbatim.",
+  "Whether NVIDIA released an official fix (firmware or driver) for the ~90 W hard power-off as of 2026-09-02; latest evidence (Aug 2026) is 'known issue, workaround clock reduction'.",
+  "RTX Spark (N1X, Windows on Arm): no failure-mode corpus exists yet (ships fall 2026); none of the above Linux/DGX OS rules are validated there.",
+  "HDMI deep-sleep: whether the July 2026 hot-plug fix reduces the wake failure; the forum threads remained unresolved.",
+  "Exact wpa_supplicant limitation wording in the April 2026 release notes for OOBE Wi-Fi (mentioned by a search summary, not verified on the release-notes page fetched)."
+ ],
+ "sources": [
+  "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948",
+  "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+  "https://forums.developer.nvidia.com/t/nvidia-smi-no-devices-were-found/352963",
+  "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171",
+  "https://forums.developer.nvidia.com/t/dgx-spark-unable-to-load-nvidia-drivers-dgx-dashboard-updates-stuck/352122",
+  "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655",
+  "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322",
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/first-boot.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html",
+  "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/known_issues.html",
+  "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+  "https://forums.developer.nvidia.com/t/hard-power-off-under-sustained-gpu-load-at-90w-persists-after-full-platform-firmware-update/378315",
+  "https://forums.developer.nvidia.com/t/dgxspark-temperature-too-high-automatic-shutdown/363370",
+  "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069",
+  "https://forums.developer.nvidia.com/t/dgx-spark-hard-freezes-under-sustained-few-minutes-inference-powerstress-thermal-failure-support-portal-unavailable/379195",
+  "https://forums.developer.nvidia.com/t/asus-ascent-gx10-dgx-spark-permanent-power-throttle-at-30w-safety-mode-pd-firmware-negotiation-failure/355255",
+  "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md",
+  "https://forums.developer.nvidia.com/t/investigating-513mhz-cap-for-gpu/361296",
+  "https://forums.developer.nvidia.com/t/gpu-clock-bug-looks-like-5-min-wait-is-enough/376239",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426",
+  "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode",
+  "https://github.com/hoesing/spark-gpu-throttle-check",
+  "https://github.com/agjs/gb10-clock-cap",
+  "https://forums.developer.nvidia.com/t/system-degraded-gpu-inoperable/364499",
+  "https://github.com/natolambert/dgx-spark-setup",
+  "https://github.com/sgl-project/sglang-omni/issues/620",
+  "https://github.com/microsoft/onnxruntime/issues/26096",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-arm64-embedding-nim-llama-3-2-nv-embedqa-1b-v2-1-10-0-fails-with-cudaerrorsymbolnotfound-onnx-runtime/354998",
+  "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346",
+  "https://forums.developer.nvidia.com/t/urgent-dgx-spark-gb10-uma-nim-container-memory-runaway-all-limitation-parameters-invalid-memory-occupies-120gb/371180",
+  "https://github.com/vllm-project/vllm/issues/49049",
+  "https://forums.developer.nvidia.com/t/invalid-runtime-name-nvidia/350646",
+  "https://forums.developer.nvidia.com/t/docker-nvidia-runtime-not-enabled-by-default/349220",
+  "https://forums.developer.nvidia.com/t/a-software-update-removed-docker-now-i-am-unable-to-run-docker-with-gpu/358538",
+  "https://forums.developer.nvidia.com/t/gx10-first-run-docker-failed-to-load/353014",
+  "https://forums.developer.nvidia.com/t/corrupted-nvidia-container-toolkit-list/350645",
+  "https://forums.developer.nvidia.com/t/dgx-spark-crashes-immediately-after-login-due-to-docker-container-auto-restart/359196",
+  "https://forums.developer.nvidia.com/t/had-an-interesting-bug-today-with-the-updates-panel-in-dgx-dashboard-resolution-included/375537",
+  "https://forums.developer.nvidia.com/t/dgx-spark-july-2026-software-update-issue/376981",
+  "https://forums.developer.nvidia.com/t/just-updated-my-dgx-spark-and-it-said-firmware-update-failed/360502",
+  "https://forums.developer.nvidia.com/t/dgx-spark-running-hot-cannot-update-firmware/370198",
+  "https://forums.developer.nvidia.com/t/os-7-5-0-released-same-old-drivers/365595",
+  "https://forums.developer.nvidia.com/t/dgx-spark-day-2-failure-to-connect-to-home-wifi-no-wi-fi-adapter-found/348188",
+  "https://forums.developer.nvidia.com/t/dgx-spark-will-not-connect-to-wifi-on-initial-setup/352730",
+  "https://forums.developer.nvidia.com/t/unable-to-setup-dgx-spark/362465",
+  "https://github.com/sjug/dgx-spark-ethernet-patch",
+  "https://forums.developer.nvidia.com/t/secure-boot-requirements/350345",
+  "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a",
+  "https://forums.developer.nvidia.com/t/pcie-power-related-and-pcie-aer-errors/353343",
+  "https://forums.developer.nvidia.com/t/dgx-spark-mini-connectx-7-qsfp-ports-not-powering-diagnostic-tool-unavailable/363311",
+  "https://github.com/digchick/dgx-spark-200g-link-fix",
+  "https://forums.developer.nvidia.com/t/dgx-spark-direct-qsfp-connection-only-getting-13-16-gbps-instead-of-expected-200g-performance/370035",
+  "https://forums.developer.nvidia.com/t/error-in-nccl-for-two-sparks-playbook/356885",
+  "https://forums.developer.nvidia.com/t/multiple-dgx-qsfp-rdma-nccl/373628",
+  "https://forums.developer.nvidia.com/t/dgx-spark-doesnt-wake-up-display-monitors-after-being-idle-for-few-minutes/358484",
+  "https://forums.developer.nvidia.com/t/dgx-spark-not-waking-up-if-monitor-on-hdmi-switch/357519",
+  "https://forums.developer.nvidia.com/t/dgx-spark-hdmi-display-stops-working-every/351461",
+  "https://github.com/nvidia/k8s-device-plugin/issues/1482",
+  "https://forums.developer.nvidia.com/t/dgx-spark-not-installing-cuda-nemotron-vllm-etc/359122",
+  "https://forums.developer.nvidia.com/t/unable-to-work-with-tensorflow-in-docker-on-dgx-spark/350419",
+  "https://github.com/drowzeys/vllm-gb10-spin-wait-fix",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065",
+  "https://github.com/bidual/awesome-dgx-spark"
+ ]
+}

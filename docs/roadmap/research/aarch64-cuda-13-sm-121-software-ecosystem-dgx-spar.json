@@ -1,0 +1,1092 @@
+{
+ "topic": "aarch64 CUDA 13 / sm_121 software ecosystem (DGX Spark GB10, RTX Spark N1X) as of 2026-09-02: per-framework build availability, canonical installs, tell-tale misinstall failures, verification snippets, pip/uv pitfalls, container toolkit on DGX OS, CUDA 13 compat rules",
+ "facts": [
+  {
+   "claim": "DGX Spark current software stack (release notes): DGX OS 7.5.0, NVIDIA GPU Driver 580.159.03, CUDA Toolkit 13.0.2, Canonical kernel 6.17.",
+   "detail": "The DGX Spark release-notes 'current software versions' table lists exactly: NVIDIA DGX OS 7.5.0 / NVIDIA GPU Driver 580.159.03 / NVIDIA CUDA Toolkit 13.0.2 / Canonical Kernel 6.17. A forum user on DGX OS 7.5.0 after `apt full-upgrade` reported driver 580.173.02 with kernel 6.17.0-1031, so the shipped driver may be newer than the table.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "claim": "Expected nvidia-smi / nvcc / OS output on a DGX Spark: 'Driver Version: 580.95.05', 'CUDA Version: 13.0', GPU 'NVIDIA GB10', 'Cuda compilation tools, release 13.0, V13.0.88', 'Ubuntu 24.04.3 LTS' codename noble, 'Architecture: aarch64', 'Vendor ID: ARM'.",
+   "detail": "Arm Learning Path verification page shows these exact strings (from an early-2026 unit; later units ship 580.126.09/580.159.03/580.173.02). Grace CPU = 10x Cortex-X925 + 10x Cortex-A725.",
+   "confidence": "high",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "claim": "On GB10 (iGPU/UMA) nvidia-smi shows 'Memory-Usage: Not Supported' by design; cudaMemGetInfo under-reports free memory.",
+   "detail": "DGX Spark Known Issues: \"On iGPU platforms, `nvidia-smi` will display 'Memory-Usage: Not Supported' even though per-process GPU memory is listed. This is expected because iGPUs do not have dedicated framebuffer memory.\" Also cudaMemGetInfo \"does not account for memory that could potentially be reclaimed from SWAP\". Playbooks recommend `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` to flush page cache before large loads.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "Driver 580.173.02 fixes deterministic cuDNN/cuBLAS failures under batch load on GB10 seen on 580.95.05 and 580.126.09.",
+   "detail": "Errors before upgrade: 'CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED' (Conv node), 'CUBLAS failure 14: CUBLAS_STATUS_INTERNAL_ERROR' (FusedMatMul), then 'CUDA failure 100: no CUDA-capable device is detected'. Fixed by `apt full-upgrade` to DGX OS 7.5.0 / driver 580.173.02 (posted 2026-08-22, confirmed 2026-08-26).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948"
+  },
+  {
+   "claim": "Driver 595.x (CUDA 13.2) is not supported on DGX Spark as of June 2026; supported line is 580.x / CUDA 13.0.",
+   "detail": "NVIDIA staff (aniculescu, 2026-06-08): \"Driver 595 is not yet supported on DGX Spark\". A user nonetheless ran Ubuntu 26.04 + 595.71.05 + CUDA 13.2 open kernel module on GB10 — unsupported configuration.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/595-58-03-certified-linux-aarch64-arm64-display-driver-and-cuda-13-2-when-for-dgx-spark-gb10/364688"
+  },
+  {
+   "claim": "CUDA 13.x requires driver >= 580 (minor-version compatibility); CUDA 13.0 dropped offline compilation for Maxwell/Pascal/Volta and unified all Arm platforms into one toolkit.",
+   "detail": "Release notes table row: \"13.x | >= 580 | N/A\". \"Architecture support for Maxwell, Pascal, and Volta is considered feature-complete. Offline compilation and library support for these architectures have been removed in CUDA Toolkit 13.0\". \"Arm platforms are now unified in CUDA Toolkit\". Windows driver no longer bundled with the toolkit from 13.0.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/cuda/archive/13.0.1/cuda-toolkit-release-notes/index.html"
+  },
+  {
+   "claim": "CUDA target suffix rules: 'a' (e.g. sm_120a/sm_121a) runs only on that exact CC with no forward compatibility; 'f' (e.g. sm_120f) runs on same major CC with equal-or-higher minor (so sm_120f covers 12.0 and 12.1); plain PTX is forward-compatible.",
+   "detail": "NVIDIA blog: architecture-specific code \"only runs on GPUs of that specific CC and no others\" and \"is not forward-compatible with any future GPU architecture\"; family-specific is \"compatible to run on GPU devices with the same major compute capability version and with an equal or higher minor compute capability version\". Blackwell compat guide: \"PTX is forward-compatible.\" The blog itself does not mention 12.1/GB10; applying the 'f' rule to 12.1 is inference.",
+   "confidence": "high",
+   "source_url": "https://developer.nvidia.com/blog/nvidia-blackwell-and-nvidia-cuda-12-9-introduce-family-specific-architecture-features/"
+  },
+  {
+   "claim": "SM_120 and SM_121 share one '12.x' spec column; kernels that run on SM120 are architecturally compatible with SM121; libraries compile SM120->sm_120a, SM121->sm_121a, both->sm_120f; JIT on SM121 emits sm_121a cubins; wheels typically only include 120f.",
+   "detail": "FlashInfer SM121 audit: \"chip-level differences do not affect kernel correctness — only SM-count-based heuristics and host toolchain\"; `CompilationContext` emits `sm_121a` for JIT on SM121; wheel builds only include `120f`; several dispatch gates test `major == 12 and minor == 0` and wrongly exclude SM121 (root cause of DGX Spark NVFP4 perf complaints); `dense_blockscaled_gemm_sm120.py` raises `if sm_version != \"sm_120\"`.",
+   "confidence": "medium",
+   "source_url": "https://github.com/flashinfer-ai/flashinfer/issues/3170"
+  },
+  {
+   "claim": "PyTorch maintainers state SM_121 is binary compatible with SM_120, so official cu128/cu130 binaries (which list sm_120/compute_120) work on GB10 without sm_121 in get_arch_list().",
+   "detail": "PyTorch forum thread (2025-10-29 to 2026-01-20): maintainer reply that SM_121 is binary compatible with SM_120 already in official builds with CUDA 12.8+; users expecting 'sm_121' in torch.cuda.get_arch_list() were confused. Compiling PyTorch explicitly for sm121 produced 'FATAL: kernel fmha_cutlassF_f16_aligned_64x128_rf_sm80 is for sm80-sm100, but was built for sm121'.",
+   "confidence": "high",
+   "source_url": "https://discuss.pytorch.org/t/dgx-spark-gb10-cuda-13-0-python-3-12-sm-121/223744"
+  },
+  {
+   "claim": "PyTorch 2.9.0 (2025-10-15) added CUDA 13.0 wheel variants and Linux aarch64 binary wheels for cu126/cu128/cu130; the cu130 index now hosts aarch64 wheels through torch 2.14.0 (cp310–cp315) and no win_arm64 wheels.",
+   "detail": "Release notes: \"Enablement of Linux aarch64 binary wheel builds across all supported CUDA versions\", \"Enable CUDA 12.6, 12.8 and 13.0 support for Linux ARM64 CD builds\". Index listing shows e.g. torch-2.14.0+cu130-cp315-cp315t-manylinux_2_28_aarch64.whl, torch-2.13.0+cu130-..., torch-2.12.1+cu130-cp314-cp314t-manylinux_2_28_aarch64.whl; Windows wheels are win_amd64 only.",
+   "confidence": "high",
+   "source_url": "https://download.pytorch.org/whl/cu130/torch/"
+  },
+  {
+   "claim": "Canonical PyTorch install on DGX Spark: `uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130` (Python 3.12 venv). Expected benign warning: 'Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)'.",
+   "detail": "natolambert/dgx-spark-setup matrix: PyTorch 2.9.0+ cu130 aarch64 YES; vLLM 0.13.0+ YES (nightly); Transformers/DeepSpeed/Accelerate YES; flash-attn NO ('Do not install'); Triton YES (needs TRITON_PTXAS_PATH). Most common error: 'ImportError: libcudart.so.12: cannot open shared object file: No such file or directory' from installing CUDA 12.x wheels on a CUDA-13-only system.",
+   "confidence": "high",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "claim": "Installing cu128 (CUDA 12.8) PyTorch on DGX Spark works for plain ops but emits 'The detected CUDA version (13.0) mismatches the version that was used to compile PyTorch (12.8)' and breaks NVRTC/JIT paths with 'nvrtc: error: invalid value for --gpu-architecture'.",
+   "detail": "martimramos/dgx-spark-ml-guide used `pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128`; expected torch.cuda.get_device_name(0) == 'NVIDIA GB10'. Also lists 'WARNING: Detected NVIDIA GB10 GPU, which is not yet supported'. NGC nvcr.io/nvidia/pytorch:25.10-py3 ships torch 2.9.0a0+145a3a7bda.nv25.10 with compute_120. TorchCodec on aarch64 is a 'Dummy package only'; use soundfile.",
+   "confidence": "medium",
+   "source_url": "https://github.com/martimramos/dgx-spark-ml-guide"
+  },
+  {
+   "claim": "pip with `--index-url https://download.pytorch.org/whl/cu130` can fail on torch 2.10 with 'ERROR: Could not find a version that satisfies the requirement cuda-bindings==13.0.3; platform_system == \"Linux\"' because cuda-bindings 13.0.3 is missing from that index; `--extra-index-url` (or uv) resolves it.",
+   "detail": "pytorch/pytorch#172926. Workaround quoted: `pip install torch==2.10.0 --extra-index-url https://download.pytorch.org/whl/cu130`.",
+   "confidence": "high",
+   "source_url": "https://github.com/pytorch/pytorch/issues/172926"
+  },
+  {
+   "claim": "pip vs uv index semantics differ: pip merges --extra-index-url with PyPI and picks the highest version; uv gives the extra index higher priority. vLLM docs therefore say pip is 'not supported' for nightly indices and recommend `uv ... --torch-backend=auto`.",
+   "detail": "vLLM docs: \"`uv` gives the extra index higher priority than the default index\" whereas \"`pip` combines packages from `--extra-index-url` and the default index, choosing only the latest version\". uv PyTorch guide: `uv pip install torch --torch-backend=auto` / `--torch-backend=cu130`, `UV_TORCH_BACKEND=auto`, and `explicit = true` so the torch index is only used for torch packages. SGLang nightly uses `--index-strategy unsafe-best-match --extra-index-url https://docs.sglang.ai/whl/cu130/`.",
+   "confidence": "high",
+   "source_url": "https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md"
+  },
+  {
+   "claim": "Inside NGC PyTorch containers on DGX Spark, `pip install torchaudio` pulls the +cpu wheel from PyPI, uninstalls NVIDIA's CUDA torch and breaks CUDA; torchcodec has no ARM+CUDA binaries.",
+   "detail": "Forum thread on nvcr.io/nvidia/pytorch:25.12-py3; NVIDIA (NVES): \"this is a known issue in torchcodec. It seems no ARM+CUDA binaries are built for TorchCode\". Community alternative image scitrera/dgx-spark-pytorch-dev:2.10.0-rc6-cu131.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/incompatibility-of-torchaudio-in-ngc-pytorch-container-25-12-on-dgx-spark-blackwell-gb10/357745"
+  },
+  {
+   "claim": "Official NVIDIA DGX Spark playbooks pin nvcr.io/nvidia/pytorch:25.11-py3 (torch 2.10.0a0+b558c986e8, CUDA 13.0.2.006) for PyTorch fine-tune and Unsloth; 25.08 was the first NGC PyTorch on CUDA 13.0.0, 25.09 on 13.0.1.",
+   "detail": "PyTorch fine-tune playbook: image \"nvcr.io/nvidia/pytorch:25.11-py3\", `pip install transformers peft datasets trl bitsandbytes`, note \"Recipes are specifically for DGX SPARK. Please make sure that OS and drivers are latest.\" NGC 25.11 release notes: PyTorch 2.10.0a0, CUDA 13.0.2; NVSHMEM may need NVIDIA_IMEX_CHANNELS=0; a Triton 3.5 PTXAS bug affects torch.compile/maxpool_2d.",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/pytorch-fine-tune/README.md"
+  },
+  {
+   "claim": "The DGX Spark NGC docs page still recommends nvcr.io/nvidia/pytorch:24.08-py3 as 'optimized for Grace Blackwell' — a pre-CUDA-13, pre-Blackwell tag that contradicts the playbooks (25.11-py3).",
+   "detail": "docs: `docker pull nvcr.io/nvidia/pytorch:24.08-py3`; `docker run -it --gpus=all nvcr.io/nvidia/pytorch:24.08-py3`. Also requires ARM64 NGC CLI and says to confirm NIMs are in the 'DGX Spark Collection' before pulling.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/ngc.html"
+  },
+  {
+   "claim": "NVIDIA Container Toolkit is preinstalled on DGX Spark; canonical smoke test is `docker run -it --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 nvidia-smi`; config at /etc/docker/daemon.json.",
+   "detail": "Doc lists: `nvidia-ctk --version`, `sudo usermod -aG docker $USER && newgrp docker`, `docker run --rm --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 echo \"GPU test successful\"`, troubleshooting `cat /etc/docker/daemon.json`, `ls -la /dev/nvidia*`, `sudo systemctl restart docker`. Common playbook error: 'permission denied while trying to connect to the Docker daemon socket'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html"
+  },
+  {
+   "claim": "Fresh DGX Spark factory images (toolkit 1.19.0) can have Docker configured for CDI but no /etc/cdi/nvidia.yaml; fix is `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.",
+   "detail": "NemoClaw preflight error text: \"Generate NVIDIA CDI device specs: Docker is configured for CDI device injection (CDISpecDirs is set) but no nvidia.com/gpu CDI spec is present on the host.\" Factory image ships nvidia-container-toolkit without the systemd unit that auto-generates the spec.",
+   "confidence": "medium",
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/3252"
+  },
+  {
+   "claim": "DGX OS 7 on Ubuntu: Docker + toolkit installed via `sudo apt install -y docker-ce nvidia-container-toolkit nv-docker-options`.",
+   "detail": "From DGX OS 7 User Guide 'Customizing Ubuntu Installation with DGX Software' (seen via search summary; page not fetched directly).",
+   "confidence": "low",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/installing_on_ubuntu.html"
+  },
+  {
+   "claim": "Triton on sm_121 needs a CUDA-13 ptxas: PyTorch-bundled ptxas predates sm_121 and any Triton path (torch.compile, @triton.jit, FlashAttention) fails with 'RuntimeError: Triton Error [CUDA]: no kernel image is available for execution on the device' or 'sm_121a is not defined for option gpu-name'.",
+   "detail": "Working config (torch 2.9.0+cu130, Triton 3.5, CUDA 13.0): `export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas`, `export TORCH_CUDA_ARCH_LIST=\"12.1+PTX\"`, `unset TRITON_OVERRIDE_ARCH`. Author: \"The PyTorch-bundled ptxas predates sm_121. CUDA 13.0's system ptxas understands the target natively.\"",
+   "confidence": "high",
+   "source_url": "https://github.com/triton-lang/triton/issues/10331"
+  },
+  {
+   "claim": "Triton 3.5.0 on sm_121a fails for some kernels (gpt-oss matmul_ogs) with PTX feature error: \"Feature '.tile::gather4 with destination state space as .shared::cluster' not supported on .target 'sm_121a'\".",
+   "detail": "triton-lang/triton#8335 opened 2025-10-01 on DGX Spark GB10, CUDA 13.0.1; no fix version identified in the issue.",
+   "confidence": "high",
+   "source_url": "https://github.com/triton-lang/triton/issues/8335"
+  },
+  {
+   "claim": "NIM/vLLM containers built with an older LLVM/Triton crash on GB10 with \"'sm_121' is not a recognized processor for this target (ignoring processor)\" then \"LLVM ERROR: Cannot select: intrinsic %llvm.nvvm.shfl.sync.bfly.i32\" and \"RuntimeError: Engine core initialization failed.\"",
+   "detail": "Seen with nvcr.io/nim/nvidia/llama-3.3-nemotron-super-49b-v1.5:latest; NVIDIA: \"not officially supported on Spark yet\". nvidia-nemotron-nano-9b-v2-dgx-spark NIM \"does require a NIM license\".",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346"
+  },
+  {
+   "claim": "vLLM publishes official cu130 aarch64 wheels on GitHub releases and nightly at https://wheels.vllm.ai/nightly/cu130; NGC ships nvcr.io/nvidia/vllm (25.09 = 'DGX Spark functional support', playbooks use 26.02-py3 / 26.05-py3).",
+   "detail": "Official command: `uv pip install https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu130-cp38-abi3-manylinux_2_28_${CPU_ARCH}.whl --extra-index-url https://download.pytorch.org/whl/cu130` with CPU_ARCH=$(uname -m). Playbook: `docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:${LATEST_VLLM_VERSION} vllm serve ${HF_MODEL_HANDLE}`; also vllm/vllm-openai:gemma4-cu130 and :latest. vLLM 25.09 NGC notes: 'NVFP4 format on Blackwell GPUs (including Jetson Thor and DGX Spark)'.",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/vllm/README.md"
+  },
+  {
+   "claim": "Default PyPI vLLM wheels (cu12x) fail on DGX Spark with 'ImportError: libcudart.so.12: cannot open shared object file: No such file or directory' (and 'ImportError: libtorch_cuda.so: cannot open shared object file'); CUDA 13 systems do not provide CUDA 12 runtime libs.",
+   "detail": "vllm#28669 (vLLM 0.11.0, torch 2.8.0, aarch64 GB10). vllm#31128 (2025-12-22): vLLM 0.13.0 pinned torch==2.9.0, 'pre-compiled CUDA kernels expect CUDA 12'; `--enforce-eager` workaround costs ~20-30%. vllm#36821 (2026-03-11): community image avarok/vllm-dgx-spark:v11 fails because 'the shipped .so files lack sm_121 targets. Runtime workarounds (TORCH_CUDA_ARCH_LIST, LD_LIBRARY_PATH compat libs) have no effect on prebuilt binaries.'",
+   "confidence": "high",
+   "source_url": "https://github.com/vllm-project/vllm/issues/28669"
+  },
+  {
+   "claim": "SGLang: NVIDIA playbook uses lmsysorg/sglang:latest-cu130; community reports :latest (cu12) does not work on GB10 because sgl-kernel is not compiled for sm_121, and as of 2026-05-28 upstream sgl-kernel PyPI wheels do not ship sm_121a-native binaries.",
+   "detail": "Playbook: `SGLANG_IMAGE=\"lmsysorg/sglang:latest-cu130\"`, `docker run --gpus all -it --rm -p 30000:30000 -v /tmp:/tmp \"$SGLANG_IMAGE\" bash`. Upstream tracking issue sgl-project/sglang#11658 (2025-10-15) documents the `lmsysorg/sglang:spark` snapshot tag, the tile::gather4 Triton error, and FP8 CUTLASS kernels failing to dispatch on GB10. Some cu13 tags (lmsysorg/sglang:dev-cu13, nightly-dev-cu13-20260304-c18cff4f, v0.5.9-cu130-runtime) shipped CUDA 12 libs: '/usr/bin/python3: error while loading shared libraries: libcudart.so.12: cannot open shared object file'. Install docs: `uv pip install --prerelease=allow sglang` (defaults to CUDA 13).",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/sglang/README.md"
+  },
+  {
+   "claim": "TensorRT-LLM: release 1.0 'Add support for sm121'; release 1.2 'Added beta support for single-node DGX Spark'; playbook uses nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 (multi-node 1.3.0rc5).",
+   "detail": "Playbook verification: `docker run --rm --gpus all nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 nvidia-smi` and expected 'TensorRT-LLM version: 1.3.0rc13'. Playbook prerequisites text still says 'NVIDIA drivers compatible with CUDA 12.x' (stale). Troubleshooting: 'OOM during weight loading' -> TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1.",
+   "confidence": "high",
+   "source_url": "https://nvidia.github.io/TensorRT-LLM/release-notes.html"
+  },
+  {
+   "claim": "TensorRT-LLM 1.3.0rc5/rc10 containers fail on GB10 with 'ptxas fatal : Value 'sm_121a' is not defined for option 'gpu-name'' when JIT-compiling Triton kernels; fix is to point TRITON_PTXAS_PATH at the CUDA 13 ptxas (/usr/local/cuda/bin/ptxas) and pass it through mpirun -x.",
+   "detail": "Forum thread 366006; user confirmed 'That solved the issue with Qwen3-8B-NVFP4.' Related: TensorRT-LLM#15853 — CUDA 12 CuTe DSL payload (nvidia-cutlass-dsl-libs-cu13==4.5.0 with cu12 payload active) produces 'ptxas application ptx input, line ...; error : Unexpected instruction types specified for `_mma`' then 'DSLRuntimeError: ICE' / 'RuntimeError: Executor worker died during initialization' on SM120/SM121; CUDA 13 emits valid kind::mxf4nvf4 opcodes.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006"
+  },
+  {
+   "claim": "llama.cpp on GB10: build with -DGGML_CUDA=ON and -DCMAKE_CUDA_ARCHITECTURES=121 (Arm guide) or 121a-real (NVIDIA playbook); expected runtime log 'ggml_cuda_init: found 1 CUDA devices:' / 'Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes'; binary should link libcudart.so.13/libcublas.so.13.",
+   "detail": "NVIDIA playbook: `cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DGGML_RPC=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real` then `cmake --build build --config Release --target llama-server -j`; troubleshooting 'Build errors mentioning wrong GPU arch' -> use `-DCMAKE_CUDA_ARCHITECTURES=121`; 'cmake fails with CUDA not found' -> `export PATH=/usr/local/cuda/bin:$PATH`. Arm guide: `ldd bin/llama-cli | grep cuda` shows libcudart.so.13, libcublas.so.13; `./bin/llama-server --version` shows 'compute capability 12.1'. Community: nvcc must be CUDA 13.x, older toolkits don't know sm_121; building only for 120 reportedly gives 'no kernel image is available for execution on the device' (medium).",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/llama-cpp/README.md"
+  },
+  {
+   "claim": "Ollama officially supports compute capability 12.1 'GB10 (DGX Spark)'; install via `curl -fsSL https://ollama.com/install.sh | sh`; NVIDIA/Ollama partnership announced 2025-10-13.",
+   "detail": "Ollama GPU docs table lists CC 12.1 = GB10 (DGX Spark), CC 12.0 = RTX 50xx / RTX PRO Blackwell; 'Ollama supports Nvidia GPUs with compute capability 5.0+ and driver version 550 and newer'. Playbook verification: `ollama --version`, `ollama list`, `nvidia-smi`, `curl http://localhost:11434/api/tags`. Community reports of Ollama running CPU-only on GB10 come from containers/OS without GPU passthrough (Start9), not from missing support.",
+   "confidence": "high",
+   "source_url": "https://docs.ollama.com/gpu"
+  },
+  {
+   "claim": "LM Studio supports DGX Spark via a Linux ARM64 AppImage with a new llama.cpp engine variant built for CUDA 13 (announced 2025-10-14).",
+   "detail": "Blog: \"We brought up a new variant of LM Studio's llama.cpp engine with support for CUDA 13.\" Steps: grab the Linux ARM64 AppImage; `lms get openai/gpt-oss-20b`; `lms server start # --port 1234`.",
+   "confidence": "high",
+   "source_url": "https://lmstudio.ai/blog/dgx-spark"
+  },
+  {
+   "claim": "flash-attention has no prebuilt wheels for linux_aarch64 + sm121; source builds without arch override fail with 'FATAL: kernel built for sm80-sm100, but running on sm121'; pip's default wheel is cu12 and yields 'ImportError: libcudart.so.12'.",
+   "detail": "Dao-AILab/flash-attention#1969 (2025-10-28, still open; PR #2257): 'Precompiled wheels unavailable for linux_aarch64 + sm121'. #2118: flash-attn 2.8.3 on torch 2.9.1+cu130 -> libcudart.so.12 error / 'ModuleNotFoundError: No module named torch' during isolated build (use --no-build-isolation). Working community build: `CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=\"12.0\" FLASH_ATTN_CUDA_ARCHS=\"120\" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS=4 pip install -e . --no-build-isolation`. natolambert: 'Do not install' flash-attn; use attn_implementation=\"sdpa\". Transformers error when configured but missing: 'FlashAttention2 has been toggled on, but flash_attn is not installed'.",
+   "confidence": "high",
+   "source_url": "https://github.com/Dao-AILab/flash-attention/issues/1969"
+  },
+  {
+   "claim": "xformers has no prebuilt wheels for aarch64 + CUDA 13.0; must build from source with TORCH_CUDA_ARCH_LIST=\"12.1\".",
+   "detail": "`pip install ninja; git clone https://github.com/facebookresearch/xformers.git; git submodule update --init --recursive; export TORCH_CUDA_ARCH_LIST=\"12.1\"; pip install -v -e .` on torch 2.10.0+cu130. Without xformers some pipelines degrade to ~200 s/iteration.",
+   "confidence": "medium",
+   "source_url": "https://github.com/unitreerobotics/unifolm-world-model-action/issues/41"
+  },
+  {
+   "claim": "bitsandbytes official PyPI wheels for Linux aarch64 built with CUDA 13.0–13.2 target sm75, sm80, sm90, sm100, sm110, sm120, sm121; Windows arm64 wheels (CUDA 13.4, MSVC 19.51+/VS2026) target sm121 and need Python >= 3.12 and PyTorch >= 2.12.",
+   "detail": "Install: `pip install bitsandbytes`. Doc note: \"NVIDIA Spark (ARM64). To install bitsandbytes with PyTorch on NVIDIA Spark devices (such as an RTX Spark laptop) running ARM64, install PyTorch from the NVIDIA PyPI index ... `pip install torch --index-url https://pypi.nvidia.com` then `pip install bitsandbytes`.\" Linux aarch64 wheels are SBSA builds; Jetson L4T incompatible ('Error named symbol not found in /src/csrc/ops.cu').",
+   "confidence": "high",
+   "source_url": "https://huggingface.co/docs/bitsandbytes/main/en/installation"
+  },
+  {
+   "claim": "As of 2026-09-02 https://pypi.nvidia.com/ does not list a `torch` package (torch/ returns 404), so the bitsandbytes-recommended 'pip install torch --index-url https://pypi.nvidia.com' for Spark ARM64 cannot yet be confirmed; the index does list tensorrt-cu13, tensorrt-rtx-cu13, nvidia-cudnn-cu13, tensorrt-llm, nvidia-tensorflow.",
+   "detail": "Direct fetch of https://pypi.nvidia.com/torch/ returned HTTP 404; the simple index root shows no torch/torchvision/torchaudio entries.",
+   "confidence": "medium",
+   "source_url": "https://pypi.nvidia.com/"
+  },
+  {
+   "claim": "ONNX Runtime GPU: no prebuilt onnxruntime-gpu binaries exist for aarch64 Linux (as of April 2026); ORT 1.27.x–1.29.x require CUDA 13.0 + cuDNN 9.x; build with CMAKE_CUDA_ARCHITECTURES=121; INT8 models lack sm_121 CUDA kernels; ORT <= 1.20.1 fails to build on CUDA 13 (thrust::unary_function removed).",
+   "detail": "Forum build guide: `./build.sh --config Release --use_cuda --cuda_home /usr/local/cuda --cudnn_home /usr --build_shared_lib --parallel $(nproc) --skip_tests --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=121`; needs `sudo apt install libcudnn9-cuda-13 libcudnn9-dev-cuda-13`; minimum driver 580.173.02 to avoid CUDNN_FE failures. ORT CUDA EP docs: ORT 1.27/1.28/1.29 -> CUDA 13.0, cuDNN 9.x; `pip install onnxruntime-gpu[cuda,cudnn]`. Community wheels: Jay0515/onnxruntime-gpu-aarch64-cuda13-sm121 (HF).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/onnx-runtime-gpu-inference-on-dgx-spark-gx10-build-guide-and-prebuilt-binaries/366157"
+  },
+  {
+   "claim": "TensorFlow: NVIDIA-optimized TensorFlow containers reached EOL after 25.02; on DGX Spark the working recipe is `pip install nvidia-tensorflow[horovod] --extra-index-url=https://pypi.ngc.nvidia.com/` inside an NGC PyTorch container, with benign factory-registration warnings and reportedly poor GPU performance.",
+   "detail": "NVIDIA: \"NVIDIA optimized Tensorflow has reached EOL\". Warnings seen: 'Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered', same for cuDNN, 'Could not find TensorRT: INTERNAL: Cannot dlopen all TensorRT libraries'. One user: GPU version 'far slower than tensorflow cpu version'. No evidence of upstream tensorflow[and-cuda] aarch64 CUDA 13 wheels.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-with-tensorflow/348565"
+  },
+  {
+   "claim": "JAX: Linux aarch64 with NVIDIA GPU is listed as fully supported ('yes'); CUDA 13 install is `pip install --upgrade \"jax[cuda13]\"` (driver >= 580, SM 7.5+); CUDA 12 wheels are legacy.",
+   "detail": "Docs: \"We recommend migrating to the CUDA 13 wheels; at some point in the future we will drop CUDA 12 support.\" \"the driver version must be >= 580 for CUDA 13 on Linux.\" No explicit Blackwell/sm_121 statement; no DGX-Spark-specific reports found in this research.",
+   "confidence": "medium",
+   "source_url": "https://docs.jax.dev/en/latest/installation.html"
+  },
+  {
+   "claim": "NeMo on DGX Spark: NVIDIA playbook uses nvcr.io/nvidia/nemo-automodel:26.02; community runs nvcr.io/nvidia/nemo:26.04 on GB10; some NIMs (e.g. nemotron-labs-voicechat:1.0.0) are linux/amd64-only and fail on Spark.",
+   "detail": "NeMo playbook prerequisites: 'NVIDIA Spark device with Blackwell architecture GPU access', 'CUDA toolkit 12.0+ installed and configured' (stale wording), HF_TOKEN; troubleshooting strings 'nvcc: command not found', 'permission denied while trying to connect to the Docker daemon socket', 'Cannot access gated repo'. NVIDIA staff on NeMo thread recommend venv/containers and the NeMo Fine-Tuning playbook.",
+   "confidence": "medium",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nemo-fine-tune/README.md"
+  },
+  {
+   "claim": "Unsloth on DGX Spark: NVIDIA playbook = nvcr.io/nvidia/pytorch:25.11-py3 + `pip install transformers peft hf_transfer \"datasets==4.3.0\" \"trl==0.26.1\"` + `pip install --no-deps unsloth unsloth_zoo bitsandbytes`; requires 'CUDA 13.0 installed: nvcc --version'.",
+   "detail": "Expected log 'Unsloth: Will patch your computer to enable 2x faster free finetuning'. Known risk strings: 'Triton compiler version mismatches may cause compilation errors'. unsloth#4867 (Unsloth 2026.4.2, transformers 5.5.0, torch 2.10.0a0): model load fails 'Kernel at path `/root/.cache/huggingface/hub/models--kernels-community--vllm-flash-attn3/...` does not have one of build variants: torch210-cxx11-cu130-aarch64-linux, torch-cuda, torch-universal' and '`kernels-community/vllm-flash-attn3` is not a valid attention implementation registered in the `AttentionInterface`'; installer also complains no arm64 torchcodec @v0.10.0.",
+   "confidence": "high",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/unsloth/README.md"
+  },
+  {
+   "claim": "RTX Spark (Windows on Arm): CUDA Toolkit 13.4 Developer Preview (2026-07-16) is the first native Windows Arm64 CUDA toolkit; requires 'RTX Spark Developer Driver' 616.00 or later; pre-release, not for production; cuDNN/TensorRT not listed for Windows Arm64.",
+   "detail": "Release notes: \"The Windows driver for DGX Spark device is 616.00 or later.\" (sic). Components with Windows Arm64 support include NVCC, cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, NPP, Nsight Compute/Systems; OpenCL and Visual Studio Integration are x86_64-only. Known issues (forum landing page 377106): 'Reduced CUDA transfer performance with pageable memory' (use cudaMallocHost/cudaHostAlloc/cudaHostRegister); 'Possible system instability during PyTorch build workflows' — 'Running PyTorch CI/CD workflows may trigger a GPU timeout, causing the system to become unresponsive or restart unexpectedly.'; 'Nsight Copilot is not available in the Developer review'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html"
+  },
+  {
+   "claim": "RTX Spark N1X GPU is compute capability 12.1 (sm_121) class: bitsandbytes' Windows arm64 CUDA 13.4 wheels target only sm121; N1X 675/650 have 6,144 or 5,120 CUDA cores and up to 128 GB LPDDR5X.",
+   "detail": "bitsandbytes table row: 'Windows arm64 | 13.4 | MSVC 19.51+ (VS2026) | sm121'. Core counts from VideoCardz driver analysis (secondary source).",
+   "confidence": "medium",
+   "source_url": "https://videocardz.com/newz/nvidias-first-geforce-driver-for-windows-on-arm-confirms-rtx-spark-n1x-with-6144-or-5120-cuda-cores"
+  },
+  {
+   "claim": "Community pre-built wheel sets exist for DGX Spark but are unofficial: torch-2.9.1+cu130-cp312-cp312-linux_aarch64.whl, bitsandbytes-0.49.0+cu130-cp312-cp312-linux_aarch64.whl, flash_attn-2.8.3+cu130torch2.9-cp310-cp310-linux_aarch64.whl, torch-2.9.0+cu130-cp310-cp310-manylinux_2_28_aarch64.whl.",
+   "detail": "ogulcanaydogan/dgx-spark-llm-stack verify_install.py expected output: 'GPU: NVIDIA GB10 (128 GB) — Compute Capability: 12.1', 'PyTorch: 2.9.1+cu130 — CUDA available: ✓'; sets VLLM_ENABLE_CUSTOM_OPS=0 and TRITON_PTXAS_PATH on DGX Spark. Hijinks doc: 'Do not use \"PyTorch supports sm121\" as a blanket pass.'",
+   "confidence": "medium",
+   "source_url": "https://github.com/ogulcanaydogan/dgx-spark-llm-stack"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Identify a DGX Spark / GB10 host",
+   "how": "uname -m == 'aarch64' AND nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader returns 'NVIDIA GB10', '12.1', '580.x'. lsb_release -a shows Ubuntu 24.04 (noble). nvcc --version (if present) shows 'release 13.0'. Treat driver 580.* as expected; 595.* as unsupported-by-NVIDIA (June 2026).",
+   "exact_strings": [
+    "NVIDIA GB10",
+    "Architecture: aarch64",
+    "Vendor ID: ARM",
+    "Ubuntu 24.04",
+    "Driver Version: 580.",
+    "CUDA Version: 13.0",
+    "Cuda compilation tools, release 13.0"
+   ],
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "what": "Do not flag GB10 nvidia-smi memory column as a fault",
+   "how": "On GB10, nvidia-smi prints 'Memory-Usage: Not Supported'. Suppress any 'memory not reported' warning when GPU name is NVIDIA GB10; use free -h / /proc/meminfo for unified memory instead.",
+   "exact_strings": [
+    "Memory-Usage: Not Supported"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "PyTorch build correctness on GB10",
+   "how": "Run: python -c \"import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_capability(), torch.cuda.get_arch_list())\". Good: version contains '+cu130' (pip) or 'nv25.xx'/'nv26.xx' (NGC), torch.version.cuda startswith '13', capability == (12, 1), arch list contains 'sm_120' and/or 'compute_120'. 'sm_121' absent is NORMAL. Bad: '+cpu' suffix or torch.version.cuda is None (CPU wheel); torch.version.cuda '12.x' (cu12 wheel: ABI/NVRTC mismatch on CUDA-13 host).",
+   "exact_strings": [
+    "+cu130",
+    "+cpu",
+    "sm_120",
+    "compute_120",
+    "Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)",
+    "The detected CUDA version (13.0) mismatches the version that was used to compile PyTorch (12.8)",
+    "nvrtc: error: invalid value for --gpu-architecture",
+    "WARNING: Detected NVIDIA GB10 GPU, which is not yet supported"
+   ],
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "what": "CUDA 12 wheel installed on a CUDA-13-only host (any package)",
+   "how": "Grep import failures / run `ldd` on site-packages/**/*.so and look for unresolved libcudart.so.12 / libnvrtc.so.12 / libcublasLt.so.12. Also `pip list | grep -E 'nvidia-(cuda-runtime|cublas|cudnn)-cu12'` present while torch is +cu130 indicates a mixed cu12/cu13 env.",
+   "exact_strings": [
+    "ImportError: libcudart.so.12: cannot open shared object file: No such file or directory",
+    "libtorch_cuda.so: cannot open shared object file",
+    "error while loading shared libraries: libcudart.so.12",
+    "libnvrtc.so.12",
+    "libcublasLt.so.12: cannot open shared object file",
+    "nvidia-cuda-runtime-cu12"
+   ],
+   "source_url": "https://github.com/vllm-project/vllm/issues/28669"
+  },
+  {
+   "what": "Binary lacks sm_12x SASS/PTX (wrong arch build)",
+   "how": "Match runtime logs; run a tiny CUDA kernel via torch (torch.ones(1,device='cuda')+1) and torch.compile smoke test. Also cuobjdump --list-elf on suspect .so should show sm_120/sm_120f/sm_121a; only sm_80..sm_90/sm_100 means no Blackwell-consumer support.",
+   "exact_strings": [
+    "no kernel image is available for execution on the device",
+    "RuntimeError: Triton Error [CUDA]: no kernel image is available for execution on the device",
+    "FATAL: kernel built for sm80-sm100, but running on sm121",
+    "is for sm80-sm100, but was built for sm121",
+    "CUDA error: no kernel image is available for execution on the device"
+   ],
+   "source_url": "https://github.com/triton-lang/triton/issues/10331"
+  },
+  {
+   "what": "Stale ptxas / LLVM that does not know sm_121 (Triton, TensorRT-LLM, NIM containers)",
+   "how": "Check `$(python -c 'import triton,os;print(os.path.dirname(triton.__file__))')/backends/nvidia/bin/ptxas --version` — if release < 13.0 and TRITON_PTXAS_PATH is unset, torch.compile/Triton will fail on GB10. Fix: export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas (and pass via `mpirun -x TRITON_PTXAS_PATH` for TRT-LLM).",
+   "exact_strings": [
+    "ptxas fatal : Value 'sm_121a' is not defined for option 'gpu-name'",
+    "sm_121a is not defined for option 'gpu-name'",
+    "'sm_121' is not a recognized processor for this target (ignoring processor)",
+    "LLVM ERROR: Cannot select: intrinsic %llvm.nvvm.shfl.sync.bfly.i32",
+    "RuntimeError: Engine core initialization failed.",
+    "Feature '.tile::gather4 with destination state space as .shared::cluster' not supported on .target 'sm_121a'"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006"
+  },
+  {
+   "what": "CUDA-12 CuTe DSL payload on SM12x (FlashInfer B12x NVFP4 MoE via TensorRT-LLM/vLLM)",
+   "how": "If nvidia-cutlass-dsl / nvidia-cutlass-dsl-libs-cu12 is installed alongside CUDA 13 torch and these errors appear, the JIT is emitting invalid PTX; require cu13 DSL libs or fall back to CUTLASS.",
+   "exact_strings": [
+    "Unexpected instruction types specified for `_mma`",
+    "DSLRuntimeError: ICE",
+    "RuntimeError: Executor worker died during initialization"
+   ],
+   "source_url": "https://github.com/NVIDIA/TensorRT-LLM/issues/15853"
+  },
+  {
+   "what": "x86 container image on aarch64 host",
+   "how": "`docker image inspect --format '{{.Os}}/{{.Architecture}}' <image>` must be linux/arm64. Run failures show 'exec format error'. Known amd64-only: nemotron-labs-voicechat:1.0.0 NIM, RAG blueprint ingestor/rag-server.",
+   "exact_strings": [
+    "exec format error",
+    "exec /usr/bin/bash: exec format error",
+    "linux/amd64"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/rag-blueprint-on-dgx-spark-arm64-gb10-nims-milvus-ok-but-ingestor-server-rag-server-fail-with-exec-format-error/354990"
+  },
+  {
+   "what": "NGC container tag too old for CUDA 13 / Blackwell",
+   "how": "Parse nvcr.io/nvidia/{pytorch,vllm,tensorrt-llm,tensorflow} tags: pytorch < 25.08 is CUDA 12.x (25.08 = first CUDA 13.0.0, 25.09 = 13.0.1, 25.11 = 13.0.2 and is the playbook baseline); pytorch < 25.01 lacks Blackwell optimization; tensorflow containers ended at 25.02 (EOL). Flag 24.08-py3 specifically (still recommended on the DGX Spark NGC doc page).",
+   "exact_strings": [
+    "nvcr.io/nvidia/pytorch:24.08-py3",
+    "nvcr.io/nvidia/pytorch:25.11-py3",
+    "nvcr.io/nvidia/vllm:26.05-py3",
+    "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13",
+    "nvcr.io/nvidia/nemo-automodel:26.02",
+    "lmsysorg/sglang:latest-cu130"
+   ],
+   "source_url": "https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-11.html"
+  },
+  {
+   "what": "Container runtime health on DGX OS",
+   "how": "`nvidia-ctk --version`; `cat /etc/docker/daemon.json` (expect nvidia runtime); `ls /dev/nvidia*`; `docker run --rm --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 nvidia-smi`. If daemon.json enables CDI (features.cdi / CDISpecDirs) but /etc/cdi/nvidia.yaml is absent -> run `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`. `groups $USER` must include docker or user hits the socket permission error.",
+   "exact_strings": [
+    "Docker is configured for CDI device injection (CDISpecDirs is set) but no nvidia.com/gpu CDI spec is present on the host.",
+    "permission denied while trying to connect to the Docker daemon socket",
+    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    "/etc/cdi/nvidia.yaml",
+    "/etc/docker/daemon.json"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html"
+  },
+  {
+   "what": "NGC PyTorch container silently downgraded to CPU torch by pip",
+   "how": "Inside nvcr.io/nvidia/pytorch containers, `pip show torch` version should contain 'a0+...nv' (e.g. 2.10.0a0+b558c986e8); if it is a plain PyPI version or '+cpu', something (commonly `pip install torchaudio`/torchcodec/unsloth deps) replaced the NVIDIA build.",
+   "exact_strings": [
+    "2.10.0a0+b558c986e8",
+    "2.9.0a0+145a3a7bda.nv25.10",
+    "+cpu",
+    "torchcodec"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/incompatibility-of-torchaudio-in-ngc-pytorch-container-25-12-on-dgx-spark-blackwell-gb10/357745"
+  },
+  {
+   "what": "vLLM wheel provenance",
+   "how": "`pip show vllm` version should contain '+cu130' (GitHub release/nightly cu130 wheel) or come from nvcr.io/nvidia/vllm. `ldd $(python -c 'import vllm,os;print(os.path.dirname(vllm.__file__))')/_C.abi3.so | grep cudart` must show libcudart.so.13. Plain PyPI vllm on aarch64 -> cu12 -> libcudart.so.12 ImportError.",
+   "exact_strings": [
+    "+cu130",
+    "wheels.vllm.ai/nightly/cu130",
+    "vllm-0.",
+    "manylinux_2_28_aarch64.whl",
+    "--enforce-eager"
+   ],
+   "source_url": "https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md"
+  },
+  {
+   "what": "llama.cpp CUDA build targets GB10",
+   "how": "`llama-server --version` / startup logs should show 'compute capability 12.1'; `ldd llama-server | grep -E 'cudart|cublas'` should resolve libcudart.so.13/libcublas.so.13. CMakeCache.txt CMAKE_CUDA_ARCHITECTURES should be 121, 121a, 121a-real (or include 120f/120). Missing GPU section means CPU-only build.",
+   "exact_strings": [
+    "ggml_cuda_init: found 1 CUDA devices:",
+    "Device 0: NVIDIA GB10, compute capability 12.1, VMM: yes",
+    "libcudart.so.13",
+    "libcublas.so.13",
+    "CMAKE_CUDA_ARCHITECTURES=121a-real",
+    "CMAKE_CUDA_ARCHITECTURES=121"
+   ],
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/2_gb10_llamacpp_gpu/"
+  },
+  {
+   "what": "Ollama GPU use",
+   "how": "`ollama ps` PROCESSOR column should read '100% GPU' for a loaded model; '100% CPU' on a GB10 host means the CUDA runner was not selected (container without GPU passthrough, missing driver libs). `curl http://localhost:11434/api/tags` for liveness. Ollama docs list CC 12.1 GB10 as supported, so CPU fallback is environmental, not unsupported hardware.",
+   "exact_strings": [
+    "100% GPU",
+    "100% CPU",
+    "GB10 (DGX Spark)",
+    "Connection refused",
+    "Ollama command not found after install"
+   ],
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/ollama/README.md"
+  },
+  {
+   "what": "flash-attn / xformers presence on aarch64",
+   "how": "If `pip show flash_attn` or `xformers` exists on GB10, check wheel tag: PyPI has no aarch64 cu130 wheels, so either it was source-built (ok if built with TORCH_CUDA_ARCH_LIST 12.0/12.1) or it is a broken cu12 wheel. Prefer attn_implementation='sdpa'. Transformers error string when FA2 requested but absent is listed.",
+   "exact_strings": [
+    "FlashAttention2 has been toggled on, but flash_attn is not installed",
+    "flash_attn-2.8.3+cu130torch2.9-cp310-cp310-linux_aarch64.whl",
+    "FLASH_ATTN_CUDA_ARCHS",
+    "TORCH_CUDA_ARCH_LIST"
+   ],
+   "source_url": "https://github.com/Dao-AILab/flash-attention/issues/1969"
+  },
+  {
+   "what": "Transformers/Unsloth HF-hub kernel fetch for missing aarch64 variant",
+   "how": "Errors during model load or forward on aarch64 cu130 stacks that reference kernels-community/vllm-flash-attn3; remediation is attn_implementation='sdpa' or registering eager attention (see unsloth#4867 patches).",
+   "exact_strings": [
+    "does not have one of build variants: torch210-cxx11-cu130-aarch64-linux, torch-cuda, torch-universal",
+    "`kernels-community/vllm-flash-attn3` is not a valid attention implementation registered in the `AttentionInterface`"
+   ],
+   "source_url": "https://github.com/unslothai/unsloth/issues/4867"
+  },
+  {
+   "what": "ONNX Runtime CUDA EP availability",
+   "how": "python -c \"import onnxruntime as ort;print(ort.__version__, ort.get_available_providers())\" — on aarch64 a PyPI install yields CPU-only 'onnxruntime' (no 'CUDAExecutionProvider') because no aarch64 onnxruntime-gpu wheels exist; a source build for CUDA 13 must be >= 1.24 and built with CMAKE_CUDA_ARCHITECTURES=121; needs libcudnn9-cuda-13.",
+   "exact_strings": [
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider",
+    "libcudnn9-cuda-13",
+    "CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED",
+    "CUBLAS failure 14: CUBLAS_STATUS_INTERNAL_ERROR"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/onnx-runtime-gpu-inference-on-dgx-spark-gx10-build-guide-and-prebuilt-binaries/366157"
+  },
+  {
+   "what": "bitsandbytes CUDA backend on aarch64/GB10",
+   "how": "`python -m bitsandbytes` should report a CUDA setup with the cu13x binary; official aarch64 CUDA 13 wheels include sm121. Windows arm64 (RTX Spark) requires Python >= 3.12, PyTorch >= 2.12 and CUDA 13.4 wheel.",
+   "exact_strings": [
+    "sm121",
+    "Windows ARM64 requires Python >= 3.12",
+    "CUDA Toolkit 13.4 or newer is required"
+   ],
+   "source_url": "https://huggingface.co/docs/bitsandbytes/main/en/installation"
+  },
+  {
+   "what": "pip/uv index misuse for cu130",
+   "how": "Inspect shell history / pip config: `--index-url .../whl/cu130` alone can fail on cuda-bindings==13.0.3; `--extra-index-url` with pip can resolve a newer plain-PyPI torch (CPU on aarch64) over +cu130. Recommend `uv pip install torch --torch-backend=cu130` (or auto) or uv with `explicit = true` torch index.",
+   "exact_strings": [
+    "ERROR: Could not find a version that satisfies the requirement cuda-bindings==13.0.3; platform_system == \"Linux\"",
+    "--torch-backend=auto",
+    "--torch-backend=cu130",
+    "UV_TORCH_BACKEND=auto",
+    "--index-strategy unsafe-best-match"
+   ],
+   "source_url": "https://github.com/pytorch/pytorch/issues/172926"
+  },
+  {
+   "what": "RTX Spark / Windows on Arm CUDA stack",
+   "how": "On Windows arm64 (PROCESSOR_ARCHITECTURE=ARM64) with an NVIDIA N1X: nvidia-smi driver should be >= 616.00; CUDA toolkit 13.4 developer preview is the only native toolkit; no win_arm64 torch wheels exist on download.pytorch.org/whl/cu130 (as of 2026-09-02); flag pre-release status and pageable-memory perf caveat.",
+   "exact_strings": [
+    "616.00",
+    "CUDA Toolkit 13.4",
+    "Reduced CUDA transfer performance with pageable memory",
+    "Possible system instability during PyTorch build workflows",
+    "win_arm64"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/rtx-spark-isv/377106"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "SPARK-TORCH-CPU-ONLY",
+   "severity": "CRIT",
+   "trigger": "Host GPU is NVIDIA GB10 (or Windows arm64 N1X) and torch is importable but torch.version.cuda is None or torch.__version__ ends with '+cpu' or torch.cuda.is_available() is False while nvidia-smi works.",
+   "evidence_template": "torch {version} has no CUDA backend on a GB10 host (torch.version.cuda={cuda}, is_available={avail}). On aarch64 the default PyPI wheel is CPU-only; inside NGC containers `pip install torchaudio`/torchcodec is known to replace the NVIDIA build with +cpu.",
+   "why_it_matters": "All GPU work silently falls back to CPU; users blame the hardware.",
+   "next_steps": [
+    "Reinstall: uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 (Python 3.12 venv)",
+    "Or use nvcr.io/nvidia/pytorch:25.11-py3 and avoid pip-installing torchaudio/torchcodec inside it",
+    "Verify: python -c \"import torch;print(torch.__version__, torch.version.cuda, torch.cuda.get_device_capability())\" -> '+cu130', '13.0', (12, 1)"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/incompatibility-of-torchaudio-in-ngc-pytorch-container-25-12-on-dgx-spark-blackwell-gb10/357745",
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "SPARK-CU12-WHEEL-ON-CUDA13",
+   "severity": "CRIT",
+   "trigger": "Import/runtime log contains 'libcudart.so.12: cannot open shared object file' (or libnvrtc.so.12 / libcublasLt.so.12) OR ldd of a site-packages .so shows unresolved libcudart.so.12, on a host whose nvidia-smi reports CUDA Version 13.x and no CUDA 12 runtime.",
+   "evidence_template": "{package} {version} is linked against CUDA 12 ({missing_lib}) but this DGX Spark has only CUDA 13 ({cuda_version}). Package was probably installed from default PyPI (cu12x build).",
+   "why_it_matters": "CUDA 13 hosts do not provide CUDA 12 runtime libs; the package cannot import at all.",
+   "next_steps": [
+    "Install the cu130 variant: torch from https://download.pytorch.org/whl/cu130; vLLM from GitHub release cu130 aarch64 wheel or https://wheels.vllm.ai/nightly/cu130; sglang default (CUDA 13) or https://docs.sglang.ai/whl/cu130/",
+    "Remove stray nvidia-*-cu12 pip packages from the venv",
+    "For packages without cu130 aarch64 wheels (flash-attn, xformers, onnxruntime-gpu) build from source with CUDA 13 nvcc"
+   ],
+   "sources": [
+    "https://github.com/vllm-project/vllm/issues/28669",
+    "https://github.com/Dao-AILab/flash-attention/issues/2118",
+    "https://github.com/sgl-project/sglang/issues/19914"
+   ]
+  },
+  {
+   "id": "SPARK-NO-KERNEL-IMAGE",
+   "severity": "CRIT",
+   "trigger": "Log contains 'no kernel image is available for execution on the device' or 'kernel built for sm80-sm100, but running on sm121' on a compute-capability-12.1 device.",
+   "evidence_template": "{component} was compiled without sm_120/sm_120f/sm_121a targets (error: '{line}'). GB10 is CC 12.1; binaries must include sm_120 (binary-compatible), sm_120f, sm_121a, or PTX compute_120+ for JIT.",
+   "why_it_matters": "The binary has no Blackwell-consumer code path; every kernel launch fails.",
+   "next_steps": [
+    "Use builds that list sm_120/compute_120 (official torch cu130) or rebuild with TORCH_CUDA_ARCH_LIST=\"12.1+PTX\" (or 12.0;12.1) / CMAKE_CUDA_ARCHITECTURES=121a-real using CUDA 13 nvcc",
+    "Check cuobjdump --list-elf <lib.so> for sm_120*/sm_121a entries",
+    "If it is a Triton path, also set TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas"
+   ],
+   "sources": [
+    "https://github.com/triton-lang/triton/issues/10331",
+    "https://github.com/Dao-AILab/flash-attention/issues/1969",
+    "https://github.com/vllm-project/vllm/issues/36821"
+   ]
+  },
+  {
+   "id": "SPARK-TRITON-PTXAS-STALE",
+   "severity": "WARN",
+   "trigger": "triton is installed, bundled triton/backends/nvidia/bin/ptxas reports release < 13.0, and TRITON_PTXAS_PATH is unset; or logs contain 'sm_121a' is not defined for option 'gpu-name' or 'sm_121 is not a recognized processor'.",
+   "evidence_template": "Triton {tv} bundles ptxas {pv} which does not know sm_121a; torch.compile / Triton kernels / TensorRT-LLM JIT will fail on GB10 ('{line}').",
+   "why_it_matters": "torch.compile, FlashInfer/Triton attention and TRT-LLM NVFP4 kernels JIT at runtime and abort.",
+   "next_steps": [
+    "export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas (CUDA 13.0+ system ptxas); for TRT-LLM pass `mpirun -x TRITON_PTXAS_PATH`",
+    "export TORCH_CUDA_ARCH_LIST=\"12.1+PTX\"; unset TRITON_OVERRIDE_ARCH",
+    "Upgrade to a torch/triton build whose bundled ptxas is CUDA 13.x"
+   ],
+   "sources": [
+    "https://github.com/triton-lang/triton/issues/10331",
+    "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006",
+    "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346"
+   ]
+  },
+  {
+   "id": "SPARK-TORCH-CAPABILITY-WARNING-BENIGN",
+   "severity": "INFO",
+   "trigger": "Log contains 'Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)' or torch.cuda.get_arch_list() lacks 'sm_121' but has 'sm_120'.",
+   "evidence_template": "PyTorch {version} prints a capability warning for GB10; sm_121 is binary-compatible with the sm_120 kernels shipped in official cu128/cu130 builds. This is expected and safe.",
+   "why_it_matters": "Prevents users from chasing a non-problem or rebuilding PyTorch for sm_121 (which itself breaks fused attention kernels).",
+   "next_steps": [
+    "No action; confirm torch.version.cuda starts with 13 and a matmul runs on cuda",
+    "Do not compile torch with TORCH_CUDA_ARCH_LIST=12.1 only; that produced 'is for sm80-sm100, but was built for sm121'"
+   ],
+   "sources": [
+    "https://discuss.pytorch.org/t/dgx-spark-gb10-cuda-13-0-python-3-12-sm-121/223744",
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "SPARK-TORCH-CU12-ON-GB10",
+   "severity": "WARN",
+   "trigger": "torch.version.cuda starts with '12.' on a GB10 host (nvidia-smi CUDA 13.x).",
+   "evidence_template": "torch {version} was built for CUDA {tcuda} but the host runs CUDA 13.0; basic ops work via driver compatibility but NVRTC/JIT paths fail ('nvrtc: error: invalid value for --gpu-architecture') and CUDA-extension builds warn about the mismatch.",
+   "why_it_matters": "Intermittent failures in torchaudio/kaldi, custom ops, and any extension compiled against the host toolkit.",
+   "next_steps": [
+    "Move to cu130 wheels: uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130",
+    "Ensure nvidia-*-cu12 pip packages are removed"
+   ],
+   "sources": [
+    "https://github.com/martimramos/dgx-spark-ml-guide"
+   ]
+  },
+  {
+   "id": "SPARK-PIP-INDEX-URL-CU130",
+   "severity": "INFO",
+   "trigger": "pip output contains 'Could not find a version that satisfies the requirement cuda-bindings==13.0.3' or user used plain pip with --extra-index-url for cu130 on aarch64.",
+   "evidence_template": "pip failed/resolved incorrectly against https://download.pytorch.org/whl/cu130 ('{line}'). --index-url alone lacks cuda-bindings 13.0.3; --extra-index-url with pip lets PyPI's newer CPU torch win.",
+   "why_it_matters": "Leads to either a failed install or a CPU-only torch on aarch64.",
+   "next_steps": [
+    "Prefer uv: uv pip install torch torchvision torchaudio --torch-backend=cu130 (or --torch-backend=auto)",
+    "With pip: pip install torch==<ver> --extra-index-url https://download.pytorch.org/whl/cu130 and verify '+cu130' afterwards",
+    "In pyproject, mark the torch index explicit = true"
+   ],
+   "sources": [
+    "https://github.com/pytorch/pytorch/issues/172926",
+    "https://docs.astral.sh/uv/guides/integration/pytorch/",
+    "https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md"
+   ]
+  },
+  {
+   "id": "SPARK-FLASH-ATTN-ON-AARCH64",
+   "severity": "WARN",
+   "trigger": "flash_attn is installed on an aarch64 GB10 host (pip show flash_attn) and it either fails to import (libcudart.so.12) or logs 'kernel built for sm80-sm100, but running on sm121'.",
+   "evidence_template": "flash_attn {version} on aarch64/CUDA 13: no official wheels exist for linux_aarch64+sm121; the installed copy is a cu12 wheel or a build without sm_120 targets.",
+   "why_it_matters": "Import errors break Transformers when attn_implementation='flash_attention_2'; NVIDIA/community guidance is SDPA on Blackwell.",
+   "next_steps": [
+    "pip uninstall flash-attn; use attn_implementation=\"sdpa\" (PyTorch built-in) or the NGC container's bundled FA",
+    "If FA2 is required: build from source with CUDA 13: CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=\"12.0\" FLASH_ATTN_CUDA_ARCHS=\"120\" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS=4 pip install -e . --no-build-isolation"
+   ],
+   "sources": [
+    "https://github.com/Dao-AILab/flash-attention/issues/1969",
+    "https://github.com/natolambert/dgx-spark-setup",
+    "https://github.com/martimramos/dgx-spark-ml-guide"
+   ]
+  },
+  {
+   "id": "SPARK-XFORMERS-NO-WHEEL",
+   "severity": "INFO",
+   "trigger": "xformers import fails or pip reports no matching distribution on aarch64 + torch cu130.",
+   "evidence_template": "xformers has no prebuilt aarch64/CUDA 13 wheels; must be built from source with TORCH_CUDA_ARCH_LIST=\"12.1\".",
+   "why_it_matters": "Diffusion/vision pipelines fall back to slow attention (reported ~200 s/iter).",
+   "next_steps": [
+    "pip install ninja; git clone https://github.com/facebookresearch/xformers.git; git submodule update --init --recursive; export TORCH_CUDA_ARCH_LIST=\"12.1\"; pip install -v -e ."
+   ],
+   "sources": [
+    "https://github.com/unitreerobotics/unifolm-world-model-action/issues/41"
+   ]
+  },
+  {
+   "id": "SPARK-CONTAINER-AMD64",
+   "severity": "CRIT",
+   "trigger": "docker image inspect shows Architecture amd64 for an image being run on aarch64, or container logs contain 'exec format error'.",
+   "evidence_template": "Image {image} is linux/amd64; DGX Spark is linux/arm64. Known amd64-only: several NIMs and blueprint services.",
+   "why_it_matters": "Container cannot start; users assume GPU/driver fault.",
+   "next_steps": [
+    "Pick an arm64 tag (check the DGX Spark Collection on NGC before pulling NIMs)",
+    "docker manifest inspect <image> to confirm a linux/arm64 entry"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/rag-blueprint-on-dgx-spark-arm64-gb10-nims-milvus-ok-but-ingestor-server-rag-server-fail-with-exec-format-error/354990",
+    "https://docs.nvidia.com/dgx/dgx-spark/ngc.html"
+   ]
+  },
+  {
+   "id": "SPARK-NGC-TAG-STALE",
+   "severity": "WARN",
+   "trigger": "An nvcr.io/nvidia/pytorch tag older than 25.08 (e.g. 24.08-py3), nvcr.io/nvidia/tensorflow (any; EOL after 25.02), or lmsysorg/sglang:latest (non -cu130) is present/pulled on a GB10 host.",
+   "evidence_template": "{image} predates CUDA 13 / Blackwell support (first CUDA 13 NGC PyTorch = 25.08; playbook baseline = 25.11-py3; SGLang needs :latest-cu130 or :spark). The DGX Spark NGC doc page still lists 24.08-py3.",
+   "why_it_matters": "Old images lack sm_12x kernels or CUDA 13 libs and fail with no-kernel-image / libcudart errors.",
+   "next_steps": [
+    "Use nvcr.io/nvidia/pytorch:25.11-py3 or newer, nvcr.io/nvidia/vllm:26.0x-py3, nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13, lmsysorg/sglang:latest-cu130",
+    "For TensorFlow, pip install nvidia-tensorflow[horovod] --extra-index-url=https://pypi.ngc.nvidia.com/ inside a current container (EOL, slow)"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/ngc.html",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/pytorch-fine-tune/README.md",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/sglang/README.md",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-with-tensorflow/348565"
+   ]
+  },
+  {
+   "id": "SPARK-CDI-SPEC-MISSING",
+   "severity": "WARN",
+   "trigger": "/etc/docker/daemon.json enables CDI (features.cdi=true or cdi-spec-dirs) and /etc/cdi/nvidia.yaml (or /var/run/cdi/nvidia.yaml) does not exist; or log contains 'no nvidia.com/gpu CDI spec is present on the host'.",
+   "evidence_template": "Docker is configured for CDI but no nvidia.com/gpu spec exists (toolkit {ctk_version}); --device nvidia.com/gpu=all will fail on this factory image.",
+   "why_it_matters": "GPU containers using CDI fail at start on fresh DGX Spark images.",
+   "next_steps": [
+    "sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml",
+    "Verify: nvidia-ctk cdi list; docker run --rm --device nvidia.com/gpu=all ubuntu nvidia-smi",
+    "Ensure nvidia-container-toolkit >= 1.17.4 (sudo apt-get install -y nvidia-container-toolkit)"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/NemoClaw/issues/3252",
+    "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html"
+   ]
+  },
+  {
+   "id": "SPARK-DRIVER-BELOW-580.173",
+   "severity": "WARN",
+   "trigger": "GPU is NVIDIA GB10 and driver version is 580.x below 580.173.02 (e.g. 580.95.05, 580.126.09, 580.159.03).",
+   "evidence_template": "Driver {driver} on GB10; 580.173.02 (DGX OS 7.5.0 apt full-upgrade) fixed deterministic 'CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED' / 'CUBLAS failure 14: CUBLAS_STATUS_INTERNAL_ERROR' under batch load.",
+   "why_it_matters": "Batch inference (ONNX Runtime/cuDNN conv, cuBLAS) can crash and leave the device in 'no CUDA-capable device is detected' state until reboot.",
+   "next_steps": [
+    "sudo apt update && sudo apt full-upgrade (DGX OS 7.5.0 / driver 580.173.02), then reboot",
+    "Re-run the failing batch workload"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+   ]
+  },
+  {
+   "id": "SPARK-DRIVER-595-UNSUPPORTED",
+   "severity": "WARN",
+   "trigger": "GPU is NVIDIA GB10 and driver major version is 595 (CUDA 13.2) or OS is not Ubuntu 24.04 / DGX OS 7.x.",
+   "evidence_template": "Driver {driver} / CUDA {cuda} on DGX Spark: NVIDIA stated (June 2026) 'Driver 595 is not yet supported on DGX Spark'; supported stack is DGX OS 7.5.0 + 580.x + CUDA 13.0.2.",
+   "why_it_matters": "Unsupported driver/OS combos are outside NVIDIA validation and may break NGC containers and NIMs.",
+   "next_steps": [
+    "Return to DGX OS 7.5.0 stock driver 580.x, or accept unsupported status",
+    "Check https://docs.nvidia.com/dgx/dgx-spark/release-notes.html for the current supported versions"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/595-58-03-certified-linux-aarch64-arm64-display-driver-and-cuda-13-2-when-for-dgx-spark-gb10/364688",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+   ]
+  },
+  {
+   "id": "SPARK-NVSMI-MEMORY-NOT-SUPPORTED-EXPECTED",
+   "severity": "INFO",
+   "trigger": "nvidia-smi on NVIDIA GB10 shows 'Memory-Usage: Not Supported' / 'N/A' memory fields.",
+   "evidence_template": "nvidia-smi memory columns are 'Not Supported' on GB10 because it is an iGPU with unified LPDDR5X; per-process memory is still listed. cudaMemGetInfo also under-reports reclaimable memory.",
+   "why_it_matters": "Avoid false 'GPU memory unreadable' alarms; use free -h and per-process rows instead.",
+   "next_steps": [
+    "Report unified memory from /proc/meminfo",
+    "Before large model loads: sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/vllm/README.md"
+   ]
+  },
+  {
+   "id": "SPARK-VLLM-WRONG-BUILD",
+   "severity": "CRIT",
+   "trigger": "vllm is installed but version lacks '+cu130' and host is GB10, or startup logs contain 'Engine core initialization failed' preceded by sm_121/no-kernel-image/libcudart.so.12 errors.",
+   "evidence_template": "vLLM {version} is not a CUDA 13 aarch64 build (needs '+cu130' wheel from GitHub releases / wheels.vllm.ai/nightly/cu130, or nvcr.io/nvidia/vllm:26.xx-py3). Error: '{line}'.",
+   "why_it_matters": "vLLM crashes at engine init; --enforce-eager only masks part of it at 20-30% perf cost.",
+   "next_steps": [
+    "uv pip install https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu130-cp38-abi3-manylinux_2_28_aarch64.whl --extra-index-url https://download.pytorch.org/whl/cu130",
+    "Or docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:26.05-py3 vllm serve <model>",
+    "Community: VLLM_ENABLE_CUSTOM_OPS=0 and TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas"
+   ],
+   "sources": [
+    "https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/vllm/README.md",
+    "https://github.com/vllm-project/vllm/issues/31128",
+    "https://github.com/vllm-project/vllm/issues/36821"
+   ]
+  },
+  {
+   "id": "SPARK-SGLANG-KERNEL-MISMATCH",
+   "severity": "WARN",
+   "trigger": "sglang/sgl-kernel installed from PyPI on aarch64 GB10, or lmsysorg/sglang:latest (non-cu130) image, or log 'libcudart.so.12' from a -cu13 sglang image.",
+   "evidence_template": "SGLang {version}/{image}: upstream sgl-kernel wheels did not ship sm_121a-native binaries (as of 2026-05-28) and some cu13 images contained CUDA 12 libs. Use lmsysorg/sglang:latest-cu130 (NVIDIA playbook) or :spark.",
+   "why_it_matters": "Server fails to start or falls back to slow legacy kernels (FP8 CUTLASS not dispatching on GB10).",
+   "next_steps": [
+    "SGLANG_IMAGE=lmsysorg/sglang:latest-cu130; docker run --gpus all -it --rm -p 30000:30000 -v /tmp:/tmp $SGLANG_IMAGE bash",
+    "pip: uv pip install --prerelease=allow sglang (CUDA 13 default) or nightly --index-strategy unsafe-best-match --extra-index-url https://docs.sglang.ai/whl/cu130/"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/sglang/README.md",
+    "https://github.com/sgl-project/sglang/issues/11658",
+    "https://github.com/sgl-project/sglang/issues/19914",
+    "https://docs.sglang.io/get_started/install.html"
+   ]
+  },
+  {
+   "id": "SPARK-CUTLASS-DSL-CU12",
+   "severity": "WARN",
+   "trigger": "pip shows nvidia-cutlass-dsl-libs-cu12 (or cu12 payload active) on a CUDA 13 host and logs show 'Unexpected instruction types specified for `_mma`' / 'DSLRuntimeError: ICE'.",
+   "evidence_template": "CuTe DSL is generating CUDA-12 PTX for B12x NVFP4 kernels on SM12x; CUDA 13 payload required ('{line}').",
+   "why_it_matters": "TensorRT-LLM/FlashInfer NVFP4 MoE workers die at init on GB10.",
+   "next_steps": [
+    "Install nvidia-cutlass-dsl-libs-cu13 / ensure cu13 payload is selected",
+    "Fall back to CUTLASS backend until fixed (TRT-LLM PR #15851)"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/TensorRT-LLM/issues/15853"
+   ]
+  },
+  {
+   "id": "SPARK-ORT-CPU-ONLY",
+   "severity": "WARN",
+   "trigger": "onnxruntime imported on GB10 and 'CUDAExecutionProvider' not in ort.get_available_providers(), or onnxruntime-gpu install attempted from PyPI on aarch64.",
+   "evidence_template": "ONNX Runtime {version} has no CUDA EP on aarch64 (no official onnxruntime-gpu aarch64 wheels); GPU inference requires a CUDA 13 source build (>= 1.24, CMAKE_CUDA_ARCHITECTURES=121, cuDNN 9 for CUDA 13).",
+   "why_it_matters": "Embedding/vision NIMs and Roboflow-style pipelines silently run on CPU.",
+   "next_steps": [
+    "sudo apt install libcudnn9-cuda-13 libcudnn9-dev-cuda-13",
+    "./build.sh --config Release --use_cuda --cuda_home /usr/local/cuda --cudnn_home /usr --build_shared_lib --parallel $(nproc) --skip_tests --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=121",
+    "Use FP32 models (INT8 lacks sm_121 kernels); driver >= 580.173.02"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/onnx-runtime-gpu-inference-on-dgx-spark-gx10-build-guide-and-prebuilt-binaries/366157",
+    "https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html"
+   ]
+  },
+  {
+   "id": "SPARK-HF-KERNELS-AARCH64-VARIANT",
+   "severity": "WARN",
+   "trigger": "Transformers/Unsloth logs contain 'does not have one of build variants: torch210-cxx11-cu130-aarch64-linux' or 'kernels-community/vllm-flash-attn3 is not a valid attention implementation'.",
+   "evidence_template": "Transformers {tv} tried to fetch a HF-hub kernel (kernels-community/vllm-flash-attn3) with no aarch64/cu130 variant.",
+   "why_it_matters": "Model load / forward fails on DGX Spark for gpt-oss and other kernel-hub models.",
+   "next_steps": [
+    "Set attn_implementation=\"sdpa\" (or eager) when loading",
+    "Follow the NVIDIA Unsloth playbook: nvcr.io/nvidia/pytorch:25.11-py3 + pip install --no-deps unsloth unsloth_zoo bitsandbytes",
+    "See unsloth#4867 for the three transformers patches / ALL_ATTENTION_FUNCTIONS.register workaround"
+   ],
+   "sources": [
+    "https://github.com/unslothai/unsloth/issues/4867",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/unsloth/README.md"
+   ]
+  },
+  {
+   "id": "SPARK-LLAMACPP-ARCH",
+   "severity": "WARN",
+   "trigger": "llama.cpp/llama-server binary on GB10 does not log 'compute capability 12.1' or links libcudart.so.12, or CMakeCache CMAKE_CUDA_ARCHITECTURES lacks 121/121a/120f.",
+   "evidence_template": "llama.cpp build {desc}: expected 'ggml_cuda_init: found 1 CUDA devices: Device 0: NVIDIA GB10, compute capability 12.1'; build with CUDA 13 nvcc and CMAKE_CUDA_ARCHITECTURES=121a-real (or 121).",
+   "why_it_matters": "CPU-only or wrong-arch builds give 10x lower throughput or 'no kernel image' errors.",
+   "next_steps": [
+    "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DGGML_RPC=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real && cmake --build build --config Release --target llama-server -j",
+    "export PATH=/usr/local/cuda/bin:$PATH if 'CUDA not found'",
+    "ldd build/bin/llama-server | grep -E 'cudart|cublas' should show .so.13"
+   ],
+   "sources": [
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/llama-cpp/README.md",
+    "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/2_gb10_llamacpp_gpu/"
+   ]
+  },
+  {
+   "id": "SPARK-OLLAMA-CPU-FALLBACK",
+   "severity": "WARN",
+   "trigger": "ollama ps shows a model with PROCESSOR '100% CPU' on a GB10 host, or ollama runs inside a container/VM without GPU passthrough.",
+   "evidence_template": "Ollama {version} is running {model} on CPU although GB10 (CC 12.1) is officially supported; the CUDA runner was not selected (no /dev/nvidia*, missing driver libs, or containerized without --gpus).",
+   "why_it_matters": "Massive slowdown; users misattribute to hardware.",
+   "next_steps": [
+    "Install natively: curl -fsSL https://ollama.com/install.sh | sh; check ollama --version, ollama ps, nvidia-smi during generation",
+    "If containerized, run with --gpus all / CDI and confirm arm64 image"
+   ],
+   "sources": [
+    "https://docs.ollama.com/gpu",
+    "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/ollama/README.md",
+    "https://community.start9.com/t/experience-report-dgx-spark-gb10-start9-os-v0-4-0-ollama-currently-cpu-only-gpu-not-detected/5347"
+   ]
+  },
+  {
+   "id": "RTXSPARK-WOA-PREVIEW-STACK",
+   "severity": "INFO",
+   "trigger": "Windows arm64 host with NVIDIA N1X/RTX Spark GPU detected (nvidia-smi present, PROCESSOR_ARCHITECTURE=ARM64).",
+   "evidence_template": "RTX Spark on Windows on Arm: driver {driver} (needs >= 616.00), CUDA toolkit {cuda} (13.4 Developer Preview is the only native toolkit as of 2026-09); no win_arm64 torch wheels on download.pytorch.org/whl/cu130; bitsandbytes ships win_arm64 sm121 wheels (Py>=3.12, torch>=2.12).",
+   "why_it_matters": "Sets expectations: pre-release stack, pageable-memory transfer slowdowns, PyTorch build workflows may hang the GPU.",
+   "next_steps": [
+    "Confirm driver >= 616.00 and CUDA 13.4 DP; consult https://forums.developer.nvidia.com/t/rtx-spark-isv/377106",
+    "Use pinned host memory (cudaMallocHost/cudaHostAlloc) for transfers",
+    "Watch for NVIDIA's torch index for Spark ARM64 (bitsandbytes docs cite https://pypi.nvidia.com; torch not present there as of 2026-09-02)"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html",
+    "https://forums.developer.nvidia.com/t/rtx-spark-isv/377106",
+    "https://huggingface.co/docs/bitsandbytes/main/en/installation",
+    "https://download.pytorch.org/whl/cu130/torch/"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "PyTorch canonical install (DGX Spark, Python 3.12 venv)",
+   "command": "uv venv .venv --python 3.12 && source .venv/bin/activate && uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130",
+   "notes": "Official cu130 aarch64 wheels exist since torch 2.9.0 (through 2.14.0 on the index). Alternative: uv pip install torch --torch-backend=cu130 or --torch-backend=auto.",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "PyTorch verification",
+   "command": "python -c \"import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0), torch.cuda.get_device_capability(), torch.cuda.get_arch_list())\"",
+   "notes": "Expect '+cu130' (or NGC 'a0+...' build), '13.0', True, 'NVIDIA GB10', (12, 1), list containing sm_120/compute_120 (sm_121 absent is normal).",
+   "source_url": "https://discuss.pytorch.org/t/dgx-spark-gb10-cuda-13-0-python-3-12-sm-121/223744"
+  },
+  {
+   "context": "pip fallback for cu130 (avoid --index-url pitfall)",
+   "command": "pip install torch==2.10.0 --extra-index-url https://download.pytorch.org/whl/cu130",
+   "notes": "--index-url alone fails with 'cuda-bindings==13.0.3' missing; with pip --extra-index-url, verify the result is '+cu130' not a PyPI CPU build.",
+   "source_url": "https://github.com/pytorch/pytorch/issues/172926"
+  },
+  {
+   "context": "vLLM official cu130 wheel (aarch64)",
+   "command": "export VLLM_VERSION=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//'); export CUDA_VERSION=130; export CPU_ARCH=$(uname -m); uv pip install https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu${CUDA_VERSION}-cp38-abi3-manylinux_2_28_${CPU_ARCH}.whl --extra-index-url https://download.pytorch.org/whl/cu${CUDA_VERSION}",
+   "notes": "Nightly: uv pip install -U vllm --extra-index-url https://wheels.vllm.ai/nightly/cu130. Source build env: TORCH_CUDA_ARCH_LIST=\"12.1a\" TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas MAX_JOBS=4.",
+   "source_url": "https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md"
+  },
+  {
+   "context": "vLLM NGC container (NVIDIA playbook)",
+   "command": "docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:26.05-py3 vllm serve ${HF_MODEL_HANDLE}",
+   "notes": "Also vllm/vllm-openai:gemma4-cu130. Health: curl http://localhost:8000/health. Flush UMA cache first: sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/vllm/README.md"
+  },
+  {
+   "context": "SGLang container (NVIDIA playbook)",
+   "command": "SGLANG_IMAGE=\"lmsysorg/sglang:latest-cu130\"; docker run --gpus all -it --rm -p 30000:30000 -v /tmp:/tmp \"$SGLANG_IMAGE\" bash",
+   "notes": "Do not use :latest (cu12). pip: uv pip install --prerelease=allow sglang; nightly cu130: uv pip install --prerelease=allow --index-strategy unsafe-best-match --extra-index-url https://docs.sglang.ai/whl/cu130/ sglang",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/sglang/README.md"
+  },
+  {
+   "context": "TensorRT-LLM container (NVIDIA playbook)",
+   "command": "docker run --rm --gpus all nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 nvidia-smi",
+   "notes": "Expect 'TensorRT-LLM version: 1.3.0rc13'. If 'ptxas fatal : Value sm_121a is not defined', export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas and pass with mpirun -x TRITON_PTXAS_PATH. OOM at load: TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/trt-llm/README.md"
+  },
+  {
+   "context": "llama.cpp build for GB10 (NVIDIA playbook)",
+   "command": "sudo apt install -y git clang cmake libcurl4-openssl-dev libssl-dev && cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DGGML_RPC=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real && cmake --build build --config Release --target llama-server -j",
+   "notes": "Arm guide variant: -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DGGML_CUDA_F16=ON -DCMAKE_CUDA_ARCHITECTURES=121. Requires CUDA 13 nvcc (export PATH=/usr/local/cuda/bin:$PATH). Verify: ldd bin/llama-server | grep cuda -> libcudart.so.13.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/llama-cpp/README.md"
+  },
+  {
+   "context": "Ollama install and check",
+   "command": "curl -fsSL https://ollama.com/install.sh | sh && ollama --version && ollama ps && curl http://localhost:11434/api/tags",
+   "notes": "Ollama GPU docs list CC 12.1 'GB10 (DGX Spark)'; driver >= 550 required. Use nvidia-smi -L for UUIDs with CUDA_VISIBLE_DEVICES.",
+   "source_url": "https://docs.ollama.com/gpu"
+  },
+  {
+   "context": "Triton / torch.compile on sm_121",
+   "command": "export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas; export TORCH_CUDA_ARCH_LIST=\"12.1+PTX\"; unset TRITON_OVERRIDE_ARCH",
+   "notes": "Needed when the torch-bundled ptxas predates CUDA 13.0 (verified with torch 2.9.0+cu130 / Triton 3.5).",
+   "source_url": "https://github.com/triton-lang/triton/issues/10331"
+  },
+  {
+   "context": "flash-attention source build (if truly required)",
+   "command": "git clone https://github.com/Dao-AILab/flash-attention.git && cd flash-attention && git submodule update --init csrc/cutlass && CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=\"12.0\" FLASH_ATTN_CUDA_ARCHS=\"120\" FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS=4 pip install -e . --no-build-isolation",
+   "notes": "No official aarch64/sm121 wheels. Prefer attn_implementation=\"sdpa\". Building with sm121 alone fails ('kernel built for sm80-sm100, but running on sm121').",
+   "source_url": "https://github.com/martimramos/dgx-spark-ml-guide"
+  },
+  {
+   "context": "xformers source build",
+   "command": "pip install ninja && git clone https://github.com/facebookresearch/xformers.git && cd xformers && git submodule update --init --recursive && export TORCH_CUDA_ARCH_LIST=\"12.1\" && pip install -v -e .",
+   "notes": "No aarch64 + CUDA 13 wheels.",
+   "source_url": "https://github.com/unitreerobotics/unifolm-world-model-action/issues/41"
+  },
+  {
+   "context": "bitsandbytes",
+   "command": "pip install bitsandbytes && python -m bitsandbytes",
+   "notes": "Official Linux aarch64 CUDA 13.0–13.2 wheels include sm121; Windows arm64 CUDA 13.4 wheel targets sm121 (Python >= 3.12, torch >= 2.12).",
+   "source_url": "https://huggingface.co/docs/bitsandbytes/main/en/installation"
+  },
+  {
+   "context": "JAX CUDA 13",
+   "command": "pip install --upgrade \"jax[cuda13]\"",
+   "notes": "Linux aarch64 NVIDIA GPU listed as supported; driver >= 580; SM 7.5+. No DGX-Spark-specific validation found.",
+   "source_url": "https://docs.jax.dev/en/latest/installation.html"
+  },
+  {
+   "context": "TensorFlow (EOL path) on DGX Spark",
+   "command": "pip install nvidia-tensorflow[horovod] --extra-index-url=https://pypi.ngc.nvidia.com/",
+   "notes": "NVIDIA-optimized TF is EOL after 25.02; works with benign factory-registration warnings; reported slow on GPU.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-with-tensorflow/348565"
+  },
+  {
+   "context": "ONNX Runtime GPU source build for GB10",
+   "command": "sudo apt install libcudnn9-cuda-13 libcudnn9-dev-cuda-13 && ./build.sh --config Release --use_cuda --cuda_home /usr/local/cuda --cudnn_home /usr --build_shared_lib --parallel $(nproc) --skip_tests --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=121",
+   "notes": "ORT >= 1.24 for CUDA 13 (1.27+ officially); verify ort.get_available_providers() includes 'CUDAExecutionProvider'.",
+   "source_url": "https://forums.developer.nvidia.com/t/onnx-runtime-gpu-inference-on-dgx-spark-gx10-build-guide-and-prebuilt-binaries/366157"
+  },
+  {
+   "context": "Unsloth (NVIDIA playbook)",
+   "command": "docker run --gpus all -it nvcr.io/nvidia/pytorch:25.11-py3 bash -c 'pip install transformers peft hf_transfer \"datasets==4.3.0\" \"trl==0.26.1\" && pip install --no-deps unsloth unsloth_zoo bitsandbytes'",
+   "notes": "Requires nvcc --version = CUDA 13.0. Expected log 'Unsloth: Will patch your computer to enable 2x faster free finetuning'.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/unsloth/README.md"
+  },
+  {
+   "context": "NeMo AutoModel fine-tune (NVIDIA playbook)",
+   "command": "docker run --gpus all -it -e HF_TOKEN nvcr.io/nvidia/nemo-automodel:26.02",
+   "notes": "Community also uses nvcr.io/nvidia/nemo:26.04 on GB10. Check manifest for linux/arm64.",
+   "source_url": "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nemo-fine-tune/README.md"
+  },
+  {
+   "context": "Container toolkit smoke test on DGX OS",
+   "command": "nvidia-ctk --version && docker run --rm --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 nvidia-smi",
+   "notes": "Toolkit preinstalled; config /etc/docker/daemon.json; add user with sudo usermod -aG docker $USER && newgrp docker.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html"
+  },
+  {
+   "context": "CDI spec regeneration",
+   "command": "sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml",
+   "notes": "Needed on some factory images (toolkit 1.19.0) where Docker is CDI-configured but the spec is absent.",
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/3252"
+  },
+  {
+   "context": "Host identification",
+   "command": "uname -m; lsb_release -a; nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader; nvcc --version",
+   "notes": "Expect aarch64 / Ubuntu 24.04 noble / 'NVIDIA GB10, 12.1, 580.x' / release 13.0.",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "context": "Windows on Arm (RTX Spark) driver/toolkit baseline",
+   "command": "nvidia-smi; nvcc --version",
+   "notes": "Driver must be 616.00+; CUDA 13.4 Developer Preview is the only native Windows Arm64 toolkit (2026-07-16). Pre-release; not for production/benchmarks.",
+   "source_url": "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html"
+  }
+ ],
+ "open_questions": [
+  "Exact string in torch.cuda.get_arch_list() for current cu130 aarch64 wheels (2.12–2.14): confirmed 'sm_120'/'compute_120' present and 'sm_121' absent for 2.9–2.12-era builds; not verified whether newer wheels add sm_120f or sm_121.",
+  "Whether plain-PyPI `torch` aarch64 wheels (no index) are CPU-only or CUDA (cu12x) as of Sept 2026 — determines whether the pip --extra-index-url pitfall yields CPU or cu12 torch on DGX Spark.",
+  "Where NVIDIA publishes PyTorch wheels for RTX Spark Windows arm64: bitsandbytes docs point to `pip install torch --index-url https://pypi.nvidia.com`, but https://pypi.nvidia.com/torch/ returned 404 on 2026-09-02 and download.pytorch.org/whl/cu130 has no win_arm64 wheels.",
+  "Which bitsandbytes release first shipped Linux aarch64 CUDA 13 wheels with sm121 (docs table only shows the current state).",
+  "Ollama's exact runner/library naming (cuda_v12 vs cuda_v13 directories) and GPU-detection log lines on arm64 — docs.ollama.com/gpu confirms GB10 support but the 404'd GitHub docs/gpu.md prevented quoting log strings.",
+  "Whether official TensorFlow (tensorflow[and-cuda]) publishes any aarch64 GPU wheels for CUDA 13; only the EOL nvidia-tensorflow path from pypi.ngc.nvidia.com is documented as working on GB10.",
+  "JAX cuda13 aarch64 on GB10 specifically: docs list Linux aarch64 GPU as supported and SM 7.5+, but no DGX Spark run report or sm_121-specific caveat was found.",
+  "Whether the CUDA 13.0 release notes ever labelled SM121 'experimental' (a search summary claimed this; the fetched 13.0.1 release notes contain no such text).",
+  "Authoritative NVIDIA documentation stating that sm_120 SASS is binary-compatible with CC 12.1 (PyTorch maintainers and FlashInfer assert it; the nvcc GPU Feature List page could not be retrieved to quote the rule for sm_120/sm_120f/sm_121a).",
+  "Which exact DGX OS file exposes the DGX OS version (e.g. /etc/dgx-release) for programmatic detection — not confirmed from a source in this pass.",
+  "Precise nvidia-container-toolkit version preinstalled on DGX OS 7.5.0 (NemoClaw cites 1.19.0 on the factory image; docs page gives no number).",
+  "vLLM release that first shipped official '+cu130' aarch64 wheels on GitHub (docs show the pattern; the first version was not identified) and whether upstream vLLM CMake arch list now includes 12.1a.",
+  "SGLang: whether upstream sgl-kernel wheels now (Sept 2026) include sm_121a; last confirmed statement (2026-05-28) says no.",
+  "Whether nvcr.io/nvidia/nemo (framework container, not nemo-automodel) publishes linux/arm64 manifests for 26.x.",
+  "Whether the DGX Spark driver 580.173.02 is the officially listed version (release notes table shows 580.159.03; forum user got 580.173.02 via apt full-upgrade on DGX OS 7.5.0).",
+  "RTX Spark N1X compute capability is inferred as 12.1 from bitsandbytes' win_arm64 wheel targeting sm121 and press; no NVIDIA doc explicitly listing N1X CC was found."
+ ],
+ "sources": [
+  "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/ngc.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/index.html",
+  "https://docs.nvidia.com/cuda/archive/13.0.1/cuda-toolkit-release-notes/index.html",
+  "https://docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html",
+  "https://docs.nvidia.com/cuda/blackwell-compatibility-guide/",
+  "https://developer.nvidia.com/blog/nvidia-blackwell-and-nvidia-cuda-12-9-introduce-family-specific-architecture-features/",
+  "https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-11.html",
+  "https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-09.html",
+  "https://docs.nvidia.com/deeplearning/frameworks/vllm-release-notes/rel-25-09.html",
+  "https://forums.developer.nvidia.com/t/rtx-spark-isv/377106",
+  "https://forums.developer.nvidia.com/t/595-58-03-certified-linux-aarch64-arm64-display-driver-and-cuda-13-2-when-for-dgx-spark-gb10/364688",
+  "https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948",
+  "https://forums.developer.nvidia.com/t/incompatibility-of-torchaudio-in-ngc-pytorch-container-25-12-on-dgx-spark-blackwell-gb10/357745",
+  "https://forums.developer.nvidia.com/t/nim-llm-containers-fail-on-dgx-spark-gb10-triton-vllm-crash-on-sm-121-and-ngc-permission-errors/353346",
+  "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-with-tensorflow/348565",
+  "https://forums.developer.nvidia.com/t/onnx-runtime-gpu-inference-on-dgx-spark-gx10-build-guide-and-prebuilt-binaries/366157",
+  "https://forums.developer.nvidia.com/t/nemo-framework-on-dgx-spark/361216",
+  "https://forums.developer.nvidia.com/t/architecture-and-library-compatibility-on-aarch64/350389",
+  "https://forums.developer.nvidia.com/t/rag-blueprint-on-dgx-spark-arm64-gb10-nims-milvus-ok-but-ingestor-server-rag-server-fail-with-exec-format-error/354990",
+  "https://github.com/NVIDIA/dgx-spark-playbooks",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/vllm/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/pytorch-fine-tune/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/trt-llm/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/ollama/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/sglang/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/llama-cpp/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/unsloth/README.md",
+  "https://raw.githubusercontent.com/NVIDIA/dgx-spark-playbooks/main/nvidia/nemo-fine-tune/README.md",
+  "https://nvidia.github.io/TensorRT-LLM/release-notes.html",
+  "https://github.com/NVIDIA/TensorRT-LLM/issues/15853",
+  "https://github.com/NVIDIA/NemoClaw/issues/3252",
+  "https://github.com/pytorch/pytorch/releases/tag/v2.9.0",
+  "https://github.com/pytorch/pytorch/issues/172926",
+  "https://download.pytorch.org/whl/cu130/torch/",
+  "https://discuss.pytorch.org/t/dgx-spark-gb10-cuda-13-0-python-3-12-sm-121/223744",
+  "https://github.com/vllm-project/vllm/blob/main/docs/getting_started/installation/gpu.cuda.inc.md",
+  "https://github.com/vllm-project/vllm/issues/28669",
+  "https://github.com/vllm-project/vllm/issues/31128",
+  "https://github.com/vllm-project/vllm/issues/36821",
+  "https://github.com/sgl-project/sglang/issues/11658",
+  "https://github.com/sgl-project/sglang/issues/19914",
+  "https://docs.sglang.io/get_started/install.html",
+  "https://github.com/triton-lang/triton/issues/10331",
+  "https://github.com/triton-lang/triton/issues/8335",
+  "https://github.com/flashinfer-ai/flashinfer/issues/3170",
+  "https://github.com/Dao-AILab/flash-attention/issues/1969",
+  "https://github.com/Dao-AILab/flash-attention/issues/2118",
+  "https://github.com/unitreerobotics/unifolm-world-model-action/issues/41",
+  "https://github.com/unslothai/unsloth/issues/4867",
+  "https://huggingface.co/docs/bitsandbytes/main/en/installation",
+  "https://docs.jax.dev/en/latest/installation.html",
+  "https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html",
+  "https://docs.ollama.com/gpu",
+  "https://ollama.com/blog/nvidia-spark",
+  "https://lmstudio.ai/blog/dgx-spark",
+  "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/",
+  "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/2_gb10_llamacpp_gpu/",
+  "https://docs.astral.sh/uv/guides/integration/pytorch/",
+  "https://github.com/natolambert/dgx-spark-setup",
+  "https://github.com/martimramos/dgx-spark-ml-guide",
+  "https://github.com/ogulcanaydogan/dgx-spark-llm-stack",
+  "https://github.com/jethac/dgx-spark-hijinks/blob/main/docs/PYTORCH_SM121_SUPPORT.md",
+  "https://pypi.nvidia.com/",
+  "https://videocardz.com/newz/nvidia-releases-first-cuda-toolkit-preview-for-windows-on-arm-and-rtx-spark",
+  "https://videocardz.com/newz/nvidias-first-geforce-driver-for-windows-on-arm-confirms-rtx-spark-n1x-with-6144-or-5120-cuda-cores",
+  "https://community.start9.com/t/experience-report-dgx-spark-gb10-start9-os-v0-4-0-ollama-currently-cpu-only-gpu-not-detected/5347",
+  "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/installing_on_ubuntu.html"
+ ]
+}

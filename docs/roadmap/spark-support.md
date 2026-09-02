@@ -1,68 +1,241 @@
-# Roadmap: DGX Spark, RTX Spark, NVIDIA Arm and unified memory
+> **Status: DRAFT v1 (2026-09-02), not yet implemented.** Synthesized from ten research passes; the citation/safety review in
+> [spark-spec-review.md](spark-spec-review.md) found issues that must be fixed before the rule catalog is built. The machine-readable
+> catalog is [spark-rules.json](spark-rules.json); implementation packages are in [spark-work-packages.md](spark-work-packages.md);
+> raw research with sources is under [research/](research/). Tracking issue: #3.
 
-Status: research in progress (started 2026-09-02). This document is the durable record of what is known and what is planned, so work can resume from any machine or session. Tracking issue: see the issue titled "DGX Spark / RTX Spark support" in this repository.
+# NVCheckup on DGX Spark, RTX Spark and NVIDIA Arm unified-memory platforms
 
-## Goal
+Status: specification, 2026-09-02 (replaces the research roadmap). Ten research passes feed it; disagreements and uncertainty are stated inline. Sources are `[Sn]`, listed in section 13. Everything here is read-only; no new `fix` action is proposed.
 
-Make NVCheckup a solid diagnostic (and, for LLM workloads, an optimization guide) on NVIDIA's new Arm-based unified-memory platforms:
+## 1. Goals and non-goals
+Recognise the platform class (`dgx-spark` incl. OEM GB10, `rtx-spark`, `jetson`, `grace-hopper`, `arm64-dgpu`) and stop every rule that assumes discrete VRAM, a fan, a power limit or a PCIe link from firing on unified-memory GPUs. Diagnose the GB10 failure modes users hit: driver/GSP pairing, foreign driver packages, the USB-C power-delivery wedge, log-less hard power-offs, unified-memory pressure, CUDA-12 wheels on CUDA 13, missing `sm_121` kernels, ConnectX-7 mistakes. Add `nvcheckup llm-plan`. Ship `windows/arm64`. Non-goals: applying clock caps, swap or driver changes (advisory only); load or network tests inside `run`.
 
-- **DGX Spark** (GB10 Grace Blackwell, Arm64, DGX OS) and OEM variants (for example ASUS Ascent GX10).
-- **RTX Spark** (the N1X superchip in Windows on Arm laptops and compact desktops, shipping fall 2026).
-
-Both share the properties that break today's GPU tooling: no discrete VRAM (CPU and GPU share one LPDDR5X pool), an Arm CPU, Blackwell `sm_121`, CUDA 13 only, and `nvidia-smi` that reports memory as not supported.
-
-## What we know so far (with sources)
-
-### DGX Spark hardware and software
-
-- GB10 Grace Blackwell superchip: 20-core Arm CPU (10 Cortex-X925 + 10 Cortex-A725), Blackwell GPU with 6,144 CUDA cores (`sm_121`), 128 GB unified LPDDR5X at about 273 GB/s, ConnectX-7 networking for clustering two units. Sources: [LMSYS review](https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/), [Kubesimplify day 3](https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists).
-- DGX OS 7 (Ubuntu 24.04 based) with the NVIDIA-optimized Arm64 kernel; current at time of writing: DGX OS 7.4.0, driver 580.126.09, CUDA 13.0.2; driver packages are the `-open` kernel modules (`nvidia-driver-580-open`, with the branch dropped from package names on Spark). `/etc/dgx-release` carries the DGX name, software version and OTA information. Sources: [DGX OS 7 user guide](https://docs.nvidia.com/dgx/dgx-os-7-user-guide), [DGX Spark release notes](https://docs.nvidia.com/dgx/dgx-spark/release-notes.html).
-- `nvidia-smi` reports **Memory-Usage: Not Supported** on DGX Spark; memory must be read from Linux (`free`, `/proc/meminfo`). Community workarounds exist (a drop-in NVML replacement, a memory dashboard). Sources: [DGX Spark docs](https://docs.nvidia.com/dgx/dgx-spark/index.html), [forum: nvidia-smi is broken on DGX Spark](https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765), [NVML community solution](https://forums.developer.nvidia.com/t/nvml-support-for-dgx-spark-grace-blackwell-unified-memory-community-solution/358869), [memory dashboard](https://forums.developer.nvidia.com/t/dgx-spark-memory-dashboard-live-gib-occupancy-map-can-i-load-next/381279).
-- CUDA memory model note: for the integrated GPU, memory returned by `cudaMalloc` is not coherently accessible by the CPU or PCIe devices; managed/unified allocations behave differently from discrete GPUs. Source: [forum: GPUDirect RDMA on DGX Spark](https://forums.developer.nvidia.com/t/dgx-spark-gpudirect-rdma/348787/6).
-
-### Known failure modes reported by users (candidate analyzer rules)
-
-| Symptom | Cause / fix reported | Source |
+## 2. Platform facts
+### 2.1 DGX Spark (GB10) and OEM GB10
+| Fact | Value | Src |
 |---|---|---|
-| `cuBLAS INTERNAL_ERROR`, `CUDNN_FE failure 11` under batch load | Older 580.95 / 580.126 driver; fixed by 580.173 | [forum](https://forums.developer.nvidia.com/t/gb10-dgx-spark-cudnn-fe-failure-11-and-cublas-status-internal-error-under-batch-load-fixed-by-driver-580-173/380948) |
-| "NVIDIA-GB10 not supported" after a restore | Driver 580-open reinstall path | [forum](https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655) |
-| `nvidia-smi: No devices found` after `apt upgrade` to 580.173.02 on OTA2607 | Driver / kernel mismatch after partial upgrade | [forum](https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200) |
-| Random hard power-off with no log | Mitigated by a GPU clock cap made persistent with systemd | [tonyd2wild/dgx-spark-hard-poweroff-fix](https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix) |
-| GX10 (ASUS variant) stuck throttled | Power-delivery throttle fix | [Sggin1/DGX-SPARK](https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md) |
-| Stuck at low power | Stale 550.x driver with CUDA 12.4; fixed by 580.95 + CUDA 13 | forum threads via [natolambert/dgx-spark-setup](https://github.com/natolambert/dgx-spark-setup) |
-| Only ~56 GB "VRAM" visible in AI Workbench | Unified memory reported through a tool that expects discrete VRAM | [forum](https://forums.developer.nvidia.com/t/dgx-spark-gb10-shows-only-56gb-vram-inside-ai-workbench-128gb-expected/351441) |
-| `ImportError: libcudart.so.12` | Package built for CUDA 12 on a CUDA 13-only system | [martimramos/dgx-spark-ml-guide](https://github.com/martimramos/dgx-spark-ml-guide) |
-| PyTorch cannot see the GPU / slow | CPU-only or cu12 wheel; use `--index-url https://download.pytorch.org/whl/cu130` (aarch64 wheels exist) | [natolambert/dgx-spark-setup](https://github.com/natolambert/dgx-spark-setup), [PyTorch forums](https://discuss.pytorch.org/t/dgx-spark-gb10-cuda-13-0-python-3-12-sm-121/223744) |
-| vLLM / flash-attn / others lack `sm_121` wheels | Ecosystem gap; build from source or use NVIDIA containers | [forum roadmap thread](https://forums.developer.nvidia.com/t/dgx-spark-sm121-software-support-is-severely-lacking-official-roadmap-needed/357663), [vLLM issue](https://github.com/vllm-project/vllm/issues/31128) |
-| HDMI display does not wake after deep sleep | Documented limitation | [DGX Spark docs](https://docs.nvidia.com/dgx/dgx-spark/index.html) |
+| SoC | 20 Arm cores (10 Cortex-X925 + 10 Cortex-A725), Blackwell GPU 48 SMs / 6,144 cores, compute capability **12.1 (sm_121)**, NVLink-C2C to the CPU die, no PCIe between CPU and GPU | S1 S2 |
+| Memory | 128 GB LPDDR5X, 256-bit, 273 GB/s, one coherent pool; MemTotal 125,513,944 kB = 119.7 GiB (2025) or ~121.7 GiB (2026); display reserve 2 GB default / 4 GB (BIOS toggle, July 2026) | S3 S4 S5 |
+| nvidia-smi | Name `NVIDIA GB10`, Bus-Id `0000000F:01:00.0`, Fan `N/A`, Pwr cap `N/A`, Memory-Usage `Not Supported`; `--query-gpu=memory.total,memory.used,memory.free` prints `[N/A], [N/A], [N/A]`; `-q`: all power limits `N/A`, `Max Clocks Graphics 3003 MHz`, memory clock `N/A`, `Supported Clocks N/A`, Shutdown/Slowdown T.Limit `N/A`, `GPU Max Operating T.Limit Temp 0 C`; PCIe misreported `GEN 1@ 1x`. Temperature, P-state, power draw, SM clock, utilization, per-process memory work | S1 S3 S6 S7 |
+| NVML | `nvmlDeviceGetMemoryInfo` returns `NVML_ERROR_NOT_SUPPORTED` (k8s-device-plugin < v0.17.4, DRA driver < v0.4.0, HAMi <= 2.7.1, accelerate `device_map=auto` break) | S8 S9 |
+| CUDA memory | `cudaMalloc` memory is not CPU/PCIe coherent; GPUDirect RDMA, nvidia-peermem, dma-buf, GDRCopy do not work; `cudaMemGetInfo` ignores swap-reclaimable pages; NVIDIA's reference reads `/proc/meminfo` MemAvailable + SwapFree (HugePages override) | S3 S10 |
+| OS | DGX OS 7 = Ubuntu 24.04 + Canonical `linux-nvidia` kernel (`6.11.0-10xx-nvidia` launch, `6.14.0-1015-nvidia`, `6.17.0-1004..1031-nvidia`), `nvidia-driver-580-open` (580.95.05 -> 580.126.09 -> 580.142 -> 580.159.03 -> 580.173.02), CUDA 13.0 (`V13.0.88`) / 13.0.2. FE table (Aug 2026): DGX OS 7.5.0, driver 580.159.03, CUDA 13.0.2, kernel 6.17, UEFI 1.110.13, EC 3.5.8, USB PD 0.5.22, SoC 2.155.11. Researchers disagree on whether 580.173.02 is official: release notes list 580.159.03, users run 580.173.02 on 7.5.0, and one apt pull of it broke OTA2607 boxes | S4 S11 S12 |
+| Updates | DGX Dashboard `http://localhost:11000` (units `dgx-dashboard.service`, `dgx-dashboard-admin.service`) is the sanctioned path; manual `sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot`; `nvidia-spark-ota-check {summary,torn-score,installed-name,is-ota-available}` (OTA names `OTAyymm`; `OTA2607` = July 2026 = 580.159.03) | S13 S14 S11 |
+| Diagnostics | No BMC, NVSM or dgxdiag. RMA pre-check `dgx-spark-fieldiag`: `sudo /opt/nvidia/dgx-spark-fieldiag/partnerdiag --field` (Secure Boot off), thermal codes `MODS-020000610139` / `082-000-1-020000600139`; support wants `sudo nvidia-bug-report.sh` | S15 S16 |
+| Networking | ConnectX-7 multi-host mode: each QSFP cage = two PCIe Gen5 x4 twins, `enp1s0f0np0`+`enP2p1s0f0np0` (port 0, `rocep1s0f0`/`roceP2p1s0f0`) and `enp1s0f1np1`+`enP2p1s0f1np1` (port 1); PCI `0000:01:00.0/.1`, `0002:01:00.0/.1` (`15b3:1021`); one cable = 200 Gb/s = ~92-98 Gb/s per twin, NCCL ~22-24 GB/s busbw; mgmt 10GbE `enP7s7` (Realtek r8127), Wi-Fi `wlP9s9` (MediaTek MT7925) | S17 S18 S19 |
+| Power/thermal | 240 W USB-C PD 3.1 EPR brick (Dell 280 W), SoC TDP 140 W, GPU ~120 W; `nvidia-smi -pl` unsupported; no fan telemetry (EC-controlled); ACPI `acpitz` zones are the only extra sensors | S20 S21 |
+| OEM variants | ASUS Ascent GX10 (BIOS `GX10DGX.0102.2025.1111.1531`, 0103..0105), HP ZGX Nano G1n, Lenovo ThinkStation PGX (`30KL0004FC`), Dell Pro Max GB10, MSI EdgeXpert, Acer, Gigabyte; same board, DMI Version `A.7`, own firmware tracks and recovery images; whether `/etc/dgx-release` differs is unconfirmed | S22 S23 |
 
-### RTX Spark (N1X) for Windows on Arm
+### 2.2 RTX Spark (N1X, Windows on Arm)
+Announced 2026-05-31; devices fall 2026 (ASUS ProArt P16/P14, Dell XPS 16, HP OmniBook X 14/Ultra 16, Lenovo Yoga Pro 9n, Surface Laptop Ultra, Surface RTX Spark Dev Box, MSI Prestige N16 Flip). 20-core Grace CPU, Blackwell RTX GPU 6,144 (PCI `10DE:2E03`) or 5,120 cores (`10DE:2E06`), codename GB20B, up to 128 GB unified LPDDR5X (ASUS: 24/32/48/64/128 GB), 45-80 W (Dev Box 100 W). First Arm64 driver 616.00 Developer Preview (2026-07-16, INF `nv_surface_woa.inf`, names `NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)` / `(5120-core ...)`); CUDA 13.4 Developer Preview is the first native Windows Arm64 toolkit. Compute capability inferred 12.1 (bitsandbytes ships win_arm64 `sm121`), not published. Windows 26H1 (build 28000) is the device-scoped Arm release. No public `nvidia-smi.exe` output exists. S24 S25 S26 S27
 
-- Announced by NVIDIA and Microsoft on 2026-05-31: 20-core Grace CPU, Blackwell RTX GPU with up to 6,144 CUDA cores, up to 128 GB unified LPDDR5X, roughly RTX 5070 Laptop class, CUDA runs natively on Windows on Arm. Laptops (14 mm, 3 lb, 14 to 16 inch) and compact desktops from ASUS, Dell, HP, Lenovo, Microsoft Surface and MSI in fall 2026; Acer and GIGABYTE later. Sources: [NVIDIA newsroom](https://nvidianews.nvidia.com/news/nvidia-microsoft-windows-pcs-agents-rtx-spark), [NVIDIA RTX Spark page](https://www.nvidia.com/en-us/products/rtx-spark/), [Wikipedia](https://en.wikipedia.org/wiki/Nvidia_RTX_Spark), [PCWorld list of devices](https://www.pcworld.com/article/3154922/rtx-spark-all-the-laptops-and-mini-pcs-announced-so-far.html), [CNBC](https://www.cnbc.com/2026/05/31/nvidias-new-chip-to-power-fresh-line-of-windows-laptops-by-dell-hp.html).
-- Implication for NVCheckup: a **windows/arm64** build target, Windows-on-Arm collectors (WMI works; `nvidia-smi.exe` behavior on unified memory to be confirmed), and the same unified-memory reporting rules as DGX Spark.
+### 2.3 Confusables
+Jetson: `/etc/nv_tegra_release`, `/proc/device-tree/model` "NVIDIA Jetson ...", `nvidia-l4t-core`; **Thor (CC 11.0) ships `nvidia-smi` (OpenRM)**, so "no nvidia-smi" is no longer a Jetson test (S28). GH200/GB200/GB300: aarch64 + coherent memory but discrete HBM GPU (`NVIDIA GH200 480GB`, `97871MiB`), CC 9.0/10.x, BMC, NUMA nodes 9 / 34 (S29).
 
-### Public code to learn from
+## 3. Detection
+### 3.1 Decision table (first match wins; later rows refine)
+| # | Test (exact strings) | Result |
+|---|---|---|
+| 1 | Windows: `IsWow64Process2` native machine `0xAA64` or `runtime.GOARCH=="arm64"`; `Win32_Processor.Architecture == 12` | `IsWindowsOnArm`; `ProcessEmulated` when process machine != `IMAGE_FILE_MACHINE_UNKNOWN` |
+| 2 | Windows PNP `PCI\VEN_10DE&DEV_2E03` or `&DEV_2E06`, or adapter Name contains `RTX Spark N1X`; INF `nv_surface_woa.inf`; WDDM `32.0.16.1600` = 616.00 | `Class=rtx-spark`, `UnifiedMemory`, `OnPackage` |
+| 3 | Linux `/etc/nv_tegra_release` exists or `/proc/device-tree/model` contains `NVIDIA Jetson` | `Class=jetson` (existing), `UnifiedMemory` |
+| 4 | `/etc/dgx-release` line `DGX_NAME="DGX Spark"` (also `DGX_PRETTY_NAME="NVIDIA DGX Spark"`, quirk `DGX_PLATFORM="DGX Server for KVM"`); parse `DGX_SWBUILD_VERSION`, `DGX_OTA_VERSION`, `DGX_OTA_DATE`, `DGX_SERIAL_NUMBER` (redact); `/etc/fastos-release` `NAME="DGX SPARK FASTOS"` | `Class=dgx-spark`, `DGXOS` |
+| 5 | `lspci -nn` line with `[10de:2e12]` (BDF `000f:01:00.0`) or `nvidia-smi -L` name `NVIDIA GB10` or `compute_cap` `12.1` with `memory.total` `[N/A]` | `Class=dgx-spark` (GB10 hardware even when nvidia-smi is dead or DGX OS absent), `UnifiedMemory`, `OnPackage` |
+| 6 | DMI `sys_vendor`=`NVIDIA`, `product_name`=`NVIDIA_DGX_Spark`, `product_version`=`A.7`, BIOS `5.36_0ACUM018`/`023` | Founders Edition; other vendors (`ASUS`, `HP`, `LENOVO`, `Dell`, `MSI`, `Acer`, `GIGABYTE`) with a GB10 = OEM (same class; `Vendor`/`Model` say which) |
+| 7 | Linux `lspci` `[10de:2e03]` / `[10de:2e06]` | `Class=rtx-spark` on Linux (unsupported) |
+| 8 | nvidia-smi name contains `GH200`/`GB200`/`GB300`, memory numeric | `Class=grace-hopper`, `UnifiedMemory=false` |
+| 9 | aarch64, none of the above, NVIDIA dGPU | `Class=arm64-dgpu` |
+| 10 | kernel `^\d+\.\d+\.\d+-\d+-nvidia$` | `DGXKernel` |
 
-- [NVIDIA/dgx-spark-playbooks](https://github.com/NVIDIA/dgx-spark-playbooks): 47+ playbooks (vLLM, TensorRT-LLM, SGLang, llama.cpp, Ollama, NeMo, Unsloth, JAX, Isaac, NCCL, connect-two-sparks with a `discover-sparks` script and a performance benchmarking guide). Each has troubleshooting sections that are a rich source of rules and recommended flags.
-- [NVIDIA/k8s-device-plugin issue 1482](https://github.com/NVIDIA/k8s-device-plugin/issues/1482): GB10 support in the device plugin.
-- Community: [natolambert/dgx-spark-setup](https://github.com/natolambert/dgx-spark-setup), [Sggin1/DGX-SPARK](https://github.com/Sggin1/DGX-SPARK), [ogulcanaydogan/dgx-spark-llm-stack](https://github.com/ogulcanaydogan/dgx-spark-llm-stack), [assix pytorch aarch64 cu130 wheels](https://github.com/assix/pytorch-aarch64-cuda130-python310-wheels).
-- Note: the NVIDIA GitHub organization's private repositories are not reachable from the current token (SAML SSO not authorized). Everything above is public.
+CPU model on arm64: `/proc/cpuinfo` has no `model name`; use `lscpu` `Model name:` lines (GB10: `Cortex-X925` and `Cortex-A725`, `Vendor ID: ARM`, `Stepping: r0p1`, `CPU(s): 20`) or MIDR (`CPU implementer: 0x41`, `CPU part: 0xd85`=X925, `0xd87`=A725, `0xd4f`=Neoverse V2). S1 S29
 
-## Plan
+### 3.2 Exact-string reference
+- Packages: `nvidia-driver-580-open` (`580.159.03-0ubuntu0.24.04.1`), `nvidia-firmware-580-<ver>`, `linux-modules-nvidia-580-open-<kernel>`, `linux-nvidia-hwe-24.04`, `nvidia-kernel-common-580`, `dgx-release` (7.5.0), `dgx-dashboard`, `nvidia-spark-ota-check`, `dgx-spark-ota-update-meta`, `nvidia-dgx-telemetry`, `nvidia-spark-mlnx-firmware-manager`, `nvidia-system-core`, `dgx-spark-fieldiag`. Wrong: `nvidia-driver-570-server`, `nvidia-dkms-580-open-server`, `nvidia-fabricmanager-580`, `nvidia-nvswitch-580`. S11 S30
+- GSP failure: `NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!`, `NVRM: ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out.`, `NVRM: RmInitAdapter: Cannot initialize GSP firmware RM`, `RmInitAdapter failed! (0x62:0x65:2028)`, `CUDA failed to initialize, error 999`; nvidia-smi `No devices were found`; OTA checker `failed: ["driver"]`. Sentinel `0xbadf5600`; Xid 120 `GSP task exception`. S12 S31
+- Benign: `mlx5_core 0000:01:00.0: mlx5_pcie_event:326:(pid 165): Detected insufficient power on the PCIe slot (27W).` S32
+- Ecosystem: `ImportError: libcudart.so.12: cannot open shared object file: No such file or directory`; `Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)` (benign); `no kernel image is available for execution on the device`; `FATAL: kernel built for sm80-sm100, but running on sm121`; `ptxas fatal : Value 'sm_121a' is not defined for option 'gpu-name'`; `cudaErrorSymbolNotFound`. S33 S34
+- RTX Spark WMI: `PNPDeviceID` `PCI\VEN_10DE&DEV_2E03&SUBSYS_...1414` (Microsoft subsystem), `InfFilename` `nv_surface_woa.inf`; `Win32_Processor.Architecture` 12; `Win32_ComputerSystemProduct.Name` e.g. `Surface RTX Spark Dev Box` (marketing names; SMBIOS strings unconfirmed). S25
 
-1. **Detection.** Recognize the platform class: `dgx-spark` (GB10 via `nvidia-smi -L` name "NVIDIA GB10", `/etc/dgx-release`, `/proc/device-tree/model`, aarch64), `rtx-spark` (N1X on Windows on Arm via WMI processor/system product names and GPU name), and a generic `unified-memory` flag whenever `nvidia-smi` reports memory as not supported on an integrated GPU.
-2. **Unified memory collector.** Read total/available/used from `/proc/meminfo` (Linux) or WMI (Windows), swap and zram state, hugepages, `vm.overcommit_memory`; record the largest single allocation the GPU could plausibly take; never call absent VRAM "low VRAM".
-3. **Arm CUDA ecosystem probes.** Detect CPU-only or cu12 wheels on a CUDA 13-only system, `libcudart.so.12` mismatches, missing `sm_121` support in installed frameworks, driver-below-580.173 with known cuBLAS failures, `nvidia-smi` "No devices found" after a partial upgrade, and DGX OS OTA state.
-4. **Clustering.** ConnectX-7 presence and link state, NCCL sanity, MTU, when two Sparks are connected.
-5. **Rules and fixes.** New analyzer rules with stable ids for every row in the table above; no new `fix` actions that could brick a Spark (clock caps stay advisory).
-6. **LLM optimization wizard.** `nvcheckup llm-plan` (name to be decided): interactive or flag-driven; takes the model (parameters, quantization) and target runtime (llama.cpp, Ollama, vLLM, SGLang, TensorRT-LLM), reads the unified-memory budget and bandwidth class, computes fit including KV cache for the requested context, and emits a plan: quantization to use (NVFP4 / Q4_K_M), context and batch limits, runtime flags, container invocation, and the checks that must pass first (cu130 wheel, sm_121 kernels, driver version).
-7. **Windows on Arm.** Add `windows/arm64` to release and CI; verify collectors on the `windows-11-arm` runner.
-8. **Simulated scenarios.** A GB10 scenario for the simulated-GPU field test (memory fields `[N/A]`, `sm_121`, aarch64) and, when available, a real DGX Spark run.
+### 3.3 Unified-memory arithmetic (NVIDIA guidance)
+`allocatable = MemAvailable + SwapFree`; if `HugePages_Total != 0` then `allocatable = HugePages_Free * Hugepagesize` and swap counts 0. Never use nvidia-smi memory, `cudaMemGetInfo` or `MemFree` as headroom. S3
 
-## Open questions for research
+## 4. New collector types (pkg/types/types.go, additive; SchemaVersion stays "1")
+```go
+type PlatformInfo struct { // Report.Platform, json "platform"
+    Class           string `json:"class"`                     // dgx-spark | rtx-spark | jetson | grace-hopper | arm64-dgpu | ""
+    Vendor          string `json:"vendor,omitempty"`          // DMI sys_vendor / Win32_ComputerSystem.Manufacturer
+    Model           string `json:"model,omitempty"`           // DMI product_name / device-tree model / Win32_ComputerSystemProduct.Name
+    ProductVersion  string `json:"product_version,omitempty"` // "A.7" on GB10
+    BIOSVersion     string `json:"bios_version,omitempty"`
+    BIOSDate        string `json:"bios_date,omitempty"`
+    GPUSoC          string `json:"gpu_soc,omitempty"`         // GB10 | N1X | GH200
+    ComputeCap      string `json:"compute_cap,omitempty"`     // "12.1"
+    UnifiedMemory   bool   `json:"unified_memory"`
+    DGXOS           *DGXOSInfo          `json:"dgx_os,omitempty"`
+    UnifiedMem      *UnifiedMemoryInfo  `json:"unified_memory_info,omitempty"`
+    Firmware        []FirmwareComponent `json:"firmware,omitempty"`  // fwupdmgr get-devices
+    Cluster         *ClusterInfo        `json:"cluster,omitempty"`
+    Ecosystem       *EcosystemInfo      `json:"ecosystem,omitempty"`
+    IsWindowsOnArm  bool   `json:"is_windows_on_arm,omitempty"`
+    ProcessEmulated bool   `json:"process_emulated,omitempty"` // NVCheckup itself under Prism
+    NativeMachine   string `json:"native_machine,omitempty"`   // ARM64 | AMD64
+    DGXKernel       bool   `json:"dgx_kernel,omitempty"`
+    ACPIThermalMC   map[string]int `json:"acpi_thermal_mc,omitempty"` // thermal_zoneN -> millidegrees
+    PrevBootClean   *bool  `json:"prev_boot_clean,omitempty"`  // nil when journal unreadable
+    PrevBootLastLine string `json:"prev_boot_last_line,omitempty"`
+    PstoreEmpty     *bool  `json:"pstore_empty,omitempty"`
+    ClockCapUnit    string `json:"clock_cap_unit,omitempty"`   // "gb10-clock-cap.service"
+    GDMSleepPolicy  string `json:"gdm_sleep_policy,omitempty"`
+    SuspendAttempts int    `json:"suspend_attempts,omitempty"`
+    SuspendFailed   bool   `json:"suspend_failed,omitempty"`
+}
+type DGXOSInfo struct {
+    Name, PrettyName, SWBuildVersion, SWBuildDate, OTAVersion, OTADate, Platform, CommitID string // json snake_case
+    SerialNumber, FastOSVersion, OTAName string    // serial redacted to <serial>; OTAName "OTA2607"
+    OTATorn *int `json:"ota_torn,omitempty"`; OTAFailed []string `json:"ota_failed,omitempty"`
+    DriverPkgVersion, FirmwarePkgVersion string; ModulesForKernel bool
+    DashboardActive, DashboardAdminActive, FwupdActive, PersistencedActive, DashboardPortOpen bool
+    FwupdError, AptSourceCorrupt string
+}
+type UnifiedMemoryInfo struct {
+    MemTotalKB, MemFreeKB, MemAvailableKB, BuffersKB, CachedKB, SwapTotalKB, SwapFreeKB int64
+    HugePagesTotal, HugePagesFree, HugepagesizeKB, AllocatableKB int64   // AllocatableKB per 3.3
+    SwapDevices []string; Swappiness int; PSISomeAvg10, PSIFullAvg10 float64
+    GPUProcesses, OOMKills, NVRMNoMemory int                             // counts only, no process names
+}
+type FirmwareComponent struct{ Name, GUID, Version, Pending string }
+type FabricPort struct { RDMADev, Netdev, PCIAddr string; Cage int; State, PhysState string; SpeedMbps, MTU int; IPv4 []string; Bond string; Persistent bool }
+type ClusterInfo struct { Ports []FabricPort; HotplugFileEnabled bool; NetplanMTU int; NCCLEnv map[string]string; NCCLPluginLib, NCCLVersion string; PeermemAttempted, AvahiActive bool; AvahiConflicts int; UfwEnabled bool; RDMATools []string }
+type EcosystemInfo struct { TorchArchList, TorchWarnings []string; TritonPtxasVersion, TritonPtxasPath string; LibcudartVersions []string; FlashAttnVersion, ORTVersion string; ORTProviders []string; ORTGPUShadowed bool; Images []ContainerImage; DockerRuntimes []string; DockerCDI, CDISpecPresent, SnapDocker bool; ListeningPorts []int }
+type ContainerImage struct{ Ref, Arch string }
+// Additions: GPUInfo.ComputeCap string `json:"compute_cap,omitempty"`, GPUInfo.OnPackage bool `json:"on_package,omitempty"`, GPUInfo.MemoryReporting string `json:"memory_reporting,omitempty"` (dedicated|not-supported);
+// ThermalInfo.PowerLimitSupported bool `json:"power_limit_supported"`, ThermalInfo.EventCounters map[string]int64 `json:"event_counters_us,omitempty"` (nvidia-smi -q -d PERFORMANCE);
+// PCIeInfo.OnPackage bool `json:"on_package,omitempty"` (suppresses all PCIe rules); PyTorchInfo.Warnings, PyTorchInfo.ArchList []string; SystemInfo.CPUModel from lscpu on arm64.
+```
+Placement: `common.DetectPlatform` runs in phase 1 after `CollectSystemInfo`; `unified_memory.go`, `linux/dgxos.go`, `linux/cx7.go`, `linux/ecosystem.go` run in phase 4 only for `dgx-spark`/`rtx-spark`; `GPUCapQueryFields = "index,compute_cap"` is a separate tolerant query (older drivers reject it) and is added to self-test. All paths honour `NVC_SIM_ROOT` for `/etc`, `/proc/meminfo`, `/proc/cpuinfo`, `/sys/class/dmi/id`, `/sys/class/thermal` so CI can inject fixtures.
 
-- Exact `nvidia-smi` field behavior on GB10 (which fields are `[N/A]`, what `pcie.link.*`, `pstate`, `power.draw`, `fan.speed` return).
-- The exact `/proc/device-tree/model` and `/etc/dgx-release` contents on DGX Spark and the GX10.
-- Whether `nvidia-smi.exe` exists on RTX Spark Windows on Arm and what it reports; WMI names for the N1X CPU and GPU.
-- Recommended memory headroom and swap policy for LLM serving on unified memory; how the playbooks size KV cache.
-- Which frameworks ship `sm_121` wheels today and the canonical install commands.
+## 5. Analyzer rule catalog
+The machine-readable catalog (`rules`; merge into `knowledge/rules.json` with `modes` and `platform`) is authoritative for triggers, evidence templates and next steps. `analyzerSourceIDs` in `analyzer_knowledge_test.go` must scan every non-test `.go` file of the package so rules can live in `analyzer_spark.go`, `analyzer_cluster.go`, `analyzer_woa.go`. `dgx-spark` covers FE and OEM GB10. Modes: platform and unified-memory rules in every mode; `sm121-*`, `arm64-*`, `docker-*`, `onnxruntime-*`, `gb10-k8s-*` in `ai`/`creator`/`full`; `cx7-*`/`nccl-*` in `ai`/`full`.
+
+| id | sev | platforms | trigger (short) | src |
+|---|---|---|---|---|
+| dgx-spark-detected | INFO | dgx-spark | dgx-release / GB10 name / 10de:2e12 / DMI | S4 S23 |
+| rtx-spark-detected | INFO | rtx-spark | WoA + PNP DEV_2E03/2E06 | S25 |
+| grace-hopper-detected | INFO | gh200 | GH200/GB200/GB300 with numeric memory | S29 |
+| unified-memory-nvsmi-expected | INFO | dgx-spark rtx-spark | memory [N/A] / Not Supported; suppresses VRAM/fan/limit/PCIe rules | S3 |
+| unified-memory-pressure | WARN (CRIT <8 GiB) | dgx-spark rtx-spark | MemAvailable <16 GiB with GPU process, PSI full >0.1 | S35 |
+| unified-memory-swap-in-use | WARN | dgx-spark | swap used during GPU load | S36 |
+| unified-memory-page-cache-hold | INFO | dgx-spark | MemFree <4 GiB, cache >20 GiB | S3 |
+| unified-memory-oom-events | WARN (CRIT NVRM) | dgx-spark | OOM-killer / NVRM NV_ERR_NO_MEMORY | S37 |
+| dgx-spark-gsp-init-failure | CRIT | dgx-spark | 10de:2e12 + "No devices were found" + GSP/SEC2 dmesg | S12 |
+| dgx-spark-ota-torn | WARN | dgx-spark | torn >0 / pkg mismatch / modules missing | S38 |
+| dgx-spark-driver-too-old | CRIT | dgx-spark | driver <580 or CUDA 12.x | S39 |
+| dgx-spark-driver-branch-unsupported | WARN | dgx-spark | driver 590/595 | S40 |
+| dgx-spark-foreign-driver-packages | CRIT | dgx-spark | -server/dkms/fabricmanager/nvswitch/non-open/.run | S30 |
+| dgx-spark-cublas-batch-bug | INFO (WARN w/ logs) | dgx-spark | 580.x <580.173.02; CUDNN_FE 11 / CUBLAS 14 | S41 |
+| dgx-spark-non-nvidia-kernel | WARN | dgx-spark | kernel not -nvidia | S42 |
+| dgx-spark-ota-outdated | WARN | dgx-spark | OTA <7.5.0 / kernel <6.17 / driver <580.159.03 | S4 |
+| dgx-spark-dashboard-unhealthy | WARN | dgx-spark | dashboard units / port 11000 / fwupd mismatch | S43 |
+| dgx-spark-firmware-behind | WARN | dgx-spark | EC <0x03000508, SoC <0x02009b0b, PD <0x00000516 | S45 |
+| gb10-pd-power-wedge | CRIT | dgx-spark | util >=90, SM <1400 MHz, <40 W, reasons Not Active | S46 S47 |
+| gb10-logless-hard-poweroff | WARN | dgx-spark | boot -1 without shutdown record, pstore empty | S48 |
+| gb10-acpi-thermal-zone-hot | WARN | dgx-spark | acpitz >=93000 mC or thermal counters >0 | S49 |
+| gb10-clock-cap-active | INFO | dgx-spark | gb10-clock-cap.service / locked clocks | S48 |
+| dgx-spark-suspend-failure | WARN | dgx-spark | s2idle + nv.c:4784 warning; headless GDM sleep policy | S51 |
+| dgx-spark-cx7-slot-power-benign | INFO | dgx-spark | mlx5 27W message (include-logs) | S32 |
+| arm64-cuda12-wheel-on-cuda13 | CRIT | dgx-spark rtx-spark generic-arm64 | torch cu12 / libcudart.so.12 | S33 |
+| sm121-torch-capability-warning-benign | INFO | dgx-spark rtx-spark | (8.0)-(12.0) warning | S53 |
+| sm121-kernel-missing | WARN | dgx-spark rtx-spark | no kernel image / sm121 strings / arch list | S34 S54 |
+| sm121-triton-ptxas-stale | WARN | dgx-spark | bundled ptxas <13, sm_121a not defined | S34 |
+| arm64-flash-attn-no-wheel | WARN | dgx-spark generic-arm64 | flash_attn on aarch64 | S55 |
+| arm64-container-amd64-image | WARN | dgx-spark generic-arm64 | image amd64 / exec format error | S56 |
+| sm121-ngc-image-too-old | WARN | dgx-spark | pytorch <=25.09, tensorflow, sglang:latest | S57 |
+| docker-snap-gpu-blocked | WARN | dgx-spark generic-arm64 | snap docker / libnvidia-ml.so.1 | S58 |
+| docker-cdi-spec-missing | WARN | dgx-spark | CDI on, no nvidia.yaml; INFO when runtimes.nvidia missing | S59 |
+| onnxruntime-cuda-provider-missing | WARN | dgx-spark generic-arm64 | no CUDAExecutionProvider | S61 |
+| gb10-k8s-device-plugin-old | WARN | dgx-spark | plugin <v0.17.4 / Not Supported log | S8 |
+| cx7-not-enumerated | CRIT | dgx-spark | no 15b3 + hotplug/retraining dmesg; WARN on 6.17.0-1021/1029 | S62 |
+| cx7-twin-link-mismatch | WARN | dgx-spark | one twin ACTIVE, one DOWN | S17 S63 |
+| cx7-link-speed-degraded | WARN | dgx-spark | speed != 200000 | S64 |
+| cx7-up-no-ip | WARN | dgx-spark | Up twin without IPv4 (INFO: not persisted) | S18 |
+| cx7-twins-same-subnet | WARN | dgx-spark | twins share subnet or bonded | S65 |
+| cx7-mtu-mismatch | WARN | dgx-spark | MTU differs / 1500 vs 9000 | S66 |
+| nccl-env-misconfigured | WARN | dgx-spark | HCA netdev / single twin / IB disabled / plugin / old NCCL | S67 S68 |
+| nccl-gdr-assumed | INFO | dgx-spark | GDR env / nvidia_peermem attempt | S69 |
+| cx7-mdns-hostname-conflict | WARN | dgx-spark | avahi "Host name conflict"; INFO when avahi absent | S70 |
+| cx7-firewall-blocks-cluster | WARN | dgx-spark | ufw on, no fabric rules | S71 |
+| rtx-spark-driver-developer-preview | WARN | rtx-spark | nv_surface_woa.inf / 616.00 / <616 | S24 |
+| woa-cuda-toolkit-not-native | WARN | rtx-spark | nvcc PE AMD64 or <=13.3 | S26 |
+| woa-nvcheckup-emulated | WARN | rtx-spark | IsWow64Process2: process emulated | S73 |
+| woa-windows-build-too-old | WARN | rtx-spark | build <26100 | S74 |
+| wsl-linux-driver-installed | WARN | all | Linux driver pkgs inside WSL | S75 |
+| rtx-spark-linux-unsupported | WARN | rtx-spark | lspci 10de:2e03/2e06 on Linux | S76 |
+Merged into neighbouring rules (as trigger variants): gdm-autosuspend -> dgx-spark-suspend-failure, docker runtime unregistered -> docker-cdi-spec-missing, cx7 kernel hotplug regression -> cx7-not-enumerated, bonded twins -> cx7-twins-same-subnet, avahi missing -> cx7-mdns-hostname-conflict, ip-not-persistent -> cx7-up-no-ip; hugepages handled by the AllocatableKB formula inside unified-memory-nvsmi-expected. Deferred candidates (researched, not in the first catalog): `dgx-spark-apt-source-corrupt` (S44), `arm64-dgpu-detected`, `gb10-idle-temp-elevated` (single report), `dgx-spark-hdmi-deep-sleep` (S3), `woa-game-anticheat-note`, `cx7-rdma-tools-missing`.
+
+### 5.1 Suppressions and changes to existing rules (when `Platform.UnifiedMemory`)
+`low-vram`: never emitted. `pcie-downshift`, `pcie-width-reduced`, `pcie-idle-power-saving`: skipped for `OnPackage` GPUs; report prints `PCIe: n/a (on-package, NVLink-C2C)`. `fan-not-spinning`: already gated by `FanSupported`; add a GB10 fixture test. `gpu-power-cap`, `gpu-clock-slowdown`, `gpu-power-state-stuck`: kept (clocks/pstate/util are real), evidence prints `limit N/A (unified memory)`, `gb10-pd-power-wedge` takes precedence. `no-nvidia-gpu`/`driver-not-detected`: not emitted when `dgx-spark-gsp-init-failure` fires. `nvidia-smi-missing`: INFO wording on `rtx-spark` until nvidia-smi.exe presence is confirmed. `jetson-detected`: stop claiming nvidia-smi is absent (Thor has it). `nvidia-app-detected`: not expected on Windows ARM64. `xid-errors`: add 120 "GSP task exception"; 119 evidence mentions pairing on GB10. Summary block: `VRAM: N MB` becomes `Unified memory: 119.7 GiB total, 115.9 GiB available` plus a `Platform:` line.
+
+## 6. Extra failure strings for testers
+`NVIDIA-GB10 not supported`; `nvidia-container-cli: initialization error: nvml error: driver not loaded: unknown`; `error getting device memory: Not Supported`; `docker: Error response from daemon: unknown or invalid runtime name: nvidia`; `error initializing buildkit: error creating buildkit instance: invalid database`; `libfwupd version 1.9.34 does not match daemon 1.9.30`; `modprobe: FATAL: Module mt7925e not found in directory /lib/modules/...`; `gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x611ef0, regvalue: 0xbadf5600`; `GPU requires reset`; `fp8_gemm_sm100 is an SM100 (B100/B200) path being reached on SM121`; `vkCreateDevice failed with VK_ERROR_INITIALIZATION_FAILED` (needs 580.105.08+ and `libnvidia-gl-580`). S12 S30 S60 S43 S77 S31 S78
+
+## 7. LLM optimization wizard: `nvcheckup llm-plan`
+### 7.1 UX
+`nvcheckup llm-plan [--model NAME | --params B --active-params B --layers N --kv-heads N --head-dim N | --hf-config config.json] [--quant bf16|fp8|q8_0|nvfp4|mxfp4|q4_k_m] [--context TOKENS] [--concurrency N] [--profile chat|agent|batch|rag] [--runtime vllm|trtllm|sglang|llamacpp|ollama|auto] [--kv-dtype auto|f16|fp8|q8_0] [--headroom-gib N] [--memory-gib N] [--json] [--out DIR]`. Without `--model` it asks doctor-style questions. It reads the platform, `/proc/meminfo` (Windows: `TotalVisibleMemorySize`/`FreePhysicalMemory`), running servers and the ecosystem probes, then prints a plan. Exit codes: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. `doctor` gains one hand-off question on GB10/N1X hosts.
+### 7.2 Inputs
+Model shape (`knowledge/models.json` or `--hf-config`: `num_hidden_layers`, `num_key_value_heads`, `head_dim` or `hidden_size/num_attention_heads`, `num_local_experts`/`num_experts_per_tok`, `sliding_window`, `quantization_config`), total/active parameters, quant, context, concurrency, profile (agent = context x (1 + subagents); 30K-120K contexts typical, S79), runtime, measured pool (MemTotal, MemAvailable, swap), bandwidth (GB10 273 GB/s; N1X press ~300 GB/s unconfirmed, use 273).
+### 7.3 Model shapes shipped (HF config.json, S80)
+| Model | Params (active) | L | KV heads | d_head | KV B/token f16 |
+|---|---|---|---|---|---|
+| Llama 3.1 8B Instruct | 8.03B | 32 | 8 | 128 | 131,072 (128 KiB) |
+| Llama 3.3 70B / R1-Distill-Llama-70B | 70.6B | 80 | 8 | 128 | 327,680 (320 KiB) |
+| Qwen3-32B / R1-Distill-Qwen-32B | 32.8B | 64 | 8 | 128 | 262,144 (256 KiB) |
+| Qwen3-235B-A22B | 235B (22B) | 94 | 4 | 128 | 192,512 (188 KiB) |
+| gpt-oss-120b (MXFP4) | 117B (5.1B) | 36 | 8 | 64 | 73,728 upper bound; half the layers use a 128-token sliding window |
+| gpt-oss-20b (MXFP4) | 21B (3.6B) | 24 | 8 | 64 | 49,152 upper bound |
+| Nemotron-3-Super-120B-A12B NVFP4 | 120B (12B) | 88 (8 attention) | 2 | 128 | ~8 KiB attention + Mamba state; measured ~7 GB per Ollama slot at 262K (S81) |
+### 7.4 Formulas
+- Weights `W = P_total x b`; `b`: bf16/fp16 2.00, fp8 1.00, q8_0 1.06, nvfp4 0.56 (4-bit + FP8 scale per 16; NVIDIA quotes ~3.3x vs 16-bit), mxfp4 0.53 for expert weights (attention/embeddings bf16; prefer the measured checkpoint size, gpt-oss-120b ~61 GB), q4_k_m 0.60 (0.62 measured). S2 S82 S83
+- KV per token `k = 2 x L x H_kv x d_head x bytes_kv` (f16 2, fp8/q8_0 1, q4_0 0.5); `KV = k x context x concurrency` (agent: concurrency = 1 + subagents). Hybrid Mamba models add a measured per-slot state term. S84
+- Runtime reserve `R`: llama.cpp/Ollama 3 GiB; vLLM 12 GiB (3 GiB runtime + ~13 GB torch.compile/CUDA graphs measured; transient kernel-init up to ~50 GB reported on 26.07, so re-check MemAvailable after startup); SGLang 10 GiB; TRT-LLM 10 GiB. S85 S86
+- OS floor `F`: 8 GiB headless DGX OS, 10 GiB with GNOME or on Windows; community keeps >= 16 GiB before training.
+- Fit: `W + KV + R + F <= MemTotal` (design) and `W + KV + R <= MemAvailable_now`. Pool = MemTotal (119.7 GiB on a 128 GB unit), never "128 GB".
+- vLLM `--gpu-memory-utilization u = ceil05((W + KV + R) / MemTotal)` clamped 0.30..0.85 (vLLM's Spark guidance: 0.85, `--max-num-seqs 4`; default 0.92 pre-allocates ~110 GiB). TRT-LLM `free_gpu_memory_fraction` and SGLang `--mem-fraction-static` reuse `u` (SGLang playbook default 0.75). S86 S87
+- Decode ceiling `tok/s <= 273e9 / (bytes_active_weights + k x context)`; print the ceiling and a 50-80% realism band (measured: 8B FP8 20.5 vs 34 ceiling; 70B FP8 2.7 vs 3.9; gpt-oss-120b 42-61 vs ~55-78; Nemotron 3 Super NVFP4 23-38). Prefill: quote measured 2,000-8,000 tok/s. Ollama does not batch (aggregate = single stream); vLLM aggregate reaches hundreds of tok/s at c=8..256. S88 S89 S90
+### 7.5 Worked examples (pool 119.7 GiB; 64 GB tier assumed 57.7 GiB visible, unconfirmed; F = 8 GiB Linux / 10 GiB Windows)
+| Model / quant | W | KV | R | 128 GB (budget 111.7 GiB) | 64 GB (budget 47.7 GiB; llama.cpp/Ollama, R = 3) |
+|---|---|---|---|---|---|
+| Llama 3.1 8B BF16, agent 4 x 32K, f16 KV | 15.0 GiB | 16.0 GiB | vLLM 12 | 43.0 GiB fits; `u = 0.40`; ceiling 17 tok/s (FP8 7.5 GiB: 34; NVFP4 4.2 GiB: 61) | 15.0 + 16 + 3 = 34 GiB fits; Q4_K_M 4.5 GiB fits at 128K |
+| Llama 3.3 70B NVFP4, 128K (or 4 x 32K) | 36.8 GiB | 40.0 f16 / 20.0 fp8 | vLLM 12 | 88.8 GiB fits, `u = 0.75` (fp8 KV 68.8, `u = 0.60`); BF16 131.5 GiB and FP8 + 128K (65.7 + 40 + 12) do not fit; ceiling 6.9 tok/s | Q4_K_M 39.4 + 3 = 42.4 GiB leaves 5.3 GiB KV: f16 ~17K tokens or q8_0 32K (5.0 GiB); vLLM (39.4 + 12) does not fit |
+| gpt-oss-120b MXFP4, agent 4 x 32K | 56.8 GiB (61 GB) | 9.0 GiB upper bound | vLLM 12 | 77.8 GiB fits, `u = 0.65` (matches the published recipe, S90); ceiling ~55-78, measured 42-61 tok/s | does not fit (56.8 > 47.7); recommend gpt-oss-20b: 12.1 + 3 + 6.0 (128K) = 21.1 GiB |
+Qwen3-235B-A22B NVFP4 = 235e9 x 0.56 = 122.6 GiB > 119.7 GiB: does not fit one Spark (NVIDIA lists it multi-node only, S91).
+### 7.6 Runtime flag templates
+- vLLM (S86 S87): `docker run -d --name vllm --ipc=host --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface {vllm/vllm-openai:cu130-nightly | nvcr.io/nvidia/vllm:26.05-py3} {model} --gpu-memory-utilization {u} --max-model-len {ctx} --max-num-seqs {n} [--enable-auto-tool-choice --tool-call-parser {p}] [--reasoning-parser {r}]`. Leave `--quantization` unset for pre-quantized NVFP4; emit `--kv-cache-dtype fp8` only on explicit `--kv-dtype fp8` (FlashInfer hit an SM100 cuDNN path on sm_121, S92). First request JIT ~25 s.
+- TensorRT-LLM (S91): `docker run --rm -it --gpus all --ipc host --network host --ulimit memlock=-1 --ulimit stack=67108864 -v ~/.cache/huggingface:/root/.cache/huggingface nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 trtllm-serve {model} --backend pytorch --port 8355 --max_batch_size {n} --extra_llm_api_options cfg.yaml` with `kv_cache_config.free_gpu_memory_fraction: {u}`; env `TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1`, `TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas`.
+- SGLang (S94): `docker run --gpus all --ipc=host --shm-size 32g -p 30000:30000 lmsysorg/sglang:latest-cu130 python3 -m sglang.launch_server --model-path {model} --host 0.0.0.0 --port 30000 --trust-remote-code --tp 1 --attention-backend flashinfer --mem-fraction-static {u} [--quantization modelopt_fp4] [--reasoning-parser {r} --tool-call-parser {p}]`.
+- llama.cpp (S95 S96): build `cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real`; run `llama-server -hf {repo}:{quant} --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c {ctx} -np {n} --cache-type-k {kv} --cache-type-v {kv} -b 2048 -ub 2048 --jinja [--spec-type draft-mtp --spec-draft-n-max 3]` (`--no-mmap` avoids the Spark mmap slow-load; KV q8_0 or higher).
+- Ollama (S97): `systemctl edit ollama.service` -> `Environment="OLLAMA_FLASH_ATTENTION=1" "OLLAMA_KV_CACHE_TYPE={q8_0|f16}" "OLLAMA_NUM_PARALLEL={n}" "OLLAMA_MAX_LOADED_MODELS=1" "OLLAMA_CONTEXT_LENGTH={ctx}"`; q8_0 KV only for FA-capable architectures (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl), otherwise it silently falls back to f16; verify `ollama ps` shows `100% GPU`; default context 4096 is too small for agents.
+- Windows on Arm: llama.cpp (clang-cl) and, when released, Arm64 Ollama/LM Studio; no win_arm64 torch wheels exist (S26).
+### 7.7 Prerequisite checks (PASS/WARN/FAIL from the read-only report)
+driver >= 580 and CUDA 13; OTA not torn; torch `+cu130` with sm_120 in the arch list; `TRITON_PTXAS_PATH` when Triton is present; no swap in use; page cache vs MemAvailable; no other resident model server (ports 8000/30000/11434/8355); container image linux/arm64 with a cu130 tag; docker GPU runtime works; `--ipc=host`/`--shm-size`; MemAvailable >= W + KV + R.
+### 7.8 Output
+Text: header (platform, pool, MemAvailable, bandwidth), fit verdict with arithmetic, runtime command block, env block, prerequisite table, estimates (ceiling and band), warnings. `--json` writes `plan.json` `{platform, memory{total_gib,available_gib,headroom_gib}, model{...}, fit{weights_gib,kv_gib,runtime_gib,floor_gib,total_gib,fits_total,fits_now}, estimates{decode_ceiling_tps,decode_band_tps,prefill_ref_tps}, runtime{name,image,command,env}, prerequisites[{id,status,detail}], warnings[]}`.
+### 7.9 Must not
+Download models or images, contact the network, start/stop/kill processes or containers, edit systemd units, sysctl, swap, `/etc/fstab`, env files or GNOME settings, lock clocks, write outside `--out`, assume "128 GB", read nvidia-smi memory on unified platforms, or present estimates as measurements.
+
+## 8. Windows on Arm plan
+Build: add `windows/arm64` (`nvcheckup-windows-arm64.exe`) to `release.yml` matrix, attestation subjects and download table; `CGO_ENABLED=0`. CI: `runs-on: windows-11-arm` (GA, free for public repos, image 10.0.26200, no GPU) runs tests and `self-test`; `GOOS=windows GOARCH=arm64 go vet` (S98). Collectors: PowerShell/WMI are native on Arm64; `IsWow64Process2` via `syscall.NewLazyDLL("kernel32.dll")`; `PROCESSOR_ARCHITECTURE`/`ARCHITEW6432`; `Win32_Processor.Architecture` (12); PNP `DEV_2E03/2E06`; `InfFilename`; `dxdiag /t` Dedicated vs Shared memory (Task Manager shares up to half of RAM; Insider 29648 adds a "Reserved memory for accelerators" carve-out); `nvcc.exe` PE machine type; `Win32_OperatingSystem.TotalVisibleMemorySize/FreePhysicalMemory` as the pool. `nvidia-smi.exe` may be absent: INFO on rtx-spark. WSL2 on Arm: existing WSL collectors plus `wsl-linux-driver-installed`. S25 S73 S99
+
+## 9. Clustering checks (ConnectX-7)
+Collector `linux/cx7.go` (read-only): PCI `15b3` functions; `/sys/class/infiniband/<dev>/ports/1/{state,phys_state,rate}` and `device/net/*`; netdev `operstate`, `carrier`, `speed`, `mtu`, IPv4; cage grouping by function index across domains `0000`/`0002` (never by stripping the function, S100); bonds; `/etc/nvidia/cx7-hotplug-enabled`; netplan keys; `NCCL_*`/`UCX_NET_DEVICES` of the current process; `libnccl.so.2` version and net-plugin presence; avahi; `/etc/ufw/ufw.conf`; rdma tools. Healthy: both twins of the cabled cage `ACTIVE`/`LinkUp`, `200000` Mb/s, distinct /24s, MTU 9000, `NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1`, `NCCL_NET_PLUGIN=none`, NCCL log `NET/IB`, ~22-24 GB/s busbw. An opt-in `nvcheckup cluster-test --peer IP` (ping -M do 8972, ib_write_bw) is deferred. S17 S18 S67
+
+## 10. Simulated GB10 scenario
+`.github/fieldtest/scenarios/gb10.json` (orchestrator `gb10_scenario`) drives extended shims: `nvidia-smi` (adds `compute_cap`, prints `[N/A]` verbatim, renders `Not Supported`/`N/A` in the table, minimal `-q -d PERFORMANCE`), `lspci`/`dpkg`/`lsmod`/`dmesg` from `*_lines`, new `dmidecode`, `lscpu`, `ibdev2netdev`, `fwupdmgr`, `nvidia-spark-ota-check`; the job writes `/etc/dgx-release`, `/etc/fastos-release` and DMI/meminfo/cpuinfo/thermal fixtures under `NVC_SIM_ROOT`. Assertions: exit 0 or 1; `dgx-spark-detected` and `unified-memory-nvsmi-expected` present; none of `low-vram`, `pcie-*`, `fan-not-spinning`, `gpu-power-cap`, `gpu-clock-slowdown`, `no-nvidia-gpu`, `driver-not-detected`, `nvidia-smi-missing`, `jetson-detected`, `dgx-spark-gsp-init-failure`, `dgx-spark-ota-torn`, `dgx-spark-foreign-driver-packages`, `cx7-not-enumerated`; summary contains `Unified memory` and `Platform: DGX Spark`; `platform.class == "dgx-spark"`; `unified_memory.mem_total_kb == 125513944`. Variant `gb10-gsp-fail.json` (nvidia-smi `No devices were found`, dmesg SEC2/GSP lines) must yield `dgx-spark-gsp-init-failure` CRIT and no `no-nvidia-gpu`.
+
+## 11. Documentation changes
+README (platform table, Supported GPUs row for GB10/N1X, `llm-plan` reference with the three examples, Privacy list of newly read files and never-done list, FAQ on "Not Supported" and the missing PCIe line), PRODUCT.md (platform table with `windows/arm64`, Data Collected sections, rule categories, report.json additions, llm-plan, Does-Not-Do), CHANGELOG Unreleased, CONTRIBUTING (GB10/N1X fixture wish-list = section 12 commands; rule ids may live in `analyzer_*.go`), `docs/index.html` platform pill, `examples/sample-report-dgx-spark.txt` from the sim artifact, this file replacing the roadmap.
+
+## 12. Open questions (only hardware can answer)
+See the orchestrator `open_questions`. The field kit must capture: `cat /etc/dgx-release /etc/fastos-release`; `sudo dmidecode -s system-manufacturer -s system-product-name -s system-version -s bios-version`; `lscpu`; `grep -E 'MemTotal|MemAvailable|Swap' /proc/meminfo`; `nvidia-smi -L`; every query field list incl. `compute_cap` and `clocks.max.graphics`; `nvidia-smi -q -d MEMORY,PERFORMANCE,CLOCK,POWER,TEMPERATURE`; `sudo nvidia-spark-ota-check summary`; `fwupdmgr get-devices`; `ibdev2netdev`; `ip -br addr`; `ls /proc/device-tree/model`; on RTX Spark `Get-CimInstance Win32_VideoController | fl Name,PNPDeviceID,DriverVersion,InfFilename,AdapterRAM`, `Win32_Processor.Name`, `nvidia-smi` if present.
+
+## 13. Sources (all https://)
+S1 learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/ | S2 blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists | S3 docs.nvidia.com/dgx/dgx-spark/known-issues.html | S4 docs.nvidia.com/dgx/dgx-spark/release-notes.html | S5 forums.developer.nvidia.com/t/350714 | S6 forums.developer.nvidia.com/t/370304 | S7 github.com/Syllo/nvtop/issues/426 | S8 github.com/NVIDIA/k8s-device-plugin/issues/1482 | S9 github.com/kubernetes-sigs/dra-driver-nvidia-gpu/pull/1121 | S10 docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html | S11 docs.nvidia.com/dgx/dgx-os-7-user-guide/additional_software.html | S12 forums.developer.nvidia.com/t/378200 | S13 docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html | S14 docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html | S15 forums.developer.nvidia.com/t/353950 | S16 docs.nvidia.com/pdf/userguide-dgx-spark-fieldiag.pdf | S17 docs.nvidia.com/dgx/dgx-spark/spark-clustering.html | S18 github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/README.md | S19 forums.developer.nvidia.com/t/350417 | S20 docs.nvidia.com/dgx/dgx-spark/hardware.html | S21 forums.developer.nvidia.com/t/349668 | S22 storagereview.com/review/asus-ascent-gx10-review | S23 forums.developer.nvidia.com/t/363849 | S24 forums.developer.nvidia.com/t/377106 | S25 windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/ | S26 docs.nvidia.com/cuda/developer-preview/13.4/cuda-toolkit-release-notes/index.html | S27 blogs.windows.com/windowsexperience/2026/05/31/introducing-a-powerful-new-chapter-for-windows-pcs-accelerated-by-nvidia-rtx-spark/ | S28 forums.developer.nvidia.com/t/347333 | S29 docs.nvidia.com/dccpu/grace-perf-tuning-guide/system.html | S30 forums.developer.nvidia.com/t/367655 | S31 forums.developer.nvidia.com/t/364499 | S32 forums.developer.nvidia.com/t/371156 | S33 github.com/natolambert/dgx-spark-setup | S34 github.com/triton-lang/triton/issues/10331 | S35 forums.developer.nvidia.com/t/352339 | S36 forums.developer.nvidia.com/t/358869 | S37 github.com/NVIDIA/dgx-spark-playbooks/issues/116 | S38 forums.developer.nvidia.com/t/376981 | S39 forums.developer.nvidia.com/t/356426 | S40 forums.developer.nvidia.com/t/364688 | S41 forums.developer.nvidia.com/t/380948 | S42 forums.developer.nvidia.com/t/360461 | S43 forums.developer.nvidia.com/t/375537 | S44 forums.developer.nvidia.com/t/350645 | S45 forums.developer.nvidia.com/t/376890 | S46 forums.developer.nvidia.com/t/366590 | S47 github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md | S48 github.com/tonyd2wild/dgx-spark-hard-poweroff-fix | S49 forums.developer.nvidia.com/t/377044 | S51 forums.developer.nvidia.com/t/380263 | S52 forums.developer.nvidia.com/t/375767 | S53 discuss.pytorch.org/t/dgx-spark-gb10-cuda-13-0-python-3-12-sm-121/223744 | S54 forums.developer.nvidia.com/t/365083 | S55 github.com/Dao-AILab/flash-attention/issues/1969 | S56 forums.developer.nvidia.com/t/354990 | S57 github.com/unslothai/unsloth/issues/3553 | S58 forums.developer.nvidia.com/t/358538 | S59 github.com/NVIDIA/NemoClaw/issues/3252 | S60 forums.developer.nvidia.com/t/350646 | S61 forums.developer.nvidia.com/t/366157 | S62 forums.developer.nvidia.com/t/374275 | S63 github.com/digchick/dgx-spark-200g-link-fix | S64 forums.developer.nvidia.com/t/370035 | S65 github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/multi-sparks-through-switch/README.md | S66 github.com/NVIDIA/dgx-spark-playbooks/issues/102 | S67 github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/nccl/README.md | S68 github.com/eugr/spark-vllm-docker/blob/main/docs/NETWORKING.md | S69 forums.developer.nvidia.com/t/352051 | S70 github.com/NVIDIA/dgx-spark-playbooks/issues/56 | S71 github.com/ArgentAIOS/dgx-spark-cluster/blob/main/docs/03-troubleshooting.md | S73 learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation | S74 learn.microsoft.com/en-us/windows/release-health/windows11-release-information | S75 docs.nvidia.com/cuda/wsl-user-guide/index.html | S76 phoronix.com/news/NVIDIA-RTX-Spark | S77 forums.developer.nvidia.com/t/348188 | S78 gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a | S79 developer.nvidia.com/blog/scaling-autonomous-ai-agents-and-workloads-with-nvidia-dgx-spark | S80 huggingface.co/openai/gpt-oss-120b/raw/main/config.json (and the other config.json files named in the research) | S81 frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/ | S82 huggingface.co/nvidia/Qwen3-235B-A22B-FP4 | S83 blog.kubesimplify.com/qwen3-8-27b-on-dgx-spark | S84 blog.kubesimplify.com/day-2-anatomy-of-an-llm-inference-request-from-prompt-to-answer-step-by-step | S85 forums.developer.nvidia.com/t/364886 | S86 vllm.ai/blog/2026-06-01-vllm-dgx-spark | S87 github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/vllm | S88 lmsys.org/blog/2025-10-13-nvidia-dgx-spark/ | S89 forums.developer.nvidia.com/t/379766 | S90 dendro-logic.com/engineering/nvidia-dgx-spark-concurrency-benchmark/ | S91 github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/trt-llm | S92 github.com/NVIDIA/dgx-spark-playbooks/issues/107 | S94 github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/sglang | S95 github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/llama-cpp | S96 vlaicu.io/posts/dgx-llamacpp-playbook/ | S97 docs.ollama.com/faq | S98 github.blog/changelog/2025-08-07-arm64-hosted-runners-for-public-repositories-are-now-generally-available/ | S99 devblogs.microsoft.com/directx/gpus-in-the-task-manager/ | S100 github.com/NVIDIA/NemoClaw/issues/8520

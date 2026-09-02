@@ -1,0 +1,755 @@
+{
+ "topic": "DGX Spark / GB10 (and RTX Spark N1X) platform facts a diagnostic can match on: nvidia-smi/NVML behavior on unified memory, compute capability, /etc/dgx-release format, kernel/driver/CUDA/DGX OS/OTA version strings, CPU strings, DGX Dashboard / NVIDIA Sync, storage and ConnectX-7 networking, OEM variants",
+ "facts": [
+  {
+   "claim": "Plain `nvidia-smi` table on GB10 shows GPU name `NVIDIA GB10`, Bus-Id `0000000F:01:00.0`, Fan `N/A`, Pwr cap `N/A`, ECC `N/A`, MIG `N/A`, and the Memory-Usage cell literally reads `Not Supported`; Temp, Perf (P8 idle), Pwr usage (4W idle) and GPU-Util (0%) do work.",
+   "detail": "Verbatim block captured 2025-10-22 on driver 580.95.05 / CUDA 13.0: header `NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0`; GPU row `|   0  NVIDIA GB10                    On  |   0000000F:01:00.0 Off |                  N/A |` then `| N/A   32C    P8              4W /  N/A  | Not Supported          |      0%      Default |` then `|                                         |                        |                  N/A |`. Processes section still lists per-process GPU memory, e.g. `/usr/lib/xorg/Xorg 43MiB`, `/usr/bin/gnome-shell 16MiB`. Same layout independently reproduced in forum thread 350322 (`N/A 38C P8 4W / N/A | Not Supported | 0% Default`) and k8s-device-plugin issue 1482 (Persistence-M On, Bus-Id 0000000F:01:00.0).",
+   "confidence": "high",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "claim": "`nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv` returns `[N/A], [N/A], [N/A]` on GB10.",
+   "detail": "Verbatim: `memory.total [MiB], memory.used [MiB], memory.free [MiB]` / `[N/A], [N/A], [N/A]`. Blog also captured `free -h` on the same box: `Mem: 120Gi 47Gi 62Gi 1.0Gi 10Gi 72Gi` / `Swap: 0B 0B 0B` and advises reading the `available` column.",
+   "confidence": "high",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "claim": "NVIDIA's official Known Issues page states: \"On iGPU platforms, nvidia-smi will display 'Memory-Usage: Not Supported' even though per-process GPU memory is listed\" and that this is expected because iGPUs have no dedicated framebuffer.",
+   "detail": "Same page documents that `cudaMemGetInfo` under-reports allocatable memory on UMA because it ignores pages reclaimable from swap/cache; workaround is to read `/proc/meminfo` `MemAvailable` and `SwapFree`, or flush caches with `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` and restart the app. Also: use only the supplied power adapter (other adapters may reduce performance, prevent boot or cause shutdowns); HDMI displays may not wake from deep sleep.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "NVIDIA staff confirm the memory `Not Supported` behavior is by design and recommend `top`, `htop`, `free`, or the DGX Dashboard (localhost:11000) for memory monitoring.",
+   "detail": "aniculescu (NVIDIA, 2025-11-05): \"this is due to how nvidia-smi interacts with the unified memory\". NVES (NVIDIA, 2026-04-25): \"The DGX Spark uses a unified memory architecture, so there isn't dedicated GPU VRAM for nvidia-smi to report on.\" Thread 351441 (staff aniculescu): nvidia-smi \"cannot report on GPU memory usage\"; user there reported `nvidia-smi -q` shows `FB Memory Usage: N/A`.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765"
+  },
+  {
+   "claim": "NVML `nvmlDeviceGetMemoryInfo` returns NVML_ERROR_NOT_SUPPORTED (\"Not Supported\") on GB10, which crashes tooling that treats it as fatal (NVIDIA k8s-device-plugin < v0.17.4, HAMi v2.7.1, kubernetes-sigs DRA driver v25.12.0).",
+   "detail": "k8s-device-plugin failure string (2025-10-29, driver 580.95.05): `failed to construct resource managers: error building device map: error building device map from config.resources: error building GPU device map: error visiting device: error building Device: error getting device memory: Not Supported`. DRA driver (2026-04-23, driver 595.58.03): `error getting memory info for device 0: Not Supported`; fix precedent is device-plugin v0.17.4 which tolerates Not Supported. GPU Operator issue 1794 (2025-10-16) reports the same on DGXOS 7 with GPU Operator v25.3.4.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/k8s-device-plugin/issues/1482"
+  },
+  {
+   "claim": "Beyond memory, other nvidia-smi/NVML fields are N/A or wrong on GB10: fan speed N/A, memory clock N/A, power cap N/A, and PCIe link is misreported as `GEN 1@ 1x` (there is no PCIe between CPU and GPU; it is NVLink-C2C). GPU utilization, power draw, temperature, process memory and device name work.",
+   "detail": "nvtop issue 426 (2025-12-05, driver 580.95.05, Ubuntu 24.04.3): `MEM[ N/A]`, `FAN N/A%`, `MEM N/A MHz`, PCIe `GEN 1@ 1x`, power cap N/A; working: util 96%, power 58W, temp 32C, process memory 63931MiB. Forum thread 382065 (2026) also notes `nvidia-smi` reports fan as `[N/A]` and there is no `/sys/class/hwmon/*/fan1_input`; pstate was observed at P0/P8 and `nvidia-smi -rgc` executes.",
+   "confidence": "high",
+   "source_url": "https://github.com/Syllo/nvtop/issues/426"
+  },
+  {
+   "claim": "GB10 compute capability is 12.1 (sm_121); deviceQuery prints `Device 0: \"NVIDIA GB10\"`, `CUDA Capability Major/Minor version number: 12.1`, 48 SMs x 128 = 6144 CUDA cores, `Integrated GPU sharing Host Memory: Yes`, `Device supports Managed Memory: Yes`.",
+   "detail": "Verbatim deviceQuery (CUDA 13.0/13.0): `Total amount of global memory: 122570 MBytes`, `(048) Multiprocessors, (128) CUDA Cores/MP: 6144 CUDA Cores`, `GPU Max Clock rate: 2418 MHz (2.42 GHz)`, `Memory Clock rate: 8533 Mhz`, `Memory Bus Width: 256-bit`, `L2 Cache Size: 25165824 bytes`, `Concurrent copy and kernel execution: Yes with 1 copy engine(s)`. Another capture (openSUSE HCL, via search snippet) shows `124618 MBytes` total, consistent with the later 2GB display-reserve firmware. Other sources report CUDA-visible memory as 119.68 GB.",
+   "confidence": "high",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "claim": "PyTorch builds without sm_121 print: `Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)`; sm_120 binaries actually run on 12.1 so the warning is misleading (PyTorch issue 164596, 2025-10-03).",
+   "detail": "SGLang issue 13198 shows the same string as an ImportError on `PyTorch 2.9.1+cu130` with `Cuda compilation tools, release 13.0, V13.0.88`, driver 580.95.05, and `Could not load any common_ops library!` because sgl_kernel shipped SM100 variants but no SM121. The SGLang issue title contains the platform string `NVIDIA NVIDIA_DGX_Spark NVIDIA Tegra NVIDIA GB10` (origin of that string not confirmed).",
+   "confidence": "high",
+   "source_url": "https://github.com/pytorch/pytorch/issues/164596"
+  },
+  {
+   "claim": "SM_121 is consumer/workstation Blackwell (extended `mma.sync`, no TMEM/tcgen05, 1x1x1 cluster only) and is not binary-compatible with datacenter SM_100 kernels; FP4 block-scale MMA needs the `sm_121f`/`12.1f` family target.",
+   "detail": "Backend.ai: \"The DGX Spark GPU reports as SM12x (compute capability 12.1), which is compatible with neither\" (SM90 wgmma nor SM100 tcgen05); FlashMLA fails; vLLM/SGLang FP8 kernels for SM100 fail; `--enforce-eager` sometimes needed. flash-attention issue 1969 (2025-10-28): `FATAL: kernel built for sm80-sm100, but running on sm121`. vLLM issue 43906 (2026-05-28): `is_device_capability_family(100)` excludes SM_121; fix is `is_device_capability_family(120)`. DeepWiki: plain `sm_121`/`sm_121a` yields \"Feature not supported\" for FP4 `mma.kind::mxf4.block_scale`; `sm_121f` required (medium confidence on that detail).",
+   "confidence": "medium",
+   "source_url": "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell"
+  },
+  {
+   "claim": "llama.cpp for GB10 is built with `-DCMAKE_CUDA_ARCHITECTURES=121a-real`; binaries built for other arches fail with `no kernel image is available for execution on the device`; runtime may need `LD_LIBRARY_PATH` to include `/usr/local/cuda-13/compat`; server logs print `compute capability 12.1`.",
+   "detail": "HF repo merve/llama.cpp-dgx-spark-gb10-sm121a: `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real`, CUDA 13.x toolkit.",
+   "confidence": "high",
+   "source_url": "https://huggingface.co/merve/llama.cpp-dgx-spark-gb10-sm121a"
+  },
+  {
+   "claim": "/etc/dgx-release on DGX Spark is a KEY=\"value\" file with fields DGX_NAME, DGX_PRETTY_NAME, DGX_SWBUILD_DATE, DGX_SWBUILD_VERSION, DGX_COMMIT_ID, DGX_PLATFORM, DGX_SERIAL_NUMBER, DGX_OTA_VERSION, DGX_OTA_DATE.",
+   "detail": "Verbatim as posted by user elsaco 2026-02-03:\nDGX_NAME=\"DGX Spark\"\nDGX_PRETTY_NAME=\"NVIDIA DGX Spark\"\nDGX_SWBUILD_DATE=\"2025-09-10-13-50-03\"\nDGX_SWBUILD_VERSION=\"7.2.3\"\nDGX_COMMIT_ID=\"833b4a7\"\nDGX_PLATFORM=\"DGX Server for KVM\"\nDGX_SERIAL_NUMBER=\"1923925509726\"\nDGX_OTA_VERSION=\"7.4.0\"\nDGX_OTA_DATE=\"Tue Feb  3 09:06:56 AM PST 2026\"\nNote DGX_PLATFORM is the odd literal \"DGX Server for KVM\" on Spark. DGX_SWBUILD_VERSION stays at the factory image version (7.2.3) while DGX_OTA_VERSION advances (7.3.1, 7.4.0, ...). Other users show extra lines for a FASTOS build (e.g. \"DGX SPARK FASTOS 1.81.38\" dated 2025-09-12, \"FASTOS 1.91.51\" dated 2025-10-10) but the exact key name was not captured.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/new-dgx-os-7-4-0/359550"
+  },
+  {
+   "claim": "DGX Spark login banner (MOTD) reads `Welcome to NVIDIA DGX Spark Version 7.4.0 (GNU/Linux 6.14.0-1015-nvidia aarch64)` style, i.e. `Welcome to NVIDIA DGX Spark Version <DGX_OTA_VERSION> (GNU/Linux <kernel> aarch64)`.",
+   "detail": "Posted by coder543 2026-02-04 (7.4.0 shipped initially on 6.14.0-1015-nvidia; 6.17.0-1008-nvidia arrived 2026-02-12 after Ubuntu SRU). Also seen: \"Welcome to NVIDIA DGX Spark Version 7.4.0\" with 6.17.0-1008-nvidia in thread 360461.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/new-dgx-os-7-4-0/359550"
+  },
+  {
+   "claim": "DGX Spark kernels are NVIDIA-flavoured Ubuntu kernels whose `uname -r` ends in `-nvidia`: launch 6.11-based, then `6.14.0-1015-nvidia`, then `6.17.0-1004-nvidia`, `6.17.0-1008-nvidia`, `6.17.0-1014-nvidia`, `6.17.0-1021-nvidia`.",
+   "detail": "Full `uname -a` fragment: `6.17.0-1008-nvidia #8-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 21 17:56:56 UTC 2026 aarch64` (thread 350517). Porting guide software-requirements says the launch stack was \"Linux v6.11 based NVIDIA Base OS with necessary patches\" on \"Ubuntu 24.04 server image with desktop packages\". Nov 2025 OTA moved to Ubuntu 6.14 HWE; Feb 2026 to 6.17 (\"mmap horribly broken on 6.14\"). Aerial doc uses `6.17.0-1014-nvidia` as example. 6.17.0-1021-nvidia was associated with a missing-driver report. Generic (non -nvidia) Ubuntu kernels lack the Realtek `r8127` 10GbE module and lose ~7% throughput.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-is-now-on-linux-6-17/360461"
+  },
+  {
+   "claim": "lscpu on GB10: `Architecture: aarch64`, `Vendor ID: ARM`, two `Model name:` entries `Cortex-X925` (10 cores, max 4004.0000 MHz, min 1378.0000) and `Cortex-A725` (10 cores, max 2860.0000 MHz, min 338.0000), `Stepping: r0p1`, `CPU(s): 20`, one NUMA node, L2 25 MiB (20 instances), L3 24 MiB (2 instances).",
+   "detail": "Flags include `sve sve2 svebf16 svei8mm i8mm bf16 bti` (Armv9.2-A). lscpu does not print \"NVIDIA\" or \"GB10\" anywhere; the CPU identifies purely as ARM Cortex cores.",
+   "confidence": "high",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "claim": "OS is Ubuntu 24.04 LTS based DGX OS 7 (lsb_release: `Description: Ubuntu 24.04.3 LTS`, `Release: 24.04`), architecture aarch64/arm64.",
+   "detail": "DGX OS 7 user guide: DGX Spark introduced with DGX OS 7.2.3 (2025-10-10, Ubuntu 24.04.3), then 7.3.1 (2025-11-18), 7.4.0 (2026-02-02), 7.5.0 (2026-04-03, Ubuntu 24.04.4). Spark rows note \"Inbox OFED 50.0-2\" and \"No doca-ofed support\"; ARM64 Spark uses Canonical-signed drivers. Forum staff: \"DGX OS 6.0 is not supported for the DGX Spark / GB10 platform.\"",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/release_notes.html"
+  },
+  {
+   "claim": "Current DGX Spark Founders Edition software table (release notes, as of the July 2026 release): DGX OS 7.5.0, GPU Driver 580.159.03, CUDA Toolkit 13.0.2, Canonical Kernel 6.17, UEFI 1.110.13, EC 3.5.8, USB PD 0.5.22, TPM 7.516.1, SoC 2.155.11.",
+   "detail": "\"These release versions apply only to the DGX Spark Founders Edition.\" Earlier table (Feb 2026 snapshot via search) listed DGX OS 7.4.0 / driver 580.126.09 / CUDA 13.0.2 / kernel 6.17. Release cadence: Nov 2025 (6.14 HWE kernel, CUDA 13.0.2 JupyterLab, \"Addressed the issue with memory reporting differences with unified memory architecture\"), Jan 2026 (ConnectX-7 hot-plug saves 18W, BT audio, UEFI Wi-Fi/BT disable), Feb 2026 (fix for multi-Spark perf regression after 7.4.0), Apr 2026 (enterprise provisioning, OOBE bypass, USB/local repo, air-gapped, cloud-init), Jun 2026 (OTA not installed by default during OOBE, Cluster Assistant, NCCL 2.30u1 3-node ring), Jul 2026 (OOM handling improvements, Display Reserved Memory toggle 2GB default / 4GB, display hot-plug fix). Older firmware was reported in hex form: EC 0x02004b03, SoC/UEFI/GPU 0x02009009 (2025-10-24).",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "claim": "Driver package on DGX Spark is `nvidia-driver-580-open` (arm64), e.g. `nvidia-driver-580-open 580.95.05-0ubuntu0.24.04.2 arm64` at launch; later 580.126.09 (Feb 2026), 580.159.03-0ubuntu0.24.04.1 (Jun/Jul 2026). NVIDIA: \"The DGX B300, DGX Spark, and DGX GB300 require the Release 580 family of the NVIDIA open GPU kernel modules.\"",
+   "detail": "DGX OS 7 guide lists `nvidia-driver-580-open`, `nvidia-driver-pinning-580`, `libnvidia-nscq`, `nvidia-modprobe`; check with `apt list --installed nvidia-driver*-open`. Verification used on forum: `dpkg -l|grep nvidia-driver`. 590.48.01 (CUDA 13.1) appeared via noble-proposed and caused memory leaks on GB10; 580.126.09 remained the supported driver at that time. Aerial docs show a newer example `NVIDIA-SMI 590.48.01 Driver Version: 590.48.01 CUDA Version: 13.1`. Talos users ran 595.58.03. Vulkan on 580.95.05 is broken (`vkCreateDevice failed with VK_ERROR_INITIALIZATION_FAILED`); needs 580.105.08+ and `libnvidia-gl-580`.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/additional_software.html"
+  },
+  {
+   "claim": "Driver/firmware pairing matters: on OTA2607 (July 2026 firmware, paired with driver 580.159.03) a plain `apt upgrade` pulled `nvidia-driver-580-open 580.173.02-0ubuntu0.24.04.1` from `noble-updates/restricted` and broke the GPU: `nvidia-smi` -> `No devices were found`; dmesg `Timeout after 6s of waiting for RPC response from GPU0 GSP` plus SEC2 secure-boot failures.",
+   "detail": "The built-in checker `nvidia-spark-ota-check` reported 152 of 153 checks passed with only the driver failing. Workaround: downgrade to 580.159.03-0ubuntu0.24.04.1 and `apt-mark hold`; permanent fix arrived via the DGX Dashboard update on 2026-07-28. Staff advised `apt dist-upgrade` (not `apt upgrade`). Related GSP failure strings seen on a dead GPU (thread 373171, 2026-06-30): `NVRM: RmInitAdapter: Cannot initialize GSP firmware RM`, `ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out`, container `CUDA failed to initialize, error 999`, GPU still visible at PCI `000f:01:00.0`. The GB20B token is the GPU die codename.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "claim": "Installing non-bundled drivers (e.g. `nvidia-driver-570-server`, an older 550 driver, or Fabric Manager) on DGX Spark leads to `NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.`, boot hang at `EFI stub: Exiting boot services...`, or a stuck ~5W/0% GPU; NVIDIA's answer is to use the recovery image.",
+   "detail": "Thread 351579 (Nov 2025): user downgraded via apt for faiss-gpu; errors `NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.` and `nvidia-container-cli: initialization error: nvml error: driver not loaded: unknown`; staff: driver updates should come through the official update process; `sudo nvidia-bug-report.sh` for diagnostics. Thread 365280: `apt upgrade` installed `nvidia-driver-570-server` -> hang at \"EFI stub: Exiting boot services…\"; staff: reimage. Thread 356426: driver 550.54.15 + CUDA 12.4 left GPU at ~5W 0% util with Power Limits N/A; fixed by 580.95.05/CUDA 13.0; dmesg `Detected insufficient power on the PCIe slot (27W)` comes from mlx5_core and is ignorable. Thread 367655: Fabric Manager is unnecessary (no NVSwitch); recovery image fixed \"NVIDIA-GB10 not supported\".",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/reinstalling-the-nvidia-driver-on-dgx-spark/351579"
+  },
+  {
+   "claim": "CUDA toolkit shipped at launch: `Cuda compilation tools, release 13.0, V13.0.88` / `Build cuda_13.0.r13.0/compiler.36424714_0`; DGX OS release notes list CUDA 13.0.2 from Nov 2025 onward. VSS prerequisites require DGX OS 7.2.3, driver 580.95.05 or higher, CUDA 13.0.",
+   "detail": "nvcc string from Arm learning path (Oct 2025) and thread 359550. Known Issues: \"The CUDA version on your DGX Spark device has been verified to work with your system hardware at the time of software update release\"; newer features via NGC containers.",
+   "confidence": "high",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "claim": "Hardware spec: 20-core Arm (10 Cortex-X925 + 10 Cortex-A725), Blackwell GPU with 6,144 CUDA cores, 5th-gen Tensor Cores, 4th-gen RT cores; 128 GB LPDDR5x unified, 256-bit, 4266 MHz, 273 GB/s; 1 TB or 4 TB NVMe M.2 with self-encryption; 1x RJ-45 10 GbE, ConnectX-7 Smart NIC (2x QSFP), Wi-Fi 7, Bluetooth 5.4; 4x USB-C, 1x HDMI 2.1a; 240W external PSU, 140W TDP; 150x150x50.5 mm, 1.2 kg.",
+   "detail": "Founders Edition is 4 TB; OEMs offer 1 TB (ASUS: PCIe 5.0 x4 M.2-2242). Linux sees ~119-121 GiB total (e.g. `Mem: 121Gi`), because 128 GB = ~119 GiB and firmware reserves display memory (4 GB, reduced to 2 GB default in 2026 firmware; toggle 2GB/4GB added July 2026). The DGX Dashboard has mixed GB/GiB in its display. No MIG, vGPU, NVSwitch or Fabric Manager on this platform.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/hardware.html"
+  },
+  {
+   "claim": "ConnectX-7 on DGX Spark exposes two QSFP ports as four Linux netdevs: left port `enp1s0f0np0` and `enP2p1s0f0np0` (RoCE `rocep1s0f0`, `roceP2p1s0f0`); right port `enp1s0f1np1` and `enP2p1s0f1np1` (RoCE `rocep1s0f1`, `roceP2p1s0f1`); up to 200 Gb/s per port; use `ibdev2netdev` to map.",
+   "detail": "Approved DAC cables: Amphenol `NJAAKK-N911`, `NJAAKK0006` (0.5 m), Luxshare `LMTQF022-SD-R`. Hot-plug/power-down of the CX-7 (saves 18W) added Jan/Feb 2026. Inbox OFED only, no doca-ofed; external DOCA/OFED requires disabling Secure Boot or enrolling a MOK; `repo.download.nvidia.com/dgx/spark/ubuntu noble` returns 404 (no separate Spark apt repo). Verify with `lsmod | grep mlx5`. NCCL 2.30u1 supports 3-Spark ring; Cluster Assistant up to 3 without a switch, 4 with a switch.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html"
+  },
+  {
+   "claim": "DGX Dashboard is a local web app on port 11000 (`http://localhost:11000`), installed under `/opt/nvidia/dgx-dashboard-service/` (per-user JupyterLab ports in `jupyterlab_ports.yaml`); it shows GPU telemetry and memory, applies OS/driver/firmware updates (Settings > Updates) and launches JupyterLab (`/home/<USERNAME>/jupyterlab`).",
+   "detail": "Remote access: `ssh -L 11000:localhost:11000 <username>@<IP or spark-abcd.local>` or NVIDIA Sync which auto-tunnels and opens the browser. Update/rename requires sudo. NVIDIA \"strongly recommend using the DGX Dashboard for all system updates\"; manual path is `sudo apt update`, `sudo apt dist-upgrade`, `sudo fwupdmgr refresh`, `sudo fwupdmgr upgrade`, `sudo reboot`.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html"
+  },
+  {
+   "claim": "NVIDIA Sync is a system-tray utility for Windows, macOS and Ubuntu that manages SSH keys/tunnels to a Spark (discovered via mDNS as `spark-abcd.local`, or by hostname/IP, or Tailscale), launches DGX Dashboard, VS Code, Cursor, AI Workbench, JupyterLab, and includes the Cluster Assistant; it does not support jump/bastion hosts.",
+   "detail": "Download: build.nvidia.com/spark/connect-to-your-spark/sync; docs: docs.nvidia.com/sync/latest. Manual SSH: `ssh <YOUR_USERNAME>@<SPARK_HOSTNAME>.local`. \"The password is used to configure SSH key-based authentication only when you add the device. It is not persisted or logged.\"",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-sync.html"
+  },
+  {
+   "claim": "NVIDIA Container Toolkit is preinstalled; canonical smoke test is `docker run -it --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 nvidia-smi`; verify with `nvidia-ctk --version`, `cat /etc/docker/daemon.json`, `ls -la /dev/nvidia*`.",
+   "detail": "Container images must be arm64 (aarch64) and CUDA 13 to match the host driver; most x86/CUDA-12 wheels do not apply.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html"
+  },
+  {
+   "claim": "Recovery: Founders Edition recovery image is a tar.gz from nvidia.com/en-us/drivers/dgx-spark-recovery-software/ with `CreateUSBKey.cmd` / `CreateUSBKey.sh` / `CreateUSBKeyMacOS.sh`; enter UEFI with Esc or Del at power-on; \"OEM variant images are only available from the respective OEMs.\" Secure Boot defaults to Enabled (Security > Secure Boot); Wi-Fi/BT disable under Advanced > IO Port Access > \"Wireless LAN & Bluetooth\".",
+   "detail": "Also PXE under Advanced > Network Stack Configuration. The UEFI watchdog can cause reboots on non-DGX-OS installs.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/system-recovery.html"
+  },
+  {
+   "claim": "OEM GB10 systems (ASUS Ascent GX10 [GX10-GG0010BN], Dell Pro Max with GB10, HP ZGX Nano, Lenovo ThinkStation PGX, MSI EdgeXpert MS-C931, Gigabyte AI TOP ATOM) share the same GB10 board and run DGX OS; differences are storage size, chassis, power brick (Dell 280W), PXE, and vendor branding (Lenovo lists \"Ubuntu Linux Pro with NVIDIA Base OS\" and \"GB10 Dashboard\").",
+   "detail": "StorageReview: \"Because all Spark systems share the same board and GB10 Superchip, performance differences are incremental.\" NVIDIA release notes/recovery apply only to Founders Edition; OEMs ship their own images. Whether /etc/dgx-release DGX_NAME/DGX_PRETTY_NAME differ on OEM units was NOT confirmed.",
+   "confidence": "medium",
+   "source_url": "https://www.storagereview.com/review/asus-ascent-gx10-review"
+  },
+  {
+   "claim": "Small pageable host->device copies are pathologically slow on GB10 (~52x slower than pinned: 2500 x 1 MiB fp16 copies took 10.284 s pageable vs 0.198 s pinned; 1 GiB single copy 4.139 GB/s pageable vs 20.681 GB/s pinned); model load 5.24 s vs 38.45 s with `pin_memory=False`.",
+   "detail": "Driver 580.95.05, CUDA 13.0, PyTorch 2.10.0a0. Attributed to UMA page-locking/DMA mapping overhead.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-arm64-cuda-13-pathological-slowdown-for-many-small-h2d-copies-from-pageable-cpu-memory-50x-vs-pinned-impacts-pytorch-model-load-patt/354506"
+  },
+  {
+   "claim": "Driver 580.159.03 (announced 2026-06-11, delivered via DGX Dashboard Update) added improved OOM handling for GB10 unified memory with user feedback under memory pressure.",
+   "detail": "Announcement title: \"Improved Unified Memory Handling with Driver 580.159.03\".",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/improved-unified-memory-handling-with-driver-580-159-03/373018"
+  },
+  {
+   "claim": "RTX Spark (N1X) was announced by NVIDIA and Microsoft on 2026-05-31 at GTC Taipei/Computex: 20-core Grace CPU (X925/A725, MediaTek co-design), Blackwell RTX GPU with 6,144 CUDA cores, up to 128 GB unified memory (~300 GB/s), NVLink-C2C, 1 PFLOP FP4, Copilot+ PC on Windows 11 (Prism emulation); systems from ASUS, Dell, HP, Lenovo, Microsoft Surface, MSI in fall 2026 (Acer, Gigabyte later).",
+   "detail": "XDA: N1X 45-80W envelope; entry N1 has 12 CPU cores, 2,560 CUDA cores, 16 GB; Windows features Workload Profile Scheduling (WPS) and Microsoft Power and Thermal Framework (MPTF).",
+   "confidence": "medium",
+   "source_url": "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark"
+  },
+  {
+   "claim": "NVIDIA's first Windows 11 Arm64 driver for RTX Spark is version 616.00 (developer preview, July 2026); its INF names the GPU `NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)` and `NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)` with device IDs `NVIDIA_DEV.2E03.0109.1414`, `NVIDIA_DEV.2E06.0109.1414`, `NVIDIA_DEV.2E06.0110.1414`, plus NPU/DLA entries.",
+   "detail": "PCI device IDs 0x2E03 (6144-core) and 0x2E06 (5120-core), subsystem vendor 0x1414 (Microsoft). Reported 2026-07-18.",
+   "confidence": "medium",
+   "source_url": "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Detect a DGX Spark / GB10 (DGX OS) host",
+   "how": "Read /etc/dgx-release and match DGX_NAME=\"DGX Spark\" (or DGX_PRETTY_NAME containing \"DGX Spark\"); confirm with `nvidia-smi -L` / `--query-gpu=name` returning \"NVIDIA GB10\", `uname -m` == aarch64, and `uname -r` matching /^6\\.(11|14|17)\\.0-\\d+-nvidia$/. Any one of GPU name == NVIDIA GB10 is sufficient to enable unified-memory rules even on OEM units or non-DGX-OS installs.",
+   "exact_strings": [
+    "DGX_NAME=\"DGX Spark\"",
+    "DGX_PRETTY_NAME=\"NVIDIA DGX Spark\"",
+    "DGX_PLATFORM=\"DGX Server for KVM\"",
+    "NVIDIA GB10",
+    "-nvidia",
+    "aarch64",
+    "Welcome to NVIDIA DGX Spark Version"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/new-dgx-os-7-4-0/359550"
+  },
+  {
+   "what": "Recognize expected unified-memory N/A output instead of flagging a broken nvidia-smi",
+   "how": "When GPU name is NVIDIA GB10: treat memory.total/memory.used/memory.free == \"[N/A]\", table Memory-Usage == \"Not Supported\", fan.speed == \"[N/A]\", power.limit/enforced.power.limit == \"[N/A]\", clocks.mem == \"[N/A]\", `nvidia-smi -q` \"FB Memory Usage\" values == \"N/A\", and pcie.link.gen.* / width reported as Gen1 x1 as INFO (expected) rather than WARN/CRIT. Keep utilization.gpu, temperature.gpu, power.draw, pstate, clocks.sm and per-process memory as real signals.",
+   "exact_strings": [
+    "Not Supported",
+    "[N/A]",
+    "N/A",
+    "4W /  N/A",
+    "FB Memory Usage",
+    "GEN 1@ 1x",
+    "Memory-Usage: Not Supported"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "Detect the GB10 GPU via bus address and codename tokens",
+   "how": "nvidia-smi Bus-Id is `0000000F:01:00.0` (lspci `000f:01:00.0`). Kernel/GSP log lines carry the die codename GB20B (e.g. `ksec2PrepareBootCommands_GB20B`).",
+   "exact_strings": [
+    "0000000F:01:00.0",
+    "000f:01:00.0",
+    "GB20B"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171"
+  },
+  {
+   "what": "Detect compute capability 12.1 and sm_121 toolchain mismatches",
+   "how": "Read compute_cap via `nvidia-smi --query-gpu=compute_cap --format=csv,noheader` (expect 12.1) or deviceQuery `CUDA Capability Major/Minor version number: 12.1`. Scan application logs / stderr for PyTorch/FlashAttention/llama.cpp arch-mismatch strings.",
+   "exact_strings": [
+    "12.1",
+    "CUDA Capability Major/Minor version number: 12.1",
+    "Found GPU0 NVIDIA GB10 which is of cuda capability 12.1",
+    "Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)",
+    "FATAL: kernel built for sm80-sm100, but running on sm121",
+    "no kernel image is available for execution on the device",
+    "Could not load any common_ops library!",
+    "FlashAttention only supports Ampere GPUs or newer"
+   ],
+   "source_url": "https://github.com/pytorch/pytorch/issues/164596"
+  },
+  {
+   "what": "Detect NVML memory-info failures in orchestration/monitoring tools",
+   "how": "Grep container/pod logs for the device-plugin / DRA / HAMi failure strings; on GB10 recommend NVIDIA k8s-device-plugin >= v0.17.4 which tolerates NVML_ERROR_NOT_SUPPORTED from nvmlDeviceGetMemoryInfo.",
+   "exact_strings": [
+    "error getting device memory: Not Supported",
+    "error getting memory info for device 0: Not Supported",
+    "nvml get memory error ret=",
+    "NVML_ERROR_NOT_SUPPORTED"
+   ],
+   "source_url": "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/1073"
+  },
+  {
+   "what": "Detect driver/firmware (OTA) mismatch and GSP boot failures on GB10",
+   "how": "If nvidia-smi prints `No devices were found` while lspci still shows 000f:01:00.0, check dmesg/journal for GSP RPC timeout or SEC2 strings, compare installed `nvidia-driver-580-open` version against the OTA-paired driver (OTA2607 <-> 580.159.03), and run `nvidia-spark-ota-check` if present.",
+   "exact_strings": [
+    "No devices were found",
+    "Timeout after 6s of waiting for RPC response from GPU0 GSP",
+    "NVRM: RmInitAdapter: Cannot initialize GSP firmware RM",
+    "ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out",
+    "CUDA failed to initialize, error 999",
+    "580.173.02-0ubuntu0.24.04.1",
+    "580.159.03-0ubuntu0.24.04.1",
+    "nvidia-spark-ota-check"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "what": "Detect non-bundled / wrong-branch driver installs on DGX Spark",
+   "how": "`dpkg -l | grep -E 'nvidia-driver|nvidia-dkms|nvidia-fabricmanager'`: on Spark the only expected driver package is nvidia-driver-580-open (Canonical-signed). Flag nvidia-driver-*-server, 550/570 branches, nvidia-dkms-* (DKMS builds break under Secure Boot), and nvidia-fabricmanager (no NVSwitch on Spark).",
+   "exact_strings": [
+    "nvidia-driver-580-open",
+    "nvidia-driver-570-server",
+    "nvidia-fabricmanager",
+    "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.",
+    "nvidia-container-cli: initialization error: nvml error: driver not loaded: unknown",
+    "Driver/library version mismatch",
+    "EFI stub: Exiting boot services"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/reinstalling-the-nvidia-driver-on-dgx-spark/351579"
+  },
+  {
+   "what": "Compute real GPU-usable memory on GB10",
+   "how": "Ignore NVML memory. Parse /proc/meminfo MemTotal/MemAvailable/SwapFree (or `free -h` 'available'); expect MemTotal ~119-121 GiB on a 128 GB unit (display reserve 2 GB default, 4 GB optional). Compare with `cudaMemGetInfo`/`torch.cuda.mem_get_info` total (~119.68 GB / 122570-124618 MiB). Swap in use is a degradation signal.",
+   "exact_strings": [
+    "MemAvailable",
+    "SwapFree",
+    "Mem:",
+    "Total amount of global memory:",
+    "Integrated GPU sharing Host Memory: Yes"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "Detect DGX OS / OTA version and staleness",
+   "how": "Parse DGX_OTA_VERSION (semantic, e.g. 7.3.1, 7.4.0, 7.5.0) and DGX_OTA_DATE from /etc/dgx-release; parse `Driver Version:` from nvidia-smi header; compare to the current Founders Edition table (DGX OS 7.5.0 / 580.159.03 / CUDA 13.0.2 / kernel 6.17 / UEFI 1.110.13 / EC 3.5.8 / SoC 2.155.11). Firmware via `fwupdmgr get-devices`.",
+   "exact_strings": [
+    "DGX_OTA_VERSION=",
+    "DGX_OTA_DATE=",
+    "DGX_SWBUILD_VERSION=",
+    "Driver Version: 580.",
+    "CUDA Version: 13.0",
+    "OTA2607"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "what": "Detect the DGX Spark CPU without relying on nvidia-smi",
+   "how": "lscpu shows Vendor ID ARM with two Model name entries Cortex-X925 and Cortex-A725, 20 CPUs total, stepping r0p1. /proc/cpuinfo will show `CPU implementer : 0x41` style Arm fields (not confirmed verbatim).",
+   "exact_strings": [
+    "Model name:             Cortex-X925",
+    "Model name:             Cortex-A725",
+    "Vendor ID:                ARM",
+    "CPU max MHz:          4004.0000",
+    "CPU max MHz:          2860.0000",
+    "Stepping:             r0p1"
+   ],
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "what": "Detect ConnectX-7 fabric interfaces and clustering readiness",
+   "how": "`ibdev2netdev` / `ip link` for the four CX-7 netdevs; `lsmod | grep mlx5` for driver; link speed up to 200G. Unpopulated ports may be powered down (hot-plug power saving, Jan 2026+). The mlx5 message about insufficient PCIe slot power (27W) is benign.",
+   "exact_strings": [
+    "enp1s0f0np0",
+    "enP2p1s0f0np0",
+    "enp1s0f1np1",
+    "enP2p1s0f1np1",
+    "rocep1s0f0",
+    "roceP2p1s0f0",
+    "rocep1s0f1",
+    "roceP2p1s0f1",
+    "mlx5_core",
+    "Detected insufficient power on the PCIe slot (27W)"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html"
+  },
+  {
+   "what": "Detect DGX Dashboard / NVIDIA Sync availability",
+   "how": "Check for /opt/nvidia/dgx-dashboard-service/ and a listener on TCP 11000; hostname pattern spark-xxxx (mDNS spark-xxxx.local). JupyterLab ports in /opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml.",
+   "exact_strings": [
+    "/opt/nvidia/dgx-dashboard-service/",
+    "jupyterlab_ports.yaml",
+    "11000",
+    "spark-abcd.local"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html"
+  },
+  {
+   "what": "Detect RTX Spark (N1X) on Windows on Arm",
+   "how": "On Windows arm64, match PnP hardware IDs PCI\\VEN_10DE&DEV_2E03 / DEV_2E06 or the display adapter friendly name containing \"RTX Spark N1X\"; driver branch 616.xx. Expect the same unified-memory nvidia-smi limitations as GB10 (not yet confirmed).",
+   "exact_strings": [
+    "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)",
+    "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+    "NVIDIA_DEV.2E03",
+    "NVIDIA_DEV.2E06",
+    "616.00"
+   ],
+   "source_url": "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "GB10_UNIFIED_MEMORY_NVSMI_EXPECTED",
+   "severity": "INFO",
+   "trigger": "GPU name == \"NVIDIA GB10\" (or RTX Spark N1X) AND nvidia-smi memory.total/used/free == \"[N/A]\" or table Memory-Usage == \"Not Supported\"",
+   "evidence_template": "nvidia-smi reports Memory-Usage \"{memcell}\" and memory.total={memtotal} on {gpuname}; this is expected on unified-memory GB10 (no dedicated framebuffer). System memory: MemTotal={memtotal_kib} MemAvailable={memavail_kib} SwapFree={swapfree_kib}.",
+   "why_it_matters": "Prevents a false CRIT on every DGX Spark; NVIDIA documents this as expected behavior and existing NVCheckup memory rules would otherwise misfire.",
+   "next_steps": [
+    "Use /proc/meminfo MemAvailable (+SwapFree) or `free -h` 'available' as the GPU-usable memory figure",
+    "Use the DGX Dashboard (http://localhost:11000) or top/htop for live memory",
+    "Do not treat [N/A] fan/power-cap/memory-clock/PCIe values as faults on this platform"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765",
+    "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+   ]
+  },
+  {
+   "id": "GB10_NVML_MEMORYINFO_NOT_SUPPORTED_TOOLING",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND (NVIDIA k8s-device-plugin version < 0.17.4 OR HAMi <= 2.7.1 OR DRA driver <= 25.12.0 installed, OR container/pod logs contain \"error getting device memory: Not Supported\" / \"error getting memory info for device 0: Not Supported\")",
+   "evidence_template": "{tool} {version} calls nvmlDeviceGetMemoryInfo which returns NVML_ERROR_NOT_SUPPORTED on GB10; log: \"{logline}\".",
+   "why_it_matters": "GPU scheduling plugins crash-loop on DGX Spark until upgraded to a version that tolerates Not Supported, making the GPU unschedulable in Kubernetes.",
+   "next_steps": [
+    "Upgrade NVIDIA k8s-device-plugin to >= v0.17.4 (handles Not Supported)",
+    "Check GPU Operator / HAMi / DRA driver release notes for GB10 unified-memory support",
+    "As a stopgap, community nvml-unified-shim exists (unsupported)"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/k8s-device-plugin/issues/1482",
+    "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/1073",
+    "https://github.com/Project-HAMi/HAMi/issues/1511",
+    "https://github.com/NVIDIA/gpu-operator/issues/1794"
+   ]
+  },
+  {
+   "id": "GB10_SM121_ARCH_MISMATCH",
+   "severity": "WARN",
+   "trigger": "compute_cap == 12.1 AND (PyTorch build lacks sm_121/12.1 in TORCH_CUDA_ARCH_LIST / torch.cuda.get_arch_list(), OR logs contain \"which is of cuda capability 12.1\" / \"running on sm121\" / \"no kernel image is available for execution on the device\")",
+   "evidence_template": "GPU {gpuname} is compute capability 12.1 (sm_121); {framework} {version} was built for {archlist}; message: \"{logline}\".",
+   "why_it_matters": "Binaries built for sm_100 (datacenter Blackwell) or sm_90 do not run on GB10; sm_120 builds run but fall back to generic kernels, causing large throughput losses or hard failures (FlashAttention, sgl_kernel, FP8/FP4 paths).",
+   "next_steps": [
+    "Use NGC arm64 CUDA 13 containers (PyTorch, vLLM, TensorRT-LLM) built with sm_121",
+    "Rebuild with -gencode arch=compute_121,code=sm_121a (llama.cpp: -DCMAKE_CUDA_ARCHITECTURES=121a-real); FP4 block-scale MMA may require the 12.1f family target",
+    "For vLLM/SGLang consider --enforce-eager where SM100-only kernels are selected"
+   ],
+   "sources": [
+    "https://github.com/pytorch/pytorch/issues/164596",
+    "https://github.com/Dao-AILab/flash-attention/issues/1969",
+    "https://github.com/vllm-project/vllm/issues/43906",
+    "https://huggingface.co/merve/llama.cpp-dgx-spark-gb10-sm121a",
+    "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell"
+   ]
+  },
+  {
+   "id": "DGX_SPARK_DRIVER_FIRMWARE_MISMATCH",
+   "severity": "CRIT",
+   "trigger": "DGX Spark detected AND nvidia-smi prints \"No devices were found\" (or NVML init fails) AND lspci still shows 000f:01:00.0 AND (dmesg contains \"Timeout after 6s of waiting for RPC response from GPU0 GSP\" OR \"Cannot initialize GSP firmware RM\" OR \"SEC2 secure boot partition timed out\")",
+   "evidence_template": "GPU present at PCI 000f:01:00.0 but nvidia-smi: \"No devices were found\"; installed nvidia-driver-580-open={drvpkgver}; DGX_OTA_VERSION={ota}; dmesg: \"{gspline}\".",
+   "why_it_matters": "On DGX Spark the GPU driver and the OTA firmware (GSP) must be a paired set; pulling a newer driver from Ubuntu noble-updates (e.g. 580.173.02 on OTA2607 / 580.159.03) leaves the GPU uninitializable until firmware catches up or the driver is rolled back.",
+   "next_steps": [
+    "Run `nvidia-spark-ota-check` if present to see which component fails",
+    "Apply the pending update via DGX Dashboard (Settings > Updates) or `sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot`",
+    "If stuck, downgrade to the OTA-paired driver (e.g. nvidia-driver-580-open 580.159.03-0ubuntu0.24.04.1) and `apt-mark hold` it until the next OTA",
+    "Collect `sudo nvidia-bug-report.sh` for NVIDIA support"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+    "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171"
+   ]
+  },
+  {
+   "id": "DGX_SPARK_UNSUPPORTED_DRIVER_PACKAGE",
+   "severity": "CRIT",
+   "trigger": "DGX Spark detected AND dpkg shows a driver other than nvidia-driver-580-open (e.g. nvidia-driver-*-server, nvidia-driver-550/570*, nvidia-dkms-*), OR nvidia-fabricmanager installed, OR nvidia-smi: \"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.\"",
+   "evidence_template": "Installed driver packages: {pkglist}. Expected on DGX Spark: nvidia-driver-580-open (Canonical-signed open kernel modules). nvidia-smi: \"{nvsmi_err}\".",
+   "why_it_matters": "NVIDIA states DGX Spark requires the Release 580 open kernel modules; other branches/DKMS builds fail under Secure Boot, hang boot (\"EFI stub: Exiting boot services\"), or leave the GPU stuck at ~5W/0% util, and NVIDIA's remedy is a full reimage.",
+   "next_steps": [
+    "`sudo apt install nvidia-driver-580-open` (remove foreign driver packages first) and reboot",
+    "Never install .run drivers or fabric manager on Spark (no NVSwitch)",
+    "If boot is broken, reimage with the DGX Spark recovery image (nvidia.com/en-us/drivers/dgx-spark-recovery-software/)"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/additional_software.html",
+    "https://forums.developer.nvidia.com/t/reinstalling-the-nvidia-driver-on-dgx-spark/351579",
+    "https://forums.developer.nvidia.com/t/dgx-spark-boot-hang-at-efi-stub-after-kernel-6-17-driver-570-server-upgrade-issue/365280",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426"
+   ]
+  },
+  {
+   "id": "DGX_SPARK_NON_NVIDIA_KERNEL",
+   "severity": "WARN",
+   "trigger": "DGX Spark/GB10 detected AND `uname -r` does not end in \"-nvidia\" (e.g. *-generic)",
+   "evidence_template": "Running kernel {kernel}; DGX Spark expects an NVIDIA-flavoured Ubuntu kernel (6.14.0-NNNN-nvidia / 6.17.0-NNNN-nvidia).",
+   "why_it_matters": "Generic kernels lack the Realtek r8127 10GbE module and GB10 patches; users report lower throughput and missing devices; NVIDIA driver modules are only signed for the -nvidia kernels.",
+   "next_steps": [
+    "Boot the -nvidia kernel or reinstall it via apt (linux-image-*-nvidia)",
+    "If on a custom distro, build from NVIDIA's kernel annotations/patches (see nixos-dgx-spark / Red Hat nvidia-gb10 kernel tree)"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/ubuntu-26-04-lts-kernel-6-17-0-arm64-on-dgx-spark-anyone/350517",
+    "https://forums.developer.nvidia.com/t/dgx-spark-is-now-on-linux-6-17/360461"
+   ]
+  },
+  {
+   "id": "DGX_SPARK_OTA_OUTDATED",
+   "severity": "WARN",
+   "trigger": "/etc/dgx-release DGX_OTA_VERSION < current Founders Edition release (7.5.0) OR driver < 580.159.03 OR kernel major < 6.17",
+   "evidence_template": "DGX_OTA_VERSION={ota} (OTA date {otadate}), driver {drv}, kernel {kernel}; current Founders Edition stack is DGX OS 7.5.0 / 580.159.03 / CUDA 13.0.2 / kernel 6.17.",
+   "why_it_matters": "Older OTAs have known problems: 6.14 kernel mmap bug, memory-reporting inconsistencies fixed in Nov 2025, Vulkan broken on 580.95.05, OOM handling improved in 580.159.03, ConnectX-7 power fixes in Jan 2026.",
+   "next_steps": [
+    "Update via DGX Dashboard (Settings > Updates) which applies packages and firmware together",
+    "Or `sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot`",
+    "On OEM units, obtain updates/images from the OEM"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+    "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html",
+    "https://forums.developer.nvidia.com/t/improved-unified-memory-handling-with-driver-580-159-03/373018"
+   ]
+  },
+  {
+   "id": "GB10_MEMORY_PRESSURE_SWAP",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND (SwapUsed > 0 during GPU workload OR MemAvailable < 10% of MemTotal)",
+   "evidence_template": "Unified memory pressure: MemTotal={memtotal} MemAvailable={memavail} SwapTotal={swaptotal} SwapUsed={swapused}; GPU processes: {proclist}.",
+   "why_it_matters": "On unified memory the model weights and KV cache live in system RAM; once swap is touched inference stalls, and cudaMemGetInfo under-reports headroom so applications may OOM or be killed.",
+   "next_steps": [
+    "Read MemAvailable+SwapFree rather than cudaMemGetInfo",
+    "Flush page cache: `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` then restart the app",
+    "Reduce model/context size; consider the 2 GB display-reserve setting (default) rather than 4 GB"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/"
+   ]
+  },
+  {
+   "id": "GB10_PAGEABLE_H2D_SLOW_PATH",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND PyTorch DataLoader/model loading with pin_memory=False (or profiling shows many small cudaMemcpy from pageable memory)",
+   "evidence_template": "Detected pageable host->device copy pattern on {gpuname}; on GB10 many small pageable copies are ~50x slower than pinned (10.28 s vs 0.20 s for 2500 x 1 MiB).",
+   "why_it_matters": "Turns second-scale model loads into tens of seconds on DGX Spark.",
+   "next_steps": [
+    "Use pin_memory=True / cudaHostAlloc for staging buffers",
+    "Prefer large batched copies or managed memory"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-arm64-cuda-13-pathological-slowdown-for-many-small-h2d-copies-from-pageable-cpu-memory-50x-vs-pinned-impacts-pytorch-model-load-patt/354506"
+   ]
+  },
+  {
+   "id": "DGX_SPARK_CX7_LINK_CHECK",
+   "severity": "INFO",
+   "trigger": "DGX Spark detected AND ConnectX-7 netdevs (enp1s0f0np0/enP2p1s0f0np0/enp1s0f1np1/enP2p1s0f1np1) present but link down or absent while clustering software (NCCL/MPI) is configured",
+   "evidence_template": "ConnectX-7 interfaces: {ifstates}; mlx5_core loaded={mlx5}; note ports may be powered down by hot-plug power saving when no cable is attached.",
+   "why_it_matters": "Multi-Spark clustering depends on the 200G CX-7 links; misidentifying the paired netdev/RoCE device is a common setup error.",
+   "next_steps": [
+    "Run `ibdev2netdev` to map roce devices to netdevs",
+    "Use NVIDIA Sync Cluster Assistant or the connect-two-sparks playbook",
+    "Use approved DAC cables (Amphenol NJAAKK-N911/NJAAKK0006, Luxshare LMTQF022-SD-R)"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html",
+    "https://docs.nvidia.com/sync/latest/cluster-assistant.html"
+   ]
+  },
+  {
+   "id": "DGX_SPARK_CONTAINER_ARCH_MISMATCH",
+   "severity": "WARN",
+   "trigger": "DGX Spark detected AND a pulled/running CUDA container image is amd64 or targets CUDA 12 without the compat layer, OR container fails with \"nvidia-container-cli: initialization error: nvml error: driver not loaded\"",
+   "evidence_template": "Image {image} arch={imgarch} CUDA={imgcuda}; host is aarch64 with driver {drv} (CUDA {cuda}).",
+   "why_it_matters": "Most public wheels/images are x86 or CUDA 12; on Spark you need arm64 CUDA-13 images (NGC) or a compat setup.",
+   "next_steps": [
+    "Smoke test: `docker run -it --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 nvidia-smi`",
+    "Verify toolkit: `nvidia-ctk --version`, `cat /etc/docker/daemon.json`, `ls -la /dev/nvidia*`"
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html",
+    "https://ai-infrastructure.net/dgx-spark/"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Identify DGX Spark / OTA level",
+   "command": "cat /etc/dgx-release",
+   "notes": "Fields: DGX_NAME=\"DGX Spark\", DGX_PRETTY_NAME=\"NVIDIA DGX Spark\", DGX_SWBUILD_DATE, DGX_SWBUILD_VERSION (factory image, e.g. 7.2.3), DGX_COMMIT_ID, DGX_PLATFORM=\"DGX Server for KVM\", DGX_SERIAL_NUMBER, DGX_OTA_VERSION (e.g. 7.4.0), DGX_OTA_DATE. May include a FASTOS build line (key name unconfirmed).",
+   "source_url": "https://forums.developer.nvidia.com/t/new-dgx-os-7-4-0/359550"
+  },
+  {
+   "context": "GPU identity and expected N/A fields",
+   "command": "nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total,memory.used,memory.free,fan.speed,power.draw,power.limit,pstate,clocks.sm,clocks.mem,pcie.link.gen.current,pcie.link.width.current,utilization.gpu,temperature.gpu --format=csv",
+   "notes": "On GB10: name=NVIDIA GB10, compute_cap=12.1; memory.* = [N/A]; fan.speed=[N/A]; power.limit=[N/A]; clocks.mem=[N/A]; pcie gen/width misreport as 1/1; power.draw, pstate, clocks.sm, utilization.gpu, temperature.gpu return real values. memory.* [N/A] verified verbatim; other fields inferred from nvtop/forum reports.",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "context": "Plain table check",
+   "command": "nvidia-smi",
+   "notes": "Expect `NVIDIA GB10`, Bus-Id `0000000F:01:00.0`, `N/A   32C    P8              4W /  N/A  | Not Supported          |      0%      Default`, MIG `N/A`; per-process memory still listed (Xorg 43MiB etc.).",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "context": "Detailed query",
+   "command": "nvidia-smi -q -d MEMORY",
+   "notes": "Users report `FB Memory Usage` values as `N/A` on GB10. Whether -d UTILIZATION / PERFORMANCE / CLOCK sections populate normally was not directly confirmed (pstate/util/power/clocks do work in the table, and `nvidia-smi -rgc` runs).",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-shows-only-56gb-vram-inside-ai-workbench-128gb-expected/351441"
+  },
+  {
+   "context": "Real memory headroom on unified memory",
+   "command": "free -h; grep -E 'MemTotal|MemAvailable|SwapFree' /proc/meminfo",
+   "notes": "Expect MemTotal ~119-121 GiB on a 128 GB unit; use MemAvailable (+SwapFree) as allocatable. `free -h --si` shows decimal GB for comparison with the 128 GB spec.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "Flush cache when cudaMemGetInfo under-reports",
+   "command": "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'",
+   "notes": "Documented NVIDIA workaround for UMA memory reporting; restart the application afterwards.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "CPU identity",
+   "command": "lscpu",
+   "notes": "Architecture aarch64, Vendor ID ARM, Model name Cortex-X925 (10, max 4004 MHz) and Cortex-A725 (10, max 2860 MHz), Stepping r0p1, 20 CPUs, 1 NUMA node.",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "context": "Kernel identity",
+   "command": "uname -r; uname -a",
+   "notes": "Expect e.g. `6.17.0-1008-nvidia #8-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 21 17:56:56 UTC 2026 aarch64`; older 6.14.0-1015-nvidia; launch was 6.11-based.",
+   "source_url": "https://forums.developer.nvidia.com/t/ubuntu-26-04-lts-kernel-6-17-0-arm64-on-dgx-spark-anyone/350517"
+  },
+  {
+   "context": "Driver package check",
+   "command": "apt list --installed nvidia-driver*-open; dpkg -l | grep -E 'nvidia-driver|nvidia-dkms|nvidia-fabricmanager'",
+   "notes": "Expected: `nvidia-driver-580-open` (e.g. 580.95.05-0ubuntu0.24.04.2, 580.126.09, 580.159.03-0ubuntu0.24.04.1). 580.173.02-0ubuntu0.24.04.1 from noble-updates broke OTA2607 systems. No fabric manager on Spark.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/additional_software.html"
+  },
+  {
+   "context": "OTA consistency check",
+   "command": "nvidia-spark-ota-check",
+   "notes": "Tool present on DGX OS for Spark; reports N of M OTA checks passed (e.g. 152/153 with only the driver failing when driver/firmware are unpaired). Exact path/flags not documented publicly.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+  },
+  {
+   "context": "Manual update path",
+   "command": "sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot",
+   "notes": "NVIDIA strongly recommends the DGX Dashboard (Settings > Updates) instead; staff warn plain `apt upgrade` can desync driver and firmware.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+  },
+  {
+   "context": "CUDA toolkit version",
+   "command": "nvcc --version",
+   "notes": "Launch: `Cuda compilation tools, release 13.0, V13.0.88` / `Build cuda_13.0.r13.0/compiler.36424714_0`. Release notes list CUDA 13.0.2.",
+   "source_url": "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/"
+  },
+  {
+   "context": "Compute capability via CUDA",
+   "command": "deviceQuery (cuda-samples) or python3 -c \"import torch;print(torch.cuda.get_device_capability(), torch.cuda.get_device_name())\"",
+   "notes": "Expect (12, 1) / 'NVIDIA GB10'; deviceQuery prints `Integrated GPU sharing Host Memory: Yes`, total global memory ~122570-124618 MBytes.",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "context": "Container smoke test",
+   "command": "docker run -it --gpus=all nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 nvidia-smi",
+   "notes": "Also `nvidia-ctk --version`, `cat /etc/docker/daemon.json`, `ls -la /dev/nvidia*`.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html"
+  },
+  {
+   "context": "ConnectX-7 mapping",
+   "command": "ibdev2netdev; ip -br link; lsmod | grep mlx5",
+   "notes": "Netdevs enp1s0f0np0 / enP2p1s0f0np0 (left QSFP), enp1s0f1np1 / enP2p1s0f1np1 (right); RoCE rocep1s0f0, roceP2p1s0f0, rocep1s0f1, roceP2p1s0f1.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html"
+  },
+  {
+   "context": "DGX Dashboard presence / remote access",
+   "command": "ls /opt/nvidia/dgx-dashboard-service/; ss -ltnp | grep 11000; ssh -L 11000:localhost:11000 <user>@spark-abcd.local",
+   "notes": "Dashboard on http://localhost:11000; JupyterLab ports in jupyterlab_ports.yaml; hostname pattern spark-xxxx.local via mDNS.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html"
+  },
+  {
+   "context": "Support bundle",
+   "command": "sudo nvidia-bug-report.sh",
+   "notes": "Produces nvidia-bug-report.log.gz; required by NVIDIA forum staff for Spark issues.",
+   "source_url": "https://forums.developer.nvidia.com/t/if-you-have-a-problem-please-read-this-first/347792"
+  },
+  {
+   "context": "Build for GB10",
+   "command": "cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real",
+   "notes": "llama.cpp example; wrong-arch binaries fail with `no kernel image is available for execution on the device`; may need LD_LIBRARY_PATH=/usr/local/cuda-13/compat.",
+   "source_url": "https://huggingface.co/merve/llama.cpp-dgx-spark-gb10-sm121a"
+  }
+ ],
+ "open_questions": [
+  "Exact contents of /proc/device-tree/model (or whether DGX Spark boots ACPI-only with no device tree) and the DMI strings (dmidecode sys_vendor/product_name) on Founders Edition and on ASUS/Dell/HP/Lenovo/MSI/Gigabyte OEM units were not found in any fetched source. The SGLang issue title string \"NVIDIA NVIDIA_DGX_Spark NVIDIA Tegra NVIDIA GB10\" hints at a platform identifier but its origin is unconfirmed.",
+  "Whether OEM GB10 systems change /etc/dgx-release fields (DGX_NAME / DGX_PRETTY_NAME / DGX_PLATFORM) or MOTD text; all captured dgx-release samples were Founders Edition.",
+  "Exact key name of the FASTOS build line seen in some dgx-release dumps (e.g. \"DGX SPARK FASTOS 1.81.38\", \"FASTOS 1.91.51\").",
+  "OTA numbering scheme: OTA2607 is confirmed for the July 2026 release (paired with 580.159.03), which suggests OTAyymm, but other OTA numbers (e.g. for Nov 2025 / Feb 2026 / Apr 2026 / Jun 2026) and how OTA26xx maps to DGX_OTA_VERSION 7.x.x were not confirmed.",
+  "Direct verbatim output of `nvidia-smi -q -d UTILIZATION` and `-d PERFORMANCE` on GB10 was not captured; only `FB Memory Usage: N/A` (MEMORY) and table-level util/pstate/power behavior were confirmed.",
+  "Exact `nvidia-smi -L` line (expected `GPU 0: NVIDIA GB10 (UUID: GPU-...)`) was not captured verbatim.",
+  "GB10 GPU PCI vendor:device ID (10de:xxxx) from lspci was not captured (bus address 000f:01:00.0 is confirmed).",
+  "Kernel page size on DGX Spark (4K vs 64K): DGX OS 7 guide references linux-nvidia-64k-hwe-24.04 for ARM64 DGX and Red Hat builds kernel-64k for GB10, but the Spark default page size was not confirmed.",
+  "Exact driver version shipped with the Jan 2026 and Apr 2026 OTAs (release notes only list the current table); 580.105.08 (Vulkan fix) and 580.126.09 (7.4.0) are known points.",
+  "RTX Spark N1X: compute capability (likely 12.x but unconfirmed), whether Windows nvidia-smi shows the same Not Supported memory behavior, Windows arm64 driver GA version, and Linux support.",
+  "Whether a WSL2 or Linux path exists for RTX Spark laptops at launch."
+ ],
+ "sources": [
+  "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1a_gb10_setup/",
+  "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists",
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/hardware.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/spark-clustering.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/nvidia-sync.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/system-recovery.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/uefi-settings.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/system-overview.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/first-boot.html",
+  "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/software-requirements.html",
+  "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html",
+  "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/release_notes.html",
+  "https://docs.nvidia.com/dgx/dgx-os-7-user-guide/additional_software.html",
+  "https://docs.nvidia.com/sync/latest/index.html",
+  "https://docs.nvidia.com/vss/2.4.1/content/prereqs_dgx_spark.html",
+  "https://docs.nvidia.com/aerial/cuda-accelerated-ran/latest/install_guide/installing_tools_spark.html",
+  "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765",
+  "https://forums.developer.nvidia.com/t/nvidia-smi-shows-nvidia-gb10-not-supported/350322",
+  "https://forums.developer.nvidia.com/t/new-dgx-os-7-4-0/359550",
+  "https://forums.developer.nvidia.com/t/dgx-spark-is-now-on-linux-6-17/360461",
+  "https://forums.developer.nvidia.com/t/ubuntu-26-04-lts-kernel-6-17-0-arm64-on-dgx-spark-anyone/350517",
+  "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+  "https://forums.developer.nvidia.com/t/reinstalling-the-nvidia-driver-on-dgx-spark/351579",
+  "https://forums.developer.nvidia.com/t/after-later-boot-gpu-disappeared-from-nvidia-smi/373171",
+  "https://forums.developer.nvidia.com/t/nvidia-gb10-not-supported-on-dgx-spark-2026-after-restore-driver-580-open-troubleshooting/367655",
+  "https://forums.developer.nvidia.com/t/dgx-spark-boot-hang-at-efi-stub-after-kernel-6-17-driver-570-server-upgrade-issue/365280",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-shows-only-56gb-vram-inside-ai-workbench-128gb-expected/351441",
+  "https://forums.developer.nvidia.com/t/dgx-spark-can-only-use-119gb-of-memory-running-comfyui-so-it-is-killed-isnt-there-128gb-of-memory-why-cant-it-be-used/352962",
+  "https://forums.developer.nvidia.com/t/nvml-support-for-dgx-spark-grace-blackwell-unified-memory-community-solution/358869",
+  "https://forums.developer.nvidia.com/t/dgx-spark-memory-dashboard-live-gib-occupancy-map-can-i-load-next/381279",
+  "https://forums.developer.nvidia.com/t/dgx-spark-arm64-cuda-13-pathological-slowdown-for-many-small-h2d-copies-from-pageable-cpu-memory-50x-vs-pinned-impacts-pytorch-model-load-patt/354506",
+  "https://forums.developer.nvidia.com/t/request-for-sm-121-tuned-kernels-in-cudnn-cublas-dgx-spark-training-throughput-gap/371094",
+  "https://forums.developer.nvidia.com/t/dgx-spark-mini-missing-mellanox-ofed-drivers-and-dgx-spark-repo-for-ubuntu-24-04-arm64/362962",
+  "https://forums.developer.nvidia.com/t/wiping-dgx-spark-and-new-install-list-of-repos-to-install/352627",
+  "https://forums.developer.nvidia.com/t/accessing-dgx-os-images-for-dgx-spark-account-registration-version-downgrade-issues/361408",
+  "https://forums.developer.nvidia.com/t/improved-unified-memory-handling-with-driver-580-159-03/373018",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-july-2026-release/376736",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-june-2026-release/371965",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-04-2026/368114",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-02-2026/360362",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates/351895",
+  "https://forums.developer.nvidia.com/t/if-you-have-a-problem-please-read-this-first/347792",
+  "https://forums.developer.nvidia.com/c/accelerated-computing/dgx-spark-gb10/announcements/722",
+  "https://github.com/NVIDIA/k8s-device-plugin/issues/1482",
+  "https://github.com/NVIDIA/gpu-operator/issues/1794",
+  "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/1073",
+  "https://github.com/Project-HAMi/HAMi/issues/1511",
+  "https://github.com/Syllo/nvtop/issues/426",
+  "https://github.com/pytorch/pytorch/issues/164596",
+  "https://github.com/sgl-project/sglang/issues/13198",
+  "https://github.com/Dao-AILab/flash-attention/issues/1969",
+  "https://github.com/vllm-project/vllm/issues/43906",
+  "https://github.com/NVIDIA/dgx-spark-playbooks",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/dgx-dashboard",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/connect-to-your-spark",
+  "https://github.com/CINOAdam/nvml-unified-shim",
+  "https://github.com/graham33/nixos-dgx-spark",
+  "https://github.com/Sggin1/DGX-SPARK",
+  "https://gist.github.com/solatticus/14313d9629c4896abfdf57aaf421a07a",
+  "https://huggingface.co/merve/llama.cpp-dgx-spark-gb10-sm121a",
+  "https://developers.redhat.com/articles/2026/06/23/building-custom-red-hat-enterprise-linux-kernel-nvidia-dgx-spark",
+  "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell",
+  "https://deepwiki.com/christopherowen/spark-vllm-mxfp4-docker/2.1-sm121-(blackwellgb10)-hardware-architecture",
+  "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/",
+  "https://ai-infrastructure.net/dgx-spark/",
+  "https://simonwillison.net/2025/Oct/14/nvidia-dgx-spark/",
+  "https://www.servethehome.com/asus-ascent-gx10-review-a-new-nvidia-gb10-solution/",
+  "https://www.servethehome.com/lenovo-thinkstation-pgx-review-the-nvidia-gb10-128gb-ai-workstation-goes-corporate/3/",
+  "https://www.storagereview.com/review/asus-ascent-gx10-review",
+  "https://lenovopress.lenovo.com/lp2321-thinkstation-pgx",
+  "https://forum.level1techs.com/t/dell-pro-max-with-gb10/242838",
+  "https://www.igorslab.de/en/nvidia-updates-dgx-spark-ota-update-brings-more-performance-stability-and-better-peripheral-integration/",
+  "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark",
+  "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/",
+  "https://www.xda-developers.com/nvidia-rtx-spark-could-change-windows-laptops-forever/"
+ ]
+}

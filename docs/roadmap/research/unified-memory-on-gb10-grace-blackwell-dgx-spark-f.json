@@ -1,0 +1,768 @@
+{
+ "topic": "Unified memory on GB10 / Grace Blackwell (DGX Spark) for diagnostics and LLM sizing: CPU/GPU sharing of the 128 GB LPDDR5X pool, CUDA allocation semantics, how tools should read memory, oversubscription/swap/OOM behavior, headroom guidance, nvidia-smi vs cudaMemGetInfo differences, Kubernetes device-plugin memory reporting, and NVIDIA's \"Guidance for reporting memory resources with unified memory architecture\".",
+ "facts": [
+  {
+   "claim": "DGX Spark (GB10) ships 128 GB LPDDR5x described by NVIDIA as 'coherent unified system memory', 273 GB/s, 256-bit interface, 20-core Arm CPU (10 Cortex-X925 + 10 Cortex-A725).",
+   "detail": "Official product spec table. Storage '4 TB NVME.M2 with self-encryption', OS 'NVIDIA DGX OS', 'Up to 1 PFLOP FP4'.",
+   "confidence": "high",
+   "source_url": "https://www.nvidia.com/en-us/products/workstations/dgx-spark/"
+  },
+  {
+   "claim": "GB10 memory controllers live on the CPU (MediaTek) die; the Blackwell GPU die reaches DRAM coherently over NVLink-C2C (~600 GB/s aggregate per chiplog analysis); DRAM is 8 LPDDR5X packages x 32-bit = 256-bit, 273 GB/s at 8.533 Gbps.",
+   "detail": "Third-party die analysis. Arm's learning path instead quotes 'NVLink-C2C delivers 900 GB/s of bidirectional bandwidth' for GB10; the two numbers conflict, so treat the C2C figure as unconfirmed. Kubesimplify additionally states the CPU and GPU dies use ATS (Address Translation Services) for the coherent view; NVIDIA docs fetched here do not name ATS/HMM for GB10.",
+   "confidence": "medium",
+   "source_url": "https://www.chiplog.io/p/analysis-of-nvidia-dgx-sparks-gb10"
+  },
+  {
+   "claim": "On DGX Spark, memory from pinned device allocators (cudaMalloc) 'cannot be coherently accessed by the CPU complex, nor by I/O peripherals like PCI Express devices'. RDMA buffers must use cudaHostAlloc and be registered with ib_reg_mr; nvidia-peermem, dma-buf and GDRCopy do not work; apps should query CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_SUPPORTED and CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORT.",
+   "detail": "From the DGX Spark Porting Guide CUDA page. This is the official 'cudaMalloc memory is not CPU-coherent' statement. The porting guide does not describe cudaMallocManaged semantics specifically for GB10.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html"
+  },
+  {
+   "claim": "NVIDIA's official guidance page is a section of the DGX Spark User Guide Known Issues titled 'Guidance for reporting memory resources with unified memory architecture' (anchor #guidance-for-reporting-memory-resources-with-unified-memory-architecture).",
+   "detail": "Verbatim: 'DGX Spark systems use a unified memory architecture (UMA), where the GPU shares system memory (DRAM) with the CPU and other compute engines. ... On UMA systems, the CPU can dynamically manage DRAM contents, including freeing up memory by swapping pages between DRAM and the system's SWAP area. However, the cudaMemGetInfo API does not account for memory that could potentially be reclaimed from SWAP. As a result, the memory size reported by cudaMemGetInfo may be smaller than the actual allocatable memory ... CUDA application developers should consider the possibility of DRAM reclamation via SWAP and not rely solely on the values returned by cudaMemGetInfo.' The page opens with: 'NVIDIA is actively working with third-party ecosystem partners to bring their software to DGX Spark. For example, we have provided direction on implementing memory management on systems based on a unified memory architecture (UMA) to help ensure accurate reporting of available resources.'",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "NVIDIA's reference C implementation (getAvailableMemory) parses /proc/meminfo for exactly: 'MemAvailable: %ld kB', 'SwapFree: %ld kB', 'HugePages_Total: %ld', 'HugePages_Free: %ld', 'Hugepagesize: %ld kB'. If HugePages_Total != 0, available = HugePages_Free * Hugepagesize and freeSwap = 0 ('Hugetlbfs pages are not swappable.').",
+   "detail": "Verbatim code retrieved from the known-issues HTML. Allocatable estimate = MemAvailable (+ SwapFree as potentially reclaimable). Debug workaround: sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' then 'restart your application'.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "Known issue: 'On iGPU platforms, nvidia-smi will display \"Memory-Usage: Not Supported\" even though per-process GPU memory is listed. This is expected because iGPUs do not have dedicated framebuffer memory.'",
+   "detail": "Per-process memory (the Processes table / --query-compute-apps) still works; only the device-level Memory-Usage gauge is unsupported.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "NVIDIA FAQ/staff wording: 'The DGX Spark has a unified memory architecture. NVIDIA-SMI only reports memory utilization when there is a dedicated GPU VRAM.' Recommended alternatives: top, htop, free, or the DGX Dashboard at https://localhost:11000/.",
+   "detail": "FAQ also answers 'My application is experiencing memory issues even though I am within the memory capacity' with the drop_caches command and checking the buff/cache field of free -h.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-faq/347344"
+  },
+  {
+   "claim": "DGX Spark Release Notes (last updated Aug 25, 2026): July 2026 release: 'Improved Memory Management: The included driver enhances Out-of-Memory (OOM) handling with GB10's unified memory architecture. User feedback is now available when the system encounters memory pressure...' and 'Adjustable Display Reserved Memory: The Display Reserved Memory can now be toggled between 2GB (default) and 4GB through the system BIOS.' November 2025 release: 'Improved memory reporting in DGX Dashboard: Addressed the issue with memory reporting differences with unified memory architecture. The readout is now consistent with CUDA guidance for unified memory systems.'",
+   "detail": "Current Founders Edition component versions listed: NVIDIA GPU Driver 580.159.03, CUDA Toolkit 13.0.2, Canonical Kernel 6.17.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "claim": "Observed /proc/meminfo on a DGX Spark (Nov 17, 2025): 'MemTotal: 125513944 kB, MemFree: 56076940 kB, MemAvailable: 121519624 kB' i.e. MemTotal = 119.7 GiB (128.5 GB decimal), not 128 GiB.",
+   "detail": "Same thread: DGX Dashboard showed '74.53 GB / 128 GB (58.2%)' due to unit mixing (kB vs KiB, hardcoded 128 GB total); NVIDIA (aniculescu) confirmed a bug and shipped an update Nov 19, 2025; reporter said the fix still mixed GiB used with GB total ('3.3Gi/128GB').",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/what-is-the-ram-value-shown-on-the-dgx-dashboard-it-doesnt-seem-to-match-free/350714"
+  },
+  {
+   "claim": "Ollama identifies GB10 as an integrated GPU and reports system-memory-sized totals. Exact log line: 'msg=\"inference compute\" id=GPU-... library=CUDA compute=12.1 name=CUDA0 description=\"NVIDIA GB10\" libdirs=ollama,cuda_v13 driver=13.0 pci_id=000f:01:00.0 type=iGPU total=\"119.7 GiB\" available=\"61.4 GiB\"'.",
+   "detail": "Ollama v0.17.6 report. The GB10 PCI address 000f:01:00.0 and compute capability 12.1 are shown.",
+   "confidence": "high",
+   "source_url": "https://github.com/ollama/ollama/issues/14621"
+  },
+  {
+   "claim": "A later Ollama (0.24.0, May 2026) on DGX Spark logged 'system memory total=\"121.7 GiB\" free=\"12.4 GiB\" free_swap=\"15.7 GiB\"' and 'gpu memory ... available=\"11.9 GiB\" free=\"12.4 GiB\"' and then 'llama runner process has terminated with exit code -1' when a 23 GB model was loaded into ~12 GiB available.",
+   "detail": "Shows (a) Ollama's GPU 'available' on GB10 tracks system MemAvailable, (b) a swap area of roughly 16 GiB was present on that DGX OS system (free_swap 15.7 GiB), and (c) the failure mode when free memory is insufficient is a runner crash, not a graceful CUDA error.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/4113"
+  },
+  {
+   "claim": "llama.cpp/ggml implements NVIDIA's guidance: in ggml_backend_cuda_device_get_memory(), after cudaMemGetInfo(), if cudaDeviceProp.integrated > 0 or env GGML_CUDA_ENABLE_UNIFIED_MEMORY is set, 'free' is replaced by MemAvailable*1024 parsed from /proc/meminfo (with the same HugePages override as NVIDIA's sample); 'total' still comes from cudaMemGetInfo.",
+   "detail": "Code comment: '// For UMA systems (like DGX Spark), use system memory info'. Log strings: 'cudaMemGetInfo failed (%s), returning 0/0', '/proc/meminfo reading failed, using cudaMemGetInfo', 'final available_memory_kb: %ld'. Device type is GGML_BACKEND_DEVICE_TYPE_IGPU iff prop.integrated. Introduced by PR #17368 'DGX Spark: UMA support' (sfudally-nvidia, merged Nov 20, 2025); ggerganov asked whether cudaMemGetInfo would be fixed; author said no ETA from the CUDA team. Because Ollama prints type=iGPU, cudaDeviceProp.integrated == 1 on GB10.",
+   "confidence": "high",
+   "source_url": "https://github.com/ggml-org/llama.cpp/pull/17368"
+  },
+  {
+   "claim": "Kubernetes: the classic NVIDIA k8s-device-plugin (<= v0.17.3) crashes on GB10 with 'error building Device: error getting device memory: Not Supported' because nvmlDeviceGetMemoryInfo returns NVML_ERROR_NOT_SUPPORTED. Fixed in v0.17.4 by PR #1374 'Ignore errors getting device memory using NVML' (backport of #1356): the error is logged as a warning, and GFD does not generate the nvidia.com/gpu.memory label.",
+   "detail": "Issue #1482 environment: driver 580.95.05, CUDA 13.0, 'NVIDIA GB10', nvidia-smi memory 'Not Supported'. GPU Operator issue #1794 (v25.3.4, DGXOS 7, k3s v1.33.5) shows the same 'error getting device memory: Not Supported'. Collabnix confirms node capacity nvidia.com/gpu = 1 after upgrading and that no gpu.memory label appears.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/k8s-device-plugin/pull/1374"
+  },
+  {
+   "claim": "Kubernetes DRA driver (kubernetes-sigs/dra-driver-nvidia-gpu) failed on GB10 with 'error getting memory info for device 0: Not Supported' (driver 595.58.03, DRA v25.12.0). PR #1121 (merged May 12, 2026, milestone v0.4.0) publishes attribute memoryType: \"unified\" with memoryBytes = nil and logs 'ignoring unsupported memory info for device [index]; publishing memoryType='unified' without memory capacity'.",
+   "detail": "Discussion distinguishes memoryType unified/discrete (physically shared pool) from the existing coherent/non-coherent addressing-mode attributes.",
+   "confidence": "high",
+   "source_url": "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/pull/1121"
+  },
+  {
+   "claim": "Project-HAMi device plugin v2.7.1 panicked on GB10: 'register.go:114] nvml get memory error ret=Not Supported' followed by 'panic: 0'. Fix PR #1637 adds Helm value devicePlugin.preConfiguredDeviceMemory (example 131072 MiB); if unset (default 0) the device is skipped with an error log instead of panicking.",
+   "detail": "Environment: HAMi v2.7.1, Kubernetes v1.32.9 (RKE2), driver 580.95.05, CUDA 13.0, Ubuntu 24.04 ARM64.",
+   "confidence": "high",
+   "source_url": "https://github.com/Project-HAMi/HAMi/issues/1511"
+  },
+  {
+   "claim": "GPU Operator platform-support docs list 'NVIDIA DGX Spark' (Blackwell) under supported ARM-based platforms in 26.7.x, while the same page states 'The GPU Operator only supports platforms using discrete GPUs. NVIDIA Jetson, or other embedded products with integrated GPUs, are not supported.'",
+   "detail": "No minimum version is stated for DGX Spark; community fix requires bundled device plugin >= v0.17.4.",
+   "confidence": "medium",
+   "source_url": "https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/platform-support.html"
+  },
+  {
+   "claim": "The 'AI Workbench shows only ~56 GB VRAM' report (Nov 14 - Dec 30, 2025) was never root-caused: the reporter never posted the command/output, NVIDIA staff (aniculescu) said nvidia-smi cannot show memory on UMA so the 56 GB figure's origin was unclear, another staffer (raphael.amorim) treated it as invalid; thread ended unresolved.",
+   "detail": "Reporter suspected vGPU/SR-IOV; not confirmed. Plausible but unverified causes: the app displaying cudaMemGetInfo 'free' (= MemAvailable at that moment) rather than total, or a container memory limit.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-shows-only-56gb-vram-inside-ai-workbench-128gb-expected/351441"
+  },
+  {
+   "claim": "nvidia-smi --query-gpu=memory.total returns '[N/A]' on GB10; a deviceQuery run inside nvidia/cuda:13.0.0-devel-ubuntu24.04 reported CUDA Capability 12.1 and ~122,570 MB total global memory (= ~119.7 GiB); the blog states ~119 GiB is usable after firmware/OS reservation and recommends reserving 5-8 GB for OS/runtime with an inference ceiling around 115 GB, and keeping swap usage at 0 during inference.",
+   "detail": "Third-party blog; the 122,570 MiB figure matches the 125513944 kB MemTotal observed on the forum (122,572 MiB).",
+   "confidence": "medium",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "claim": "Sparkview (community TUI) reports that on GB10 nvmlDeviceGetMemoryInfo 'may report total ≈ MemTotal (~121 GB)' which does not reflect allocatable memory, so it uses vm.total - vm.available as used and vm.total as total, plus /proc/pressure/memory PSI classified LOW/MOD/HIGH/CRITICAL. Example: total ~121.7 GiB, used 114.0 GiB; a user showed 1.2 GiB swap in use of 32.0 GiB swap with PSI full 0.81.",
+   "detail": "Conflicts with the Kubernetes reports that nvmlDeviceGetMemoryInfo returns Not Supported; may depend on driver version or on nvitop's fallback. Treat NVML memory on GB10 as either NOT_SUPPORTED or MemTotal-like, never as allocatable.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/sparkview-gpu-monitor-tool-with-gb10-aware-unified-memory-handling/366877"
+  },
+  {
+   "claim": "Community NVML replacement: github.com/CINOAdam/nvml-unified-shim is an LD_PRELOAD proof-of-concept (v0.1) implementing nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetName; total from /proc/meminfo, used from CUDA runtime tracking, free = total - used. Debug via NVML_SHIM_DEBUG=1.",
+   "detail": "Forum thread also documented swap-induced throughput collapse on GB10: 37 tok/s at 0 GiB swap used, 21 tok/s at 6.7 GiB (-43%), 1.8 tok/s at 13 GiB (-95%). Author (adam357) in April 2026 had not yet released a complete version.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/nvml-support-for-dgx-spark-grace-blackwell-unified-memory-community-solution/358869"
+  },
+  {
+   "claim": "DGX Spark Memory Dashboard (github.com/hectorTSH/dgx-spark-memory-dashboard, MIT, v0.1.0 Aug 26, 2026) uses MemAvailable from /proc/meminfo as the ground truth on GB10, attributes usage via Ollama /api/ps, Docker stats for vLLM containers and OpenAI /v1/models probes, and ranks on-disk models against 'free RAM + headroom' (headroom value not documented).",
+   "detail": "Run: python3 scripts/run.py --demo, served at http://127.0.0.1:7474/. States 'nvidia-smi memory fields are [N/A] on GB10'.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-memory-dashboard-live-gib-occupancy-map-can-i-load-next/381279"
+  },
+  {
+   "claim": "Real free -h readings on DGX Spark show 121Gi total; with a 94 GB model loaded: 'Mem: 121Gi total | 94Gi used | 861Mi free | 27Gi available'; after 'echo 3 > /proc/sys/vm/drop_caches' free rose from 861Mi to 28Gi with no performance change. Guidance: 'Use free -h and focus on available memory. Do not rely on free memory alone.'",
+   "detail": "Model bytes on disk grow in memory (24 GB -> 27 GB; 86 GB -> 94 GB) due to context buffers; ~7 GB per Super slot.",
+   "confidence": "medium",
+   "source_url": "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/"
+  },
+  {
+   "claim": "Driver regression: with nvidia-driver-open-590.48.01 (CUDA 13.1) roughly 93 GB of UMA memory stayed resident after a vLLM process (98.7 GB) exited, even after 60 minutes; not reproduced on 580.126.09 (CUDA 13.0); advice was to roll back to 580.126.09 or move to 595.45.04. vm.vfs_cache_pressure=200 did not help; 'shared system memory' seen after exit is normally Linux page cache.",
+   "detail": "Forum thread 'How to automatically free shared system memory'. Commands: sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' or sudo sysctl -w vm.drop_caches=3.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/how-to-automatically-free-shared-system-memory/363178"
+  },
+  {
+   "claim": "Oversubscription failure modes observed on GB10: (a) kernel OOM killer: 'Killed process 5337 (rpc-server) total-vm:182456976kB, anon-rss:388kB, file-rss:49116kB' on an Asus GX10 (GB10) with '119Gi' RAM and '15Gi' swap, kernel 6.17.0-1008-nvidia; (b) 'CUDA error: out of memory' at cudaGraphInstantiate; (c) whole-system unresponsiveness requiring hard reboot when swap thrashes (natolambert guide).",
+   "detail": "natolambert's guide: 'GPU memory exhaustion becomes system-wide RAM depletion', swap is 'typically enabled' by default and they recommend sudo swapoff -a and commenting swap out of /etc/fstab; keep >16 GB available before training.",
+   "confidence": "medium",
+   "source_url": "https://github.com/ggml-org/llama.cpp/issues/20315"
+  },
+  {
+   "claim": "vLLM's --gpu-memory-utilization on DGX Spark is a fraction of the single unified pool: 'CPU, GPU, operating system, container runtime, model weights, and KV cache share one 128 GB memory pool'; the official vLLM blog example uses --gpu-memory-utilization 0.85 --max-model-len 131072 --max-num-seqs 4 and says to leave room for OS, page cache, container runtime and KV growth.",
+   "detail": "Community guidance: never above 0.90, 0.85-0.87 safe (conselara); at 0.85 about 76 GB is pinned for KV (vlaicu.io); one poster's default vLLM breakdown was weights 19 GB + runtime 3 GB + torch.compile/CUDA graphs 13 GB + preallocated KV 89 GB = 117 GB, reducible with --enforce-eager --gpu-memory-utilization 0.2 --max-model-len 8192 --kv-cache-dtype fp8 (Memory Creep thread, which also suggests vm.swappiness=1 and vm.dirty_bytes=268435456).",
+   "confidence": "high",
+   "source_url": "https://vllm-project.github.io/2026/06/01/vllm-dgx-spark.html"
+  },
+  {
+   "claim": "NVIDIA DGX Spark playbooks (build.nvidia.com) troubleshooting: 'CUDA out of memory' -> reduce --max-model-len and --max-num-seqs, lower --gpu-memory-utilization; 'Memory pressure within capacity' on DGX Spark -> UMA buffer cache not released, run sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'. Speculative-decoding playbook: reduce kv_cache_free_gpu_memory_fraction to 0.9. Multi-agent chatbot README: 'This demo uses ~120 out of the 128GB of DGX Spark's memory by default.'",
+   "detail": "Docker flags used across playbooks: --ulimit memlock=-1 --ulimit stack=67108864 --ipc=host (default 64 MB shm is insufficient for PyTorch).",
+   "confidence": "high",
+   "source_url": "https://build.nvidia.com/spark/vllm/troubleshooting"
+  },
+  {
+   "claim": "ComfyUI on DGX Spark effectively halves usable memory (~64 GB of 128 GB) because safetensors are mmap-loaded into 'CPU' RAM then copied to 'VRAM' which is the same RAM; an NVIDIA developer confirmed on Jan 8, 2026: 'ComfyUI might be using mmap to pin the model into CPU memory before passing to GPU... the unified memory architecture effectively halves your usable memory.' Workarounds: --disable-mmap, FP8 models, no-mmap loader PRs.",
+   "detail": "Generalizes to any framework that stages weights in host RAM and then cudaMalloc+copies on UMA.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/buyers-beware-dgx-spark-limited-to-64gb-in-comfyui/356573"
+  },
+  {
+   "claim": "CUDA for Tegra (integrated GPU) memory model table: 'Device memory' (cudaMalloc) is 'Not directly accessible' by the CPU; pageable host memory is GPU-accessible only 'if cudaDeviceProp::pageableMemoryAccess is 1'; pinned host memory (cudaMallocHost/cudaHostAlloc) is CPU-cached on CC>=7.2 and GPU-uncached; unified memory (cudaMallocManaged) is cached on both when concurrentManagedAccess is set.",
+   "detail": "This is the general iGPU model NVIDIA documents; applicability to GB10 follows from the Porting Guide statement that cudaMalloc memory is not CPU-coherent, but GB10-specific caching/attribute values were not found.",
+   "confidence": "medium",
+   "source_url": "https://docs.nvidia.com/cuda/cuda-for-tegra-appnote/index.html"
+  },
+  {
+   "claim": "cudaDeviceProp fields to introspect UMA capability: integrated ('Device is integrated as opposed to discrete'), pageableMemoryAccess ('Device supports coherently accessing pageable memory without calling cudaHostRegister on it'), pageableMemoryAccessUsesHostPageTables ('Device accesses pageable memory via the host's page tables'), concurrentManagedAccess ('Device can coherently access managed memory concurrently with the CPU'), directManagedMemAccessFromHost ('Host can directly access managed memory on the device without migration.'), totalGlobalMem ('Global memory available on device in bytes').",
+   "detail": "CUDA Programming Guide: 'Hardware-coherent systems such as NVIDIA Grace Hopper offer a logically combined page table for both CPUs and GPUs'; cudaDevAttrDirectManagedMemAccessFromHost is set for NVLink-connected hardware-coherent systems; Linux HMM requires kernel 6.1.24+/6.2.11+/6.3+, CC 7.5+, driver 535+ with Open Kernel Modules. Actual GB10 values were not captured in any source.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/cuda/cuda-runtime-api/structcudaDeviceProp.html"
+  },
+  {
+   "claim": "DGX Spark Porting Guide 'Optimization' page repeats the UMA guidance ('consider the memory that can be reclaimed from the OS and not rely solely on the values returned by cudaMemGetInfo') and links to the known-issues anchor; it also gives the drop_caches command.",
+   "detail": "Confirms the known-issues section is the canonical 'guidance' page NVIDIA refers ecosystem partners to.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html"
+  },
+  {
+   "claim": "Third-party LLM stack guide asserts CUDA sees ~121.7 GiB (124,610 MiB) of the 128 GB (131,072 MiB), recommends a 3 GiB safety margin for allocator overhead and per-tier --gpu-memory-utilization of 0.50-0.65 (4B-30B), 0.60-0.75 (30B-35B FP8), 0.70-0.85 (120B+ MoE).",
+   "detail": "Formula: 'CUDA_TOTAL = 124610 MiB; SAFETY_MARGIN = 3072 MiB; cuda_free = nvidia_smi_free - overhead - SAFETY_MARGIN; utilization = min(0.85, max(0.60, cuda_free / CUDA_TOTAL))'. Low confidence: the 124,610 MiB figure conflicts with the 122,570 MiB / 125513944 kB figures elsewhere and the author does not state the measuring command.",
+   "confidence": "low",
+   "source_url": "https://dredyson.com/5-critical-mistakes-everyone-makes-with-running-a-full-llm-stack-on-dgx-spark-gb10-your-application-litellm-llama-swap-vllm-llama-cpp-ollama-and-how-to-fix-them-before-you-lose-your-mind/"
+  },
+  {
+   "claim": "nv-monitor (github.com/wentbackward/nv-monitor) claims to correctly handle HugePages on DGX Spark 'where MemAvailable is inaccurate' and shows a 'unified memory' label instead of a VRAM bar.",
+   "detail": "Consistent with NVIDIA's sample overriding MemAvailable with HugePages_Free*Hugepagesize when HugePages_Total != 0.",
+   "confidence": "low",
+   "source_url": "https://github.com/wentbackward/nv-monitor"
+  },
+  {
+   "claim": "maxdiffusion's DGX Spark doc recommends adding a permanent 64 GB swapfile ('for a machine with 119GB of RAM') via fallocate/mkswap/swapon and /etc/fstab, the opposite of the disable-swap advice in LLM inference guides.",
+   "detail": "Illustrates the two camps: training/diffusion users add swap to avoid OOM crashes; inference users disable swap to avoid decode collapse.",
+   "confidence": "low",
+   "source_url": "https://github.com/AI-Hypercomputer/maxdiffusion/blob/main/docs/dgx_spark.md"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Detect a GB10 / DGX Spark unified-memory GPU",
+   "how": "nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader shows 'NVIDIA GB10' and '12.1'; cudaDeviceProp.integrated == 1 (ggml/Ollama classify it as iGPU); PCI id seen as 000f:01:00.0; lscpu shows 20 Arm cores (Cortex-X925/A725); /proc/meminfo MemTotal ~119.7-121.7 GiB (e.g. 'MemTotal: 125513944 kB').",
+   "exact_strings": [
+    "NVIDIA GB10",
+    "compute=12.1",
+    "type=iGPU",
+    "000f:01:00.0",
+    "MemTotal: 125513944 kB"
+   ],
+   "source_url": "https://github.com/ollama/ollama/issues/14621"
+  },
+  {
+   "what": "nvidia-smi cannot report device memory on GB10 (expected, not a fault)",
+   "how": "Plain nvidia-smi shows 'Not Supported' in the Memory-Usage column; nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv returns '[N/A]'. Per-process memory in the Processes table / --query-compute-apps still populates.",
+   "exact_strings": [
+    "Memory-Usage: Not Supported",
+    "Not Supported",
+    "[N/A]"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "NVML memory query unsupported on GB10 (breaks tools that hard-fail)",
+   "how": "nvmlDeviceGetMemoryInfo returns NVML_ERROR_NOT_SUPPORTED; match these strings in k8s-device-plugin, GPU Operator, DRA driver, HAMi logs.",
+   "exact_strings": [
+    "error getting device memory: Not Supported",
+    "error getting memory info for device 0: Not Supported",
+    "nvml get memory error ret=Not Supported",
+    "panic: 0",
+    "error building Device: error getting device memory: Not Supported"
+   ],
+   "source_url": "https://github.com/NVIDIA/k8s-device-plugin/issues/1482"
+  },
+  {
+   "what": "Correct allocatable-memory estimate on UMA per NVIDIA guidance",
+   "how": "Parse /proc/meminfo: MemAvailable (+ SwapFree as reclaimable); if HugePages_Total != 0 use HugePages_Free * Hugepagesize and treat swap as 0. Do not use cudaMemGetInfo free or MemFree as the headroom figure.",
+   "exact_strings": [
+    "MemAvailable:",
+    "SwapFree:",
+    "HugePages_Total:",
+    "HugePages_Free:",
+    "Hugepagesize:"
+   ],
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "what": "Page cache holding memory (apparent OOM while within capacity)",
+   "how": "free -h shows small 'free' but large 'buff/cache' with 'available' still high, while a CUDA app reports out-of-memory; NVIDIA workaround is drop_caches then restart the app.",
+   "exact_strings": [
+    "CUDA out of memory",
+    "Memory pressure within capacity",
+    "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'"
+   ],
+   "source_url": "https://build.nvidia.com/spark/vllm/troubleshooting"
+  },
+  {
+   "what": "Swap present / in use on a GB10 (performance collapse risk)",
+   "how": "Read /proc/meminfo SwapTotal/SwapFree or swapon --show; two GB10 reports show ~15-16 GiB swap configured by default (free_swap 15.7 GiB; '15Gi' swap). Any nonzero swap-used during inference correlates with 43-95% token/s loss.",
+   "exact_strings": [
+    "SwapTotal:",
+    "SwapFree:",
+    "free_swap=\"15.7 GiB\""
+   ],
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/4113"
+  },
+  {
+   "what": "Memory pressure via PSI",
+   "how": "cat /proc/pressure/memory; 'full avg10' approaching 0.8+ was observed during thrash on GB10 (sparkview CRITICAL state).",
+   "exact_strings": [
+    "/proc/pressure/memory",
+    "some avg10=",
+    "full avg10="
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/sparkview-gpu-monitor-tool-with-gb10-aware-unified-memory-handling/366877"
+  },
+  {
+   "what": "Kernel OOM killer terminated a GPU process",
+   "how": "dmesg / journalctl -k for 'Out of memory: Killed process' lines; on GB10 the victim is often the inference server (e.g. rpc-server, vllm, ollama runner).",
+   "exact_strings": [
+    "Killed process",
+    "total-vm:",
+    "anon-rss:",
+    "Out of memory"
+   ],
+   "source_url": "https://github.com/ggml-org/llama.cpp/issues/20315"
+  },
+  {
+   "what": "Known-bad driver for UMA memory release",
+   "how": "Compare driver version string; nvidia-driver-open-590.48.01 (CUDA 13.1) reportedly does not release UMA memory after CUDA process exit; 580.126.09 and 595.45.04 reported fine.",
+   "exact_strings": [
+    "590.48.01",
+    "580.126.09",
+    "595.45.04",
+    "nvidia-driver-open-590"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/how-to-automatically-free-shared-system-memory/363178"
+  },
+  {
+   "what": "llama.cpp/Ollama UMA memory path active or falling back",
+   "how": "ggml debug/error logs indicate whether MemAvailable was used; env GGML_CUDA_ENABLE_UNIFIED_MEMORY forces UMA behavior.",
+   "exact_strings": [
+    "/proc/meminfo reading failed, using cudaMemGetInfo",
+    "cudaMemGetInfo failed",
+    "final available_memory_kb",
+    "GGML_CUDA_ENABLE_UNIFIED_MEMORY"
+   ],
+   "source_url": "https://github.com/ggml-org/llama.cpp/pull/17368"
+  },
+  {
+   "what": "Ollama load failure due to insufficient available unified memory",
+   "how": "journalctl -u ollama shows gpu memory available far below model size followed by runner termination.",
+   "exact_strings": [
+    "llama runner process has terminated with exit code -1",
+    "gpu memory",
+    "available=\"11.9 GiB\""
+   ],
+   "source_url": "https://github.com/NVIDIA/NemoClaw/issues/4113"
+  },
+  {
+   "what": "DRA driver publishing unified memory type without capacity",
+   "how": "Newer dra-driver-nvidia-gpu (>= v0.4.0) logs a warning and exposes memoryType=unified with no memoryBytes; older versions fail.",
+   "exact_strings": [
+    "publishing memoryType='unified' without memory capacity",
+    "memoryType: \"unified\""
+   ],
+   "source_url": "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/pull/1121"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "GB10-UMA-NVSMI-MEM-NA",
+   "severity": "INFO",
+   "trigger": "GPU name contains 'GB10' (or cudaDeviceProp.integrated==1) AND nvidia-smi memory.total/used returns '[N/A]' or the table shows 'Not Supported'.",
+   "evidence_template": "nvidia-smi memory fields report '{value}' on {gpu_name}. This is expected on unified-memory iGPUs (no dedicated framebuffer); using /proc/meminfo MemAvailable={mem_available_gib} GiB of MemTotal={mem_total_gib} GiB instead.",
+   "why_it_matters": "Prevents false 'GPU memory unreadable' failures and tells the user which number is authoritative.",
+   "next_steps": [
+    "Read /proc/meminfo (MemAvailable, SwapFree, HugePages_*) per NVIDIA guidance.",
+    "Use free -h 'available' column, DGX Dashboard (http://localhost:11000), or nvidia-smi --query-compute-apps for per-process usage.",
+    "Do not treat cudaMemGetInfo free as allocatable headroom."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-faq/347344"
+   ]
+  },
+  {
+   "id": "GB10-UMA-MEMTOTAL-GAP",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND MemTotal between ~118 and ~123 GiB.",
+   "evidence_template": "MemTotal is {mem_total_gib} GiB, not 128 GiB: 128 GB LPDDR5X = 119.2 GiB decimal-to-binary, minus firmware/display reservation (Display Reserved Memory default 2 GB, BIOS-adjustable to 4 GB).",
+   "why_it_matters": "Users file bugs like 'DGX Spark can only use 119GB'; the gap is units plus carve-out, not a fault.",
+   "next_steps": [
+    "Report capacity in GiB consistently.",
+    "If display memory matters, check BIOS Display Reserved Memory setting (2GB default / 4GB)."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/what-is-the-ram-value-shown-on-the-dgx-dashboard-it-doesnt-seem-to-match-free/350714",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-can-only-use-119gb-of-memory-running-comfyui-so-it-is-killed-isnt-there-128gb-of-memory-why-cant-it-be-used/352962"
+   ]
+  },
+  {
+   "id": "GB10-UMA-LOW-AVAILABLE",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND MemAvailable < 16 GiB (CRIT if < 8 GiB) while a CUDA process is running.",
+   "evidence_template": "MemAvailable={mem_available_gib} GiB of {mem_total_gib} GiB. On unified memory, GPU allocation exhaustion becomes system-wide RAM exhaustion; the observed failure mode is OOM-killer or system freeze rather than a clean cudaErrorMemoryAllocation.",
+   "why_it_matters": "Community guidance recommends keeping >16 GB available; below that, swap thrash and unresponsiveness are reported.",
+   "next_steps": [
+    "Lower vLLM --gpu-memory-utilization (official example 0.85; community: never >0.90) or reduce --max-model-len/--max-num-seqs.",
+    "Flush page cache: sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' and restart the app.",
+    "Check for duplicated weights (mmap + device copy) in loaders such as ComfyUI (--disable-mmap)."
+   ],
+   "sources": [
+    "https://github.com/natolambert/dgx-spark-setup",
+    "https://vllm-project.github.io/2026/06/01/vllm-dgx-spark.html",
+    "https://forums.developer.nvidia.com/t/buyers-beware-dgx-spark-limited-to-64gb-in-comfyui/356573"
+   ]
+  },
+  {
+   "id": "GB10-UMA-SWAP-ACTIVE",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND (SwapTotal - SwapFree) > 0 during a GPU workload, or /proc/pressure/memory full avg10 > 0.1.",
+   "evidence_template": "Swap in use: {swap_used_gib} GiB of {swap_total_gib} GiB; PSI memory full avg10={psi_full}. On GB10, 6.7 GiB swapped cost 43% tok/s and 13 GiB cost 95%.",
+   "why_it_matters": "Unified memory paging silently destroys decode throughput; cudaMemGetInfo will not warn because it ignores swap.",
+   "next_steps": [
+    "Reduce model/KV footprint or --gpu-memory-utilization.",
+    "For inference boxes consider sudo swapoff -a (and comment swap out of /etc/fstab); training users may prefer larger swap instead.",
+    "Set vm.swappiness=1 if swap must stay enabled."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/nvml-support-for-dgx-spark-grace-blackwell-unified-memory-community-solution/358869",
+    "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886",
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "GB10-UMA-PAGECACHE-HOLD",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND (MemFree < 4 GiB) AND (MemAvailable - MemFree) > 20 GiB (large reclaimable cache), especially after a model download or container stop.",
+   "evidence_template": "free={mem_free_gib} GiB but available={mem_available_gib} GiB: {cache_gib} GiB is page cache competing with the GPU for the same pool. cudaMemGetInfo may under-report allocatable memory.",
+   "why_it_matters": "NVIDIA lists this as the cause of 'memory issues even though within capacity' on UMA.",
+   "next_steps": [
+    "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' then restart the application (NVIDIA workaround).",
+    "Alternative: sudo sysctl -w vm.drop_caches=3."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-faq/347344",
+    "https://build.nvidia.com/spark/vllm/troubleshooting"
+   ]
+  },
+  {
+   "id": "GB10-UMA-DRIVER-590-LEAK",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND driver version == 590.48.01.",
+   "evidence_template": "Driver {driver_version} has a community-reported regression where unified memory is not released after CUDA process exit (~93 GB stuck after vLLM exit).",
+   "why_it_matters": "Leads to repeated OOM on the next model load without any process holding memory.",
+   "next_steps": [
+    "Roll back to 580.x (580.126.09 / 580.159.03 per release notes) or move to 595.45.04+.",
+    "Verify with free -h after killing all CUDA processes."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/how-to-automatically-free-shared-system-memory/363178",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+   ]
+  },
+  {
+   "id": "GB10-K8S-DEVICE-PLUGIN-OLD",
+   "severity": "CRIT",
+   "trigger": "GB10 node AND nvidia-device-plugin pod log contains 'error getting device memory: Not Supported' OR device plugin image tag < v0.17.4.",
+   "evidence_template": "k8s-device-plugin {version} on GB10 fails: '{log_line}'. nvmlDeviceGetMemoryInfo is unsupported on unified memory; fixed in v0.17.4 (PR #1374).",
+   "why_it_matters": "The node advertises zero nvidia.com/gpu resources and GPU pods cannot schedule.",
+   "next_steps": [
+    "Upgrade to k8s-device-plugin >= v0.17.4 or a GPU Operator release bundling it.",
+    "Expect no nvidia.com/gpu.memory GFD label on GB10; do not build scheduling rules on it.",
+    "Verify: kubectl get node <node> -o jsonpath='{.status.capacity.nvidia\\.com/gpu}' returns 1."
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/k8s-device-plugin/issues/1482",
+    "https://github.com/NVIDIA/k8s-device-plugin/pull/1374",
+    "https://github.com/NVIDIA/gpu-operator/issues/1794"
+   ]
+  },
+  {
+   "id": "GB10-K8S-DRA-OLD",
+   "severity": "WARN",
+   "trigger": "GB10 node AND dra-driver-nvidia-gpu log contains 'error getting memory info for device 0: Not Supported' OR version < v0.4.0.",
+   "evidence_template": "DRA driver {version} cannot enumerate GB10; v0.4.0 (PR #1121) publishes memoryType='unified' with no memoryBytes.",
+   "why_it_matters": "DRA-based GPU allocation fails on Spark nodes until upgraded; consumers must not require a memory capacity attribute.",
+   "next_steps": [
+    "Upgrade dra-driver-nvidia-gpu to >= v0.4.0.",
+    "Select GB10 devices by memoryType == 'unified' rather than by memoryBytes."
+   ],
+   "sources": [
+    "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/1073",
+    "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/pull/1121"
+   ]
+  },
+  {
+   "id": "GB10-K8S-HAMI-PRECONFIG",
+   "severity": "WARN",
+   "trigger": "GB10 node AND HAMi device plugin log contains 'nvml get memory error ret=Not Supported' or HAMi version <= v2.7.1, or devicePlugin.preConfiguredDeviceMemory unset.",
+   "evidence_template": "HAMi {version} on GB10: '{log_line}'. Fix (PR #1637) requires devicePlugin.preConfiguredDeviceMemory (e.g. 131072 MiB) or the device is skipped.",
+   "why_it_matters": "Without the value HAMi either panics (old) or silently ignores the GPU (new).",
+   "next_steps": [
+    "Upgrade HAMi past PR #1637 and set devicePlugin.preConfiguredDeviceMemory in Helm values (MiB)."
+   ],
+   "sources": [
+    "https://github.com/Project-HAMi/HAMi/issues/1511",
+    "https://github.com/Project-HAMi/HAMi/pull/1637"
+   ]
+  },
+  {
+   "id": "GB10-UMA-HUGEPAGES-OVERRIDE",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND HugePages_Total != 0.",
+   "evidence_template": "HugePages_Total={hp_total} (Hugepagesize={hp_size} kB): per NVIDIA's UMA guidance, allocatable memory = HugePages_Free*Hugepagesize = {hp_avail_gib} GiB and swap reclaim is 0 (hugetlbfs pages are not swappable); MemAvailable is not authoritative here.",
+   "why_it_matters": "Tools that read MemAvailable will overstate headroom on hugepage-configured systems.",
+   "next_steps": [
+    "Compute headroom from HugePages_Free * Hugepagesize.",
+    "Confirm the hugepage reservation is intended."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://github.com/wentbackward/nv-monitor"
+   ]
+  },
+  {
+   "id": "GB10-OOM-KILLER-EVENT",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND dmesg/journalctl -k contains 'Out of memory: Killed process' within the diagnostic window.",
+   "evidence_template": "Kernel OOM killer terminated PID {pid} ({comm}) total-vm {total_vm}; on unified memory this is how GPU oversubscription usually surfaces (no cudaErrorMemoryAllocation).",
+   "why_it_matters": "Explains sudden inference-server death and points at memory sizing rather than a driver crash.",
+   "next_steps": [
+    "Compare model + KV footprint to MemAvailable before load; keep >= 8-16 GiB headroom.",
+    "Check swap state and PSI; consider disabling swap for inference hosts.",
+    "Flush page cache before reloading."
+   ],
+   "sources": [
+    "https://github.com/ggml-org/llama.cpp/issues/20315",
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "GB10-LLM-FIT-ESTIMATE",
+   "severity": "INFO",
+   "trigger": "GB10 detected; compute LLM fit using MemAvailable (not cudaMemGetInfo, not 128 GB).",
+   "evidence_template": "Usable now: MemAvailable={mem_available_gib} GiB minus reserve {reserve_gib} GiB = {usable_gib} GiB. Weight bytes: FP16 ~2 B/param, FP8 ~1 B/param, 4-bit/NVFP4 ~0.5 B/param; add KV cache, runtime (~3 GB) and compile/graph overhead (up to ~13 GB for vLLM torch.compile).",
+   "why_it_matters": "Marketing '128 GB' overstates practical capacity: ~119.7-121.7 GiB visible, ~115 GB practical inference ceiling, and vLLM preallocates KV by --gpu-memory-utilization.",
+   "next_steps": [
+    "Reserve at least 5-8 GB (community) to 16 GB (conservative) for OS/page cache/runtime.",
+    "For vLLM start at --gpu-memory-utilization 0.85 and go down; use --kv-cache-dtype fp8 and smaller --max-model-len to free tens of GB.",
+    "Prefer MoE / NVFP4 models: decode is bound by 273 GB/s bandwidth."
+   ],
+   "sources": [
+    "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists",
+    "https://spark.enverge.ai/blog/what-fits-in-128gb-dgx-spark",
+    "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886",
+    "https://vllm-project.github.io/2026/06/01/vllm-dgx-spark.html"
+   ]
+  },
+  {
+   "id": "GB10-UMA-CUDAMALLOC-NOT-CPU-COHERENT",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND (RDMA/GPUDirect tooling present: nvidia-peermem module, GDRCopy, dma-buf users) or developer mode.",
+   "evidence_template": "On DGX Spark cudaMalloc memory 'cannot be coherently accessed by the CPU complex, nor by I/O peripherals like PCI Express devices'; nvidia-peermem, dma-buf and GDRCopy are unsupported. Use cudaHostAlloc buffers + ib_reg_mr for RDMA.",
+   "why_it_matters": "Unified memory does not mean cudaMalloc pointers are CPU-readable; code assuming Grace-Hopper-style coherent device allocations will fault or fall back to slow paths.",
+   "next_steps": [
+    "Query CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_SUPPORTED and CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORT and implement fallbacks.",
+    "Use cudaMallocManaged or cudaHostAlloc for CPU-shared buffers."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html",
+    "https://docs.nvidia.com/cuda/cuda-for-tegra-appnote/index.html"
+   ]
+  },
+  {
+   "id": "GB10-UMA-TOOL-USES-CUDAMEMGETINFO",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND a framework reports GPU free/total via cudaMemGetInfo (torch.cuda.mem_get_info, older llama.cpp < Nov 20 2025, AI Workbench-style dashboards) that disagrees with MemAvailable by > 10%.",
+   "evidence_template": "{tool} reports free={tool_free_gib} GiB while MemAvailable={mem_available_gib} GiB. Per NVIDIA, cudaMemGetInfo 'does not account for memory that could potentially be reclaimed from SWAP' and page cache, so it can under-report allocatable memory (this is a likely cause of the ~56 GB AI Workbench report).",
+   "why_it_matters": "Users conclude the GPU only has ~56-64 GB; frameworks that size caches from cudaMemGetInfo under-allocate.",
+   "next_steps": [
+    "Upgrade llama.cpp/Ollama to builds with PR #17368 (UMA MemAvailable path).",
+    "Flush caches and re-check; compare with free -h available.",
+    "Set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 if a build does not auto-detect integrated."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://github.com/ggml-org/llama.cpp/pull/17368",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-shows-only-56gb-vram-inside-ai-workbench-128gb-expected/351441"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Authoritative memory readout on GB10 (NVIDIA-recommended fields)",
+   "command": "grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|Shmem|SwapTotal|SwapFree|HugePages_Total|HugePages_Free|Hugepagesize):' /proc/meminfo",
+   "notes": "Allocatable ~= MemAvailable (+SwapFree reclaimable). If HugePages_Total != 0: available = HugePages_Free*Hugepagesize, swap = 0. Example real values: MemTotal: 125513944 kB, MemAvailable: 121519624 kB.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "Human-readable check NVIDIA points users to",
+   "command": "free -h",
+   "notes": "Read the 'available' column, not 'free'. Observed: 'Mem: 121Gi total 94Gi used 861Mi free ... 27Gi available'. NVIDIA FAQ also suggests top/htop.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-faq/347344"
+  },
+  {
+   "context": "One-liner used by the community as an nvidia-smi replacement",
+   "command": "watch -n1 \"awk '/MemTotal/{t=\\$2}/MemAvailable/{a=\\$2}END{printf \\\"Used: %.1f GB / %.1f GB\\n\\\",(t-a)/1048576,t/1048576}' /proc/meminfo\"",
+   "notes": "Used = MemTotal - MemAvailable.",
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "context": "Confirm nvidia-smi memory is unsupported (expected on GB10)",
+   "command": "nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used,memory.free --format=csv",
+   "notes": "memory.* return '[N/A]'; name 'NVIDIA GB10', compute_cap 12.1. Plain nvidia-smi shows 'Not Supported' in Memory-Usage.",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "context": "Per-process GPU memory (still works on GB10 per NVIDIA known issue)",
+   "command": "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv",
+   "notes": "'per-process GPU memory is listed' even though device Memory-Usage is Not Supported.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "NVIDIA workaround for page cache holding unified memory",
+   "command": "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'",
+   "notes": "Then restart the application. Alternative: sudo sysctl -w vm.drop_caches=3. Appears in known-issues, FAQ, porting guide and every build.nvidia.com playbook troubleshooting page.",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "Swap state",
+   "command": "swapon --show; grep -E '^Swap' /proc/meminfo; cat /proc/swaps",
+   "notes": "Two GB10 reports show ~15-16 GiB swap present by default (free_swap 15.7 GiB; '15Gi'). Inference guides recommend 'sudo swapoff -a' and commenting swap in /etc/fstab; verify with 'swapon --show' printing nothing.",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "Memory pressure (PSI) used by sparkview to classify LOW/MOD/HIGH/CRITICAL",
+   "command": "cat /proc/pressure/memory",
+   "notes": "full avg10 of 0.81 observed during thrash on GB10.",
+   "source_url": "https://forums.developer.nvidia.com/t/sparkview-gpu-monitor-tool-with-gb10-aware-unified-memory-handling/366877"
+  },
+  {
+   "context": "Detect OOM-killer events",
+   "command": "journalctl -k --since -1h | grep -iE 'out of memory|killed process'",
+   "notes": "Example: 'Killed process 5337 (rpc-server) total-vm:182456976kB, anon-rss:388kB, file-rss:49116kB' on kernel 6.17.0-1008-nvidia.",
+   "source_url": "https://github.com/ggml-org/llama.cpp/issues/20315"
+  },
+  {
+   "context": "Kernel tuning suggested in community memory-creep thread",
+   "command": "sudo sysctl -w vm.swappiness=1; sudo sysctl -w vm.dirty_bytes=268435456",
+   "notes": "Community, not NVIDIA guidance. vm.vfs_cache_pressure=200 was reported ineffective for the 590.48.01 leak.",
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "context": "Programmatic CUDA-side view (what frameworks see)",
+   "command": "python3 -c \"import torch;f,t=torch.cuda.mem_get_info();p=torch.cuda.get_device_properties(0);print(f/2**30,t/2**30,p.name,p.total_mem/2**30,getattr(p,'is_integrated',None))\"",
+   "notes": "cudaMemGetInfo-based; free excludes swap-reclaimable and cache-reclaimable memory per NVIDIA, so it under-reports. Compare against MemAvailable. deviceQuery reported ~122,570 MB total global memory on GB10 (one blog).",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "context": "deviceQuery inside NGC CUDA container",
+   "command": "docker run --rm --gpus all nvidia/cuda:13.0.0-devel-ubuntu24.04 bash -lc 'deviceQuery | grep -E \"CUDA Capability|total|memory:\"'",
+   "notes": "Expected: Capability 12.1, ~122,570 MB total global memory.",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "context": "Force llama.cpp/Ollama UMA memory accounting",
+   "command": "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 llama-server ...",
+   "notes": "ggml uses MemAvailable for 'free' when cudaDeviceProp.integrated>0 or this env var is set (PR #17368, merged Nov 20, 2025).",
+   "source_url": "https://github.com/ggml-org/llama.cpp/pull/17368"
+  },
+  {
+   "context": "Ollama GPU detection line to grep",
+   "command": "journalctl -u ollama | grep -E 'inference compute|system memory|gpu memory'",
+   "notes": "Look for type=iGPU total=\"119.7 GiB\" available=... and system memory total=... free_swap=...",
+   "source_url": "https://github.com/ollama/ollama/issues/14621"
+  },
+  {
+   "context": "vLLM sizing on unified memory",
+   "command": "vllm serve <model> --gpu-memory-utilization 0.85 --max-model-len 131072 --max-num-seqs 4",
+   "notes": "Official vLLM blog example for DGX Spark; fraction applies to the whole shared pool. Lower to 0.2-0.4 with --enforce-eager --kv-cache-dtype fp8 --max-model-len 8192 for single-user use. Community ceiling: never above 0.90.",
+   "source_url": "https://vllm-project.github.io/2026/06/01/vllm-dgx-spark.html"
+  },
+  {
+   "context": "Docker flags used by NVIDIA playbooks on Spark",
+   "command": "docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 ...",
+   "notes": "--ipc=host avoids the 64 MB default /dev/shm limit for PyTorch multi-process.",
+   "source_url": "https://deepwiki.com/NVIDIA/dgx-spark-playbooks/8.3-memory-management"
+  },
+  {
+   "context": "Kubernetes: verify GPU advertised on GB10 node after device plugin >= v0.17.4",
+   "command": "kubectl get node <node> -o jsonpath='{.status.capacity.nvidia\\.com/gpu}{\"\\n\"}'",
+   "notes": "Returns 1. No nvidia.com/gpu.memory label is generated on GB10.",
+   "source_url": "https://collabnix.com/nvidia-dgx-spark-kubernetes-run-gpu-workloads-on-the-gb10-grace-blackwell-superchip/"
+  },
+  {
+   "context": "HAMi on GB10",
+   "command": "helm upgrade hami ... --set devicePlugin.preConfiguredDeviceMemory=131072",
+   "notes": "MiB value used as fallback when nvmlDeviceGetMemoryInfo returns NOT_SUPPORTED; default 0 skips the device.",
+   "source_url": "https://github.com/Project-HAMi/HAMi/pull/1637"
+  },
+  {
+   "context": "Community NVML shim for tools that hard-require nvmlDeviceGetMemoryInfo",
+   "command": "git clone https://github.com/CINOAdam/nvml-unified-shim && cd nvml-unified-shim && make && LD_PRELOAD=./libnvml-unified.so <app>",
+   "notes": "PoC v0.1; implements 4 NVML functions; NVML_SHIM_DEBUG=1 for logging.",
+   "source_url": "https://github.com/CINOAdam/nvml-unified-shim"
+  },
+  {
+   "context": "Community DGX Spark memory dashboard",
+   "command": "git clone https://github.com/hectorTSH/dgx-spark-memory-dashboard && cd dgx-spark-memory-dashboard && python3 scripts/run.py --demo",
+   "notes": "Serves http://127.0.0.1:7474/; MemAvailable-based, Ollama /api/ps and Docker stats attribution.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-memory-dashboard-live-gib-occupancy-map-can-i-load-next/381279"
+  },
+  {
+   "context": "ComfyUI double-load workaround on UMA",
+   "command": "python main.py --disable-mmap",
+   "notes": "Avoids mmap'd safetensors staying resident alongside the device copy (halves usable memory otherwise).",
+   "source_url": "https://forums.developer.nvidia.com/t/buyers-beware-dgx-spark-limited-to-64gb-in-comfyui/356573"
+  }
+ ],
+ "open_questions": [
+  "Root cause of the AI Workbench '~56 GB VRAM' display was never established (thread unresolved; no command output posted). Hypothesis: it showed cudaMemGetInfo free (= MemAvailable at that moment) or a container limit. Unverified.",
+  "What nvidia-smi -q reports for 'Addressing Mode' on GB10 (HMM / ATS / None) and the actual values of cudaDevAttrPageableMemoryAccess, pageableMemoryAccessUsesHostPageTables, concurrentManagedAccess and directManagedMemAccessFromHost on GB10 were not found in any source; NVIDIA GB10 docs do not name ATS or HMM (only a third-party blog claims ATS).",
+  "Default swap configuration of DGX OS 7 on DGX Spark: two independent GB10 reports show ~15-16 GiB swap present (free_swap 15.7 GiB; '15Gi'), and one guide says swap is 'typically enabled', but whether it is a swapfile or zram, its exact default size, and whether it varies by DGX OS release is unconfirmed.",
+  "MemTotal discrepancy: Nov 2025 systems show 125513944 kB (119.7 GiB; matches Ollama total 119.7 GiB and deviceQuery ~122,570 MiB), while 2026 reports show 121.7 GiB (Ollama 'system memory total', sparkview, dredyson's 124,610 MiB). Possibly a firmware/kernel change in reserved memory (the July 2026 release added a 2 GB/4 GB Display Reserved Memory toggle); unverified.",
+  "Whether nvmlDeviceGetMemoryInfo on newer drivers (590/595) returns a MemTotal-like value instead of NVML_ERROR_NOT_SUPPORTED (sparkview claims 'total ≈ MemTotal'; all Kubernetes reports on 580.x/595.58 say Not Supported).",
+  "What the July 2026 driver's 'User feedback ... when the system encounters memory pressure' looks like (log string, notification, cudaError) is undocumented.",
+  "Exact total reported by cudaMemGetInfo / cudaDeviceProp.totalGlobalMem on GB10 (122,570 MiB vs 124,610 MiB claims) needs a direct measurement.",
+  "torch.cuda.mem_get_info -> cudaMemGetInfo mapping could not be confirmed from PyTorch docs in this session (page 404); treat as standard PyTorch behavior but verify.",
+  "NVIDIA custhelp KB articles a_id 5728 'Unexpected Available Memory Reporting on DGX Spark' and 5775 'When I run Spark's nvidia-smi ... Not Supported' returned HTTP 403 / 'Technical Difficulties'; only a search snippet was seen ('DGX Spark users assessing free memory using the cudaMemGetInfo API may see results that are smaller than expected due to the unified memory architecture (UMA) of the NVIDIA GB10 Grace Blackwell Superchip').",
+  "No sources were found for RTX Spark / N1X on Windows on Arm memory reporting (Task Manager, WDDM shared memory, nvidia-smi on Windows); everything above is Linux/DGX OS.",
+  "Whether GPU Operator officially supports DGX Spark: platform-support lists it under ARM platforms yet states iGPU platforms are unsupported; no minimum version documented.",
+  "The DGX Dashboard's memory data source and exact units after the Nov 19, 2025 fix (reporter still saw GiB/GB mixing) were not confirmed from the dashboard docs page."
+ ],
+ "sources": [
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/index.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html",
+  "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html",
+  "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html",
+  "https://docs.nvidia.com/dgx/dgx-spark-porting-guide/index.html",
+  "https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/unified-memory.html",
+  "https://docs.nvidia.com/cuda/cuda-runtime-api/structcudaDeviceProp.html",
+  "https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY.html",
+  "https://docs.nvidia.com/cuda/cuda-for-tegra-appnote/index.html",
+  "https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/platform-support.html",
+  "https://www.nvidia.com/en-us/products/workstations/dgx-spark/",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-faq/347344",
+  "https://forums.developer.nvidia.com/t/dear-nvidia-nvidia-smi-is-broken-on-the-dgx-spark/367765",
+  "https://forums.developer.nvidia.com/t/what-is-the-ram-value-shown-on-the-dgx-dashboard-it-doesnt-seem-to-match-free/350714",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-shows-only-56gb-vram-inside-ai-workbench-128gb-expected/351441",
+  "https://forums.developer.nvidia.com/t/nvml-support-for-dgx-spark-grace-blackwell-unified-memory-community-solution/358869",
+  "https://forums.developer.nvidia.com/t/dgx-spark-memory-dashboard-live-gib-occupancy-map-can-i-load-next/381279",
+  "https://forums.developer.nvidia.com/t/sparkview-gpu-monitor-tool-with-gb10-aware-unified-memory-handling/366877",
+  "https://forums.developer.nvidia.com/t/how-to-automatically-free-shared-system-memory/363178",
+  "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886",
+  "https://forums.developer.nvidia.com/t/dgx-spark-can-only-use-119gb-of-memory-running-comfyui-so-it-is-killed-isnt-there-128gb-of-memory-why-cant-it-be-used/352962",
+  "https://forums.developer.nvidia.com/t/buyers-beware-dgx-spark-limited-to-64gb-in-comfyui/356573",
+  "https://forums.developer.nvidia.com/t/llama-cpp-rpc-on-dgx-spark/361862",
+  "https://forums.developer.nvidia.com/t/running-dgx-spark-as-a-unified-memory-inference-fabric/369086",
+  "https://github.com/ggml-org/llama.cpp/pull/17368",
+  "https://github.com/ggml-org/llama.cpp/issues/20315",
+  "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-cuda/ggml-cuda.cu",
+  "https://github.com/ollama/ollama/issues/14621",
+  "https://github.com/NVIDIA/NemoClaw/issues/4113",
+  "https://github.com/NVIDIA/k8s-device-plugin/issues/1482",
+  "https://github.com/NVIDIA/k8s-device-plugin/pull/1374",
+  "https://github.com/NVIDIA/k8s-device-plugin/releases/tag/v0.17.4",
+  "https://github.com/NVIDIA/gpu-operator/issues/1794",
+  "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/issues/1073",
+  "https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/pull/1121",
+  "https://github.com/Project-HAMi/HAMi/issues/1511",
+  "https://github.com/Project-HAMi/HAMi/pull/1637",
+  "https://github.com/CINOAdam/nvml-unified-shim",
+  "https://github.com/hectorTSH/dgx-spark-memory-dashboard",
+  "https://github.com/parallelArchitect/sparkview",
+  "https://github.com/wentbackward/nv-monitor",
+  "https://github.com/MiaAI-Lab/sparkDash",
+  "https://github.com/natolambert/dgx-spark-setup",
+  "https://github.com/martimramos/dgx-spark-ml-guide",
+  "https://github.com/AI-Hypercomputer/maxdiffusion/blob/main/docs/dgx_spark.md",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/multi-agent-chatbot/README.md",
+  "https://deepwiki.com/NVIDIA/dgx-spark-playbooks/8.3-memory-management",
+  "https://deepwiki.com/NVIDIA/dgx-spark-playbooks/9.1-unified-memory-architecture",
+  "https://build.nvidia.com/spark/vllm/troubleshooting",
+  "https://build.nvidia.com/spark/speculative-decoding/troubleshooting",
+  "https://vllm-project.github.io/2026/06/01/vllm-dgx-spark.html",
+  "https://vlaicu.io/posts/dgx-vllm/",
+  "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists",
+  "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/",
+  "https://collabnix.com/nvidia-dgx-spark-kubernetes-run-gpu-workloads-on-the-gb10-grace-blackwell-superchip/",
+  "https://conselara.dev/notes/dgx-spark-gb10-hardware-reference/",
+  "https://dredyson.com/5-critical-mistakes-everyone-makes-with-running-a-full-llm-stack-on-dgx-spark-gb10-your-application-litellm-llama-swap-vllm-llama-cpp-ollama-and-how-to-fix-them-before-you-lose-your-mind/",
+  "https://spark.enverge.ai/blog/what-fits-in-128gb-dgx-spark",
+  "https://www.chiplog.io/p/analysis-of-nvidia-dgx-sparks-gb10",
+  "https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/1_gb10_introduction/",
+  "https://www.backend.ai/blog/2026-02-is-dgx-spark-actually-a-blackwell",
+  "https://nvidia.custhelp.com/app/answers/detail/a_id/5728",
+  "https://nvidia.custhelp.com/app/answers/detail/a_id/5775"
+ ]
+}

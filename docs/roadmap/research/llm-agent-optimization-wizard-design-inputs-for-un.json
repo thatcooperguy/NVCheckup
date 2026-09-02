@@ -1,0 +1,799 @@
+{
+ "topic": "LLM/agent optimization wizard design inputs for unified-memory NVIDIA devices (DGX Spark GB10 now, RTX Spark N1X next): memory sizing math, fit/throughput estimates at 273 GB/s, runtime flags (vLLM, TRT-LLM, SGLang, llama.cpp, Ollama, Docker), agent workload needs, misconfiguration detection",
+ "facts": [
+  {
+   "claim": "DGX Spark hardware envelope: 128 GB unified LPDDR5X, 273 GB/s bandwidth, GB10 with 48 SMs / 6,144 CUDA cores, compute capability sm_121, 20 Arm cores (10 Cortex-X925 + 10 Cortex-A725); ~119-121 GiB visible to the OS after firmware reservations.",
+   "detail": "Kubesimplify Day 3: '128 GB unified LPDDR5x (approximately 119 GiB usable after firmware reservations)', '273 GB/s (256-bit bus x 8,533 MT/s)', 'sm_121 (consumer/workstation variant, differs from datacenter sm_100)'. Forum benchmark thread reports 'DGX Spark (GB10), 121 GiB unified, Ubuntu 24.04 ARM64, driver 580.173.02, CUDA 13.0'. LMSYS: 'up to 273 GB/s, shared across both CPU and GPU'.",
+   "confidence": "high",
+   "source_url": "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists"
+  },
+  {
+   "claim": "nvidia-smi does not report memory on GB10; the authoritative headroom number is MemAvailable from /proc/meminfo (or `free -h` 'available' column), not 'free'.",
+   "detail": "Forum 'Memory Creep' thread: 'nvidia-smi doesn't report memory on GB10 — instead, use /proc/meminfo'. Memory Dashboard thread: 'nvidia-smi memory fields are [N/A] on GB10'. Frank Denneman: nvidia-smi shows 'Not Supported' for the memory bar; 'Use the available column rather than free'. NVIDIA DGX Spark docs list known issue: nvidia-smi reports 'Memory-Usage: Not Supported'. natolambert guide: nvidia-smi shows 'Memory-Usage: N/A'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "claim": "Weights memory = params x bytes/param: BF16/FP16 = 2, FP8 = 1, NVFP4 ~0.56 (4-bit values + one FP8 scale per 16-weight block, ~3.5x vs BF16 in practice), MXFP4 ~0.53 (4-bit + shared 8-bit scale per 32-weight block); NVIDIA states NVFP4 checkpoints give ~3.3x disk/GPU-memory reduction vs 16-bit.",
+   "detail": "Kubesimplify Day 3: 'NVFP4 groups every 16 weights into a block and stores a high-precision FP8 scale factor for the whole block... approximately 3.5x practical compression vs. BF16'. nvidia/Qwen3-235B-A22B-FP4 model card: 'reduces the number of bits per parameter from 16 to 4', 'approximately 3.3x' reduction; only linear operators inside transformer blocks are quantized (embeddings/lm_head stay higher precision). gpt-oss cards: 'MXFP4 quantization of the MoE weights' only; attention, router, embeddings, lm_head are not converted (config.json modules_to_not_convert). Worked sizes: gpt-oss-120b (117B) '60+ GB on disk' (Corti); Nemotron-3-Super-120B NVFP4 '~60 GB' checkpoint (Fireworks/HF card via search); Qwen3.6-35B-A3B ollama tags: nvfp4 ~22GB, q4 ~24GB, q8_0 ~39GB, bf16 ~71GB (cli-coding-agent README).",
+   "confidence": "high",
+   "source_url": "https://huggingface.co/nvidia/Qwen3-235B-A22B-FP4"
+  },
+  {
+   "claim": "KV cache formula: bytes = 2 (K and V) x num_layers x num_kv_heads x head_dim x context_tokens x bytes_per_element x batch; FP16 = 2 bytes, FP8/q8_0 = 1 byte, q4_0 ~0.5 byte.",
+   "detail": "Kubesimplify Day 2: 'KV cache size = num_layers x 2 (K and V) x num_kv_heads x head_dim x context_length x bytes_per_element'. Worked (Llama 3.3 70B FP16): 4K ~1.25 GiB, 32K ~10 GiB, 128K ~40 GiB. Ollama docs: q8_0 'approximately half the memory', q4_0 'approximately one-quarter the memory' vs f16.",
+   "confidence": "high",
+   "source_url": "https://blog.kubesimplify.com/day-2-anatomy-of-an-llm-inference-request-from-prompt-to-answer-step-by-step"
+  },
+  {
+   "claim": "Per-model attention shapes (from HF config.json) and resulting FP16 KV bytes/token: Llama 3.1 8B: 32 layers, 8 kv heads, head_dim 128 -> 131,072 B (128 KiB)/token -> 4 GiB @32K, 16 GiB @128K. Llama 3.1/3.3 70B and DeepSeek-R1-Distill-Llama-70B: 80/8/128 -> 327,680 B (320 KiB)/token -> 10 GiB @32K, 40 GiB @128K. Qwen3-32B and DeepSeek-R1-Distill-Qwen-32B: 64/8/128 -> 262,144 B (256 KiB)/token -> 8 GiB @32K, 32 GiB @128K. Qwen3-235B-A22B: 94/4/128 -> 192,512 B (188 KiB)/token -> 5.9 GiB @32K, 23.5 GiB @128K.",
+   "detail": "unsloth/Llama-3.1-8B-Instruct config: num_hidden_layers 32, num_key_value_heads 8, head_dim 128, max_position_embeddings 131072. unsloth/Llama-3.3-70B-Instruct: 80, 8, 128, 131072. deepseek-ai/DeepSeek-R1-Distill-Llama-70B: 80 layers, 64 heads, 8 kv heads, hidden 8192, 131072. Qwen/Qwen3-32B: 64 layers, 64 heads, 8 kv heads, head_dim 128, max_position_embeddings 40960. deepseek-ai/DeepSeek-R1-Distill-Qwen-32B: 64 layers, 40 heads, 8 kv heads, hidden 5120 (head_dim 128), 131072. Qwen/Qwen3-235B-A22B: 94 layers, 64 heads, 4 kv heads, head_dim 128, 128 experts, 8 per token, 40960. Arithmetic done by me from these values.",
+   "confidence": "high",
+   "source_url": "https://huggingface.co/unsloth/Llama-3.3-70B-Instruct/raw/main/config.json"
+  },
+  {
+   "claim": "gpt-oss shapes: gpt-oss-120b = 36 layers, 8 kv heads, head_dim 64, 128 experts / 4 active, 117B total / 5.1B active, 131072 max positions, alternating sliding_window 128 layers; gpt-oss-20b = 24 layers, 8 kv heads, head_dim 64, 32 experts / 4 active, 21B total / 3.6B active. Upper-bound FP16 KV: 120b = 73,728 B (72 KiB)/token (9 GiB @128K); 20b = 49,152 B (48 KiB)/token (6 GiB @128K); real usage is lower because half the layers are sliding-window (128 tokens).",
+   "detail": "openai/gpt-oss-120b config.json: num_hidden_layers 36, num_key_value_heads 8, head_dim 64, num_local_experts 128, num_experts_per_tok 4, sliding_window 128, quant_method mxfp4. Model card: '117B parameters with 5.1B active parameters', runs 'on a single 80GB GPU'. gpt-oss-20b config: 24 layers, 8 kv, head_dim 64, 32 experts; card: '21B parameters with 3.6B active parameters', 'run within 16GB of memory'.",
+   "confidence": "high",
+   "source_url": "https://huggingface.co/openai/gpt-oss-120b/raw/main/config.json"
+  },
+  {
+   "claim": "Nemotron-3-Super-120B-A12B (NVFP4 checkpoint) is a hybrid Mamba-2/MoE with only 8 attention layers out of 88, 2 kv heads, head_dim 128, 512 routed experts + 1 shared, 22 experts/token, 262,144 max positions; attention KV is tiny (~8 KiB/token FP16) but Ollama allocates ~7 GB per parallel slot at 262K context, and in-memory footprint via Ollama is ~94 GB leaving ~27 GiB headroom.",
+   "detail": "HF config.json: num_hidden_layers 88, hybrid_override_pattern 'MEMEMEM*EMEMEMEM*EMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEM*EMEMEMEME' (8 '*' attention layers), num_key_value_heads 2, head_dim 128, n_routed_experts 512, num_experts_per_tok 22, max_position_embeddings 262144; quantization group 0 = FP8 for attention/shared expert, group 1 = FP4 group_size 16 for routed experts. Frank Denneman: 'Nemotron 3 Super (120B): Downloads 86 GB, In-memory 94 GB, Headroom remaining ~27 GiB'; 'Approximately 7 GB per parallel request slot at 262K context length'; Nemotron 3 Nano 30B: 24 GB download, 27 GB in memory, ~89 GiB headroom.",
+   "confidence": "medium",
+   "source_url": "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/"
+  },
+  {
+   "claim": "Bandwidth-bound decode estimate: tokens/s ~= 273 GB/s / bytes read per token (active weights + KV). Published theoretical maxima: Llama 3.1 8B Q4 (4.5 GB) ~61 tok/s; Llama 3.3 70B NVFP4 (40 GB) ~6.8 tok/s; gpt-oss-20b MXFP4 (~3.6 GB active) ~75 tok/s; Nemotron 3 Super 120B NVFP4 (~6 GB active) ~45 tok/s. Measured numbers land at roughly 50-80% of these.",
+   "detail": "Kubesimplify Day 2: '273 GB/s memory bandwidth divided by your model's bytes in memory ~ your decode tok/s' with the table above. Measured comparisons: LMSYS SGLang Llama 3.1 8B FP8 batch 1 = 20.5 tok/s decode (theoretical ~34 for 8 GB weights); Llama 3.1 70B FP8 = 2.7 tok/s (theoretical ~3.9); gpt-oss-120b 50-60 tok/s; Nemotron 3 Super NVFP4 22.7-23.7 tok/s (vLLM blog) to ~38 tok/s (Kubesimplify).",
+   "confidence": "high",
+   "source_url": "https://blog.kubesimplify.com/day-2-anatomy-of-an-llm-inference-request-from-prompt-to-answer-step-by-step"
+  },
+  {
+   "claim": "LMSYS published DGX Spark benchmarks (Oct 2025): SGLang Llama 3.1 8B FP8 batch 1 = 7,991 tok/s prefill / 20.5 tok/s decode, batch 32 = 7,949 / 368; Ollama gpt-oss-20b MXFP4 = 2,053 / 49.7; SGLang DeepSeek-R1 14B FP8 batch 8 = 2,074 / 83.5; Llama 3.1 70B FP8 decodes ~2.7 tok/s; EAGLE3 speculative decoding gave up to 2x. Follow-up post: gpt-oss-20b ~70 tok/s and gpt-oss-120b ~50 tok/s with SGLang (lmsysorg/sglang:spark).",
+   "detail": "LMSYS review states DGX Spark 'excels at prompt processing' but 'struggles with token generation — the memory-bandwidth-bound phase'. gpt-oss post docker command: 'docker run --gpus all --shm-size 32g -p 30000:30000 ... --ipc=host lmsysorg/sglang:spark python3 -m sglang.launch_server --model-path openai/gpt-oss-20b --host 0.0.0.0 --port 30000 --reasoning-parser gpt-oss --tool-call-parser gpt-oss'; notes 'Optional: Enable swap memory for GPT-OSS 120B stability'.",
+   "confidence": "high",
+   "source_url": "https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/"
+  },
+  {
+   "claim": "Same-harness single-Spark benchmark (vLLM 0.26.1rc1, driver 580.173.02, CUDA 13.0): gpt-oss-120b Ollama 42.1 tok/s single / 42.5 at 8 concurrent (no batching gain) vs vLLM 60.7 single / 116-153 aggregate; Qwen3-30B-A3B Ollama 85.2 vs vLLM 77.1 single / 313.4 aggregate; Gemma-4-26B-A4B NVFP4+MTP vLLM 54.9 single / 303.6 aggregate; ~6,000 tok/s prefill vs ~56 tok/s generation typical; MTP speculative decoding gave +81% (30.3 -> 54.9).",
+   "detail": "Forum post by a community member, data published. Key wizard-relevant finding: 'Ollama showed no batching behavior — concurrent throughput matched single-stream performance across all four models tested'; TTFT 94-511 ms for ~short prompts.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/measured-inference-benchmarks-on-a-single-dgx-spark-same-harness-across-ollama-llama-cpp-and-vllm-notes-data-published/379766"
+  },
+  {
+   "claim": "Concurrency scaling on a single Spark (Dendro Logic, vLLM 26.03, ~1,500-token prompts, 400 output): gpt-oss-120b MXFP4 33.5 tok/s at c=1 -> 862.8 aggregate at c=256 (3.6 per seq); Nemotron Super 49B NVFP4 5.8 -> 695 at c=256; Nemotron Nano 9B v2 plateaus ~155 aggregate after c=8; gpt-oss-120b used ~9% KV at c=256; dual-model production stack ~85 GB total leaving 30+ GB headroom.",
+   "detail": "Flags used: '--max-model-len 65536 --gpu-memory-utilization 0.65 --enable-prefix-caching --trust-remote-code -e VLLM_USE_FLASHINFER_MOE_FP4=1 -e VLLM_FLASHINFER_MOE_BACKEND=throughput'. Aggregate throughput fell beyond c=256 (320: 514; 384: 771 for gpt-oss).",
+   "confidence": "medium",
+   "source_url": "https://dendro-logic.com/engineering/nvidia-dgx-spark-concurrency-benchmark/"
+  },
+  {
+   "claim": "vLLM team's official DGX Spark guidance (June 2026): --gpu-memory-utilization 0.85 ('leave room for the operating system, kernel page cache, container runtime, KV cache growth'), --max-model-len 131072, --max-num-seqs 4 ('above this, bandwidth overhead outweighs batching gains'), leave --kv-cache-dtype unset for stability (fp8 only under memory pressure), leave --quantization unset for pre-quantized NVFP4 checkpoints; recommended class is '100-130B MoE NVFP4 models with roughly 10-15 billion active parameters'; Nemotron-3-Super-120B-A12B-NVFP4 measured 22.7-23.7 tok/s decode, TTFT 0.42 s @58 tokens / 3.85 s @7,234 tokens; first request after startup ~25 s JIT warm-up; first load 10-15 min.",
+   "detail": "Exact command: 'docker run -d --name vllm --ipc=host --restart unless-stopped --gpus all -p 8000:8000 -e HF_TOKEN=\"$HF_TOKEN\" -v ~/.cache/huggingface:/root/.cache/huggingface vllm/vllm-openai:cu130-nightly nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 --served-model-name nemotron-3-super --trust-remote-code --max-model-len 131072 --gpu-memory-utilization 0.85 --max-num-seqs 4 --reasoning-parser nemotron_v3 --enable-auto-tool-choice --tool-call-parser qwen3_coder'. Readiness: 'curl -sS http://localhost:8000/v1/models | jq -r .data[0].id'. KV utilization 'below 5% during single-user tests and below 30% under small-batch demo traffic'.",
+   "confidence": "high",
+   "source_url": "https://vllm.ai/blog/2026-06-01-vllm-dgx-spark"
+  },
+  {
+   "claim": "vLLM's default --gpu-memory-utilization is 0.92 and it is 'The fraction of GPU memory to be used for the model executor'; on GB10 that fraction is taken of the whole unified pool, so the default pre-allocates ~110 GiB and starves the OS. --max-model-len 'If unspecified, will be automatically derived from the model config' (e.g. 262144 for Qwen3.6/Nemotron), which inflates pre-allocated KV.",
+   "detail": "vLLM engine args docs: default 0.92; --kv-cache-dtype options 'auto, bfloat16, float16, fp8, fp8_e4m3, fp8_e5m2'; --enforce-eager disables CUDA graphs; --cpu-offload-gb default 0. Forum 'Memory creep' worked example: default vLLM config consumed 117 GB (weights 19 GB, runtime 3 GB, torch.compile + CUDA graphs 13 GB, pre-allocated KV 89 GB) vs optimized 32 GB with '--enforce-eager --gpu-memory-utilization 0.2 --kv-cache-dtype fp8' and env 'VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_TEST_FORCE_FP8_MARLIN=1'.",
+   "confidence": "high",
+   "source_url": "https://docs.vllm.ai/en/latest/configuration/engine_args.html"
+  },
+  {
+   "claim": "NVIDIA vLLM playbook for DGX Spark uses nvcr.io/nvidia/vllm:26.05-py3 with 'docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:26.05-py3 vllm serve ${HF_MODEL_HANDLE}'; per-model recipes span --gpu-memory-utilization 0.4-0.9, --max-model-len 2048-262144, --kv-cache-dtype fp8, --attention-backend TRITON_ATTN or flashinfer, --max-num-seqs 4-10; prerequisites are CUDA 13.0 toolkit (nvcc --version), docker, python3.12, NVIDIA Container Toolkit; OOM fix is 'Reduce --max-model-len and --max-num-seqs'.",
+   "detail": "Also lists vllm/vllm-openai:gemma4-cu130 and vllm/vllm-openai:latest. Kubesimplify warns: 'The exact Docker image tag determines kernel support for ARM64 and Blackwell GB10 (sm_121). Mutable tags like latest can silently run outdated builds.'",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/vllm"
+  },
+  {
+   "claim": "vLLM kernel-init on GB10 can allocate ~50 GB (FlashInfer, DeepGEMM, NVFP4-Cutlass, FlashInfer-Cutlass MoE, TritonAttn) before weights load; with a 75 GB NVFP4 checkpoint available RAM dropped from ~120.9 GB to 68.5 GB then 44.6 GB, which trips 'Auto-prefetch is disabled... checkpoint size exceeds 90% of available RAM' and slows loading by minutes.",
+   "detail": "Container nvcr.io/nvidia/vllm:26.07-py3 on 121 GB unified. Wizard implication: budget 10-15 GB for runtime/JIT/cudagraph on top of weights + KV, and warn when weights > ~0.6 x MemAvailable for vLLM.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/unified-memory-kernel-init-allocations-flashinfer-deepgemm-nvfp4-consume-50gb-before-weight-loading-starts-disabling-auto-prefetch-on-large-models/378585"
+  },
+  {
+   "claim": "Exhausting unified memory on DGX Spark tends to freeze the whole OS (SSH dead, HDMI black, hard power cycle) rather than OOM-kill the process; swap makes it worse ('when the swap is being used, the system becomes unresponsive'); community fix is to disable swap so 'the process will just exit, but leaves you with a running system', plus vm.swappiness=0/1, vm.min_free_kbytes=2097152, drop_caches before loading.",
+   "detail": "Crash thread: crashes at docker --memory=110G/90G/30G limits because 'this parameter can only limit the memory (RAM), not the GPU's VRAM'; kernel 6.14.0-1013-nvidia aarch64. Stability thread: freeze at 126.5 GB used (~1.5 GB free); example need 73.40GiB (weights 29.40GiB + KV 40.00GiB + safety 4GiB) vs 90.39GiB free of 115.39GiB; commands 'sudo sysctl -w vm.swappiness=0', 'sudo sysctl -w vm.min_free_kbytes=2097152', 'sudo sysctl -w vm.vfs_cache_pressure=200', 'sudo swapoff -a'. natolambert: 'sudo swapoff -a; swapon --show # should print nothing'. Memory-creep thread: 'sudo sysctl vm.swappiness=1', 'sudo sysctl vm.dirty_bytes=268435456', 'sudo sh -c sync; echo 3 > /proc/sys/vm/drop_caches', 'sudo systemctl set-default multi-user.target' saves 2-3 GB.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/system-crashes-when-memory-is-full/352339"
+  },
+  {
+   "claim": "Thermal/power: DGX Spark firmware can cause sudden shutdowns under heavy inference; community workaround is to lock GPU clocks at 2150 MHz ('nvidia-smi -lgc 200,2150' or 'nvidia-smi --lock-gpu-clocks 0,2150', ~1-2% perf cost). ACPI/TSOC ~95 C triggers reboot. GPU max draw 120 W, rest of system 100 W, PSU 240 W; nvidia-smi -pl returns N/A (no user power cap). Healthy load shows ~35-100 W; 100 W plateau with sw_thermal_slowdown Active = thermal cap; ~4.8 W with ~0% util = PD-controller 27 W defect (dmesg 'Detected insufficient power on the PCIe slot (27W)') or the 5 W bug fixed by driver 580.x/CUDA 13.",
+   "detail": "NVIDIA staff quote: 'Spark GPU can draw a max of 120W and the rest of the system including CPU, CX7 and peripherals can draw 100W. The power supply is rated for 240 Watt of peak draw.' Detection command: 'nvidia-smi --query-gpu=power.draw,temperature.gpu,clocks.throttle_reasons.sw_thermal_slowdown --format=csv,noheader'; healthy sample '35.65 W, 96 %, 2522 MHz'; defective '4.80 W, 2 %, 2411 MHz'. Firmware update reduced OS boot memory from 14 GB to 3 GB.",
+   "confidence": "medium",
+   "source_url": "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+  },
+  {
+   "claim": "Prebuilt CUDA-12 PyTorch/vLLM wheels do not work on DGX OS (CUDA 13 only): 'ImportError: libcudart.so.12: cannot open shared object file: No such file or directory'. Correct install is the cu130 index: 'pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130'. PyTorch prints 'Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)' which is safe to ignore because sm_120 cubins run on sm_121. Triton needs 'export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas' to avoid 'ptxas fatal : Value sm_121a is not defined for option gpu-name'. Do not pip install flash-attn on GB10.",
+   "detail": "natolambert/dgx-spark-setup and TRT-LLM 1.3.0rc5 forum thread ('triton.runtime.errors.PTXASError: PTXAS error: Internal Triton PTX codegen error', fix 'mpirun -x TRITON_PTXAS_PATH'). vLLM issue #31128: vLLM 0.13 pinned torch==2.9.0 with no aarch64 CUDA wheels; NGC PyTorch 25.11 ships 2.10; closed via PR #37700. Issue #36821: 'vLLM fails to start on NVIDIA DGX Spark (GB10 Blackwell, sm_121) because the bundled PyTorch binary only includes compiled CUDA kernels through sm_120'; runtime TORCH_CUDA_ARCH_LIST/LD_LIBRARY_PATH 'have no effect on prebuilt binaries'.",
+   "confidence": "high",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "claim": "Missing native Blackwell cubins in a vLLM build silently costs ~4x decode speed: stock vllm/vllm-openai:cu130-nightly (v0.17.0rc1, Mar 2026) gave 13 tok/s on Qwen3.5-35B vs 48.6 tok/s after rebuilding _C.abi3.so/_moe_C.abi3.so with TORCH_CUDA_ARCH_LIST=\"12.1\"; detect with 'cuobjdump -lelf _C.abi3.so | grep -c sm_120' (0 = bad, 50+ = good). SM121 lacks the cvt.e2m1x2 instruction so NVFP4 microscaling kernels fail with 'ptxas error: Instruction cvt with .e2m1x2 not supported on .target sm_121'.",
+   "detail": "Build env: TORCH_CUDA_ARCH_LIST=\"12.1\", VLLM_TARGET_DEVICE=cuda, VLLM_TEST_FORCE_FP8_MARLIN=1, MAX_JOBS=4; CMake pattern '12.0f' -> '12.0a' patch. eugr/spark-vllm-docker adds: 'Driver 590.x has CUDAGraph capture deadlock on GB10'; 'NVFP4 models: not fully supported on vLLM yet; performance suboptimal' (as of that README); env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0, DG_JIT_USE_NVRTC=0.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-13-49-tok-s-with-qwen3-5-35b-native-sm121-kernel-build-guide/365083"
+  },
+  {
+   "claim": "llama.cpp on GB10 must be built with CMAKE_CUDA_ARCHITECTURES=121 (or 121a / 121a-real); building for 120 yields 'no kernel image is available for execution on the device'. NVIDIA playbook build: 'cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DGGML_RPC=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real' then 'cmake --build build --config Release --target llama-server -j'. Correct build logs 'compute capability 12.1'. ggml maintainers' one-liner: 'bash <(curl -s https://ggml.ai/dgx-spark.sh)'. GCC 13.3 + CUDA 13.0 build failures need NVIDIA's nvcc (not Ubuntu's nvidia-cuda-toolkit) or GCC 12.",
+   "detail": "llama.cpp discussion #16514 and NVIDIA/dgx-spark-playbooks/nvidia/llama-cpp. Playbook run: './bin/llama-server -hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q4_K_XL --host 0.0.0.0 --port 30000' (~30 GB RAM), MTP: '--chat-template-kwargs {\"preserve_thinking\": true} --spec-type draft-mtp --spec-draft-n-max 3'; OOM fix 'Lower --ctx-size or use a smaller quantization'; CUDA not found fix 'export PATH=/usr/local/cuda/bin:$PATH'; health 'curl -sf http://127.0.0.1:30000/health'. ggerganov perf thread: gpt-oss-120b MXFP4 pp2048 ~1,956 t/s, tg32 ~60 t/s, falling to ~40 t/s at 32K depth; bench cmd 'llama-bench -m model.gguf -fa 1 -d 0,4096,8192,16384,32768 -p 2048 -n 32 -ub 2048 -mmp 0'; 'NVIDIA 6.17.1 kernel with NO_PAGE_MAPCOUNT' needed for fast model loading.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/llama-cpp"
+  },
+  {
+   "claim": "llama.cpp runtime flags used on Spark: '-ngl 999 -fa on --no-mmap --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 -c 65536 --jinja' (vlaicu playbook) and '-c 16384 -ngl 999 --flash-attn on --no-mmap --kv-unified --jinja -ub 2048' for gpt-oss-120b (Corti). --no-mmap works around a known mmap slow-load issue on Spark (~5x load inflation). Allowed -ctk/-ctv values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1 (default f16); -fa on/off/auto (default auto); -c default 0 = from model; -ngl accepts number, 'auto', 'all'.",
+   "detail": "llama.cpp server README help text. Corti: throughput 'dropped from ~20-25 tok/s at 16K context to ~15-17 tok/s at 32K' for their config; weights '60+ GB on disk'. vlaicu: 'Keep at q8_0 or higher' for KV; error strings 'couldn't bind HTTP server socket, port: N', 'unknown model architecture: gemma4-assistant'.",
+   "confidence": "high",
+   "source_url": "https://vlaicu.io/posts/dgx-llamacpp-playbook/"
+  },
+  {
+   "claim": "Ollama env vars and defaults: OLLAMA_CONTEXT_LENGTH default 4096; OLLAMA_NUM_PARALLEL default 1 (memory scales with it); OLLAMA_MAX_LOADED_MODELS default 3 x GPUs; OLLAMA_KV_CACHE_TYPE f16 (default) | q8_0 (~half) | q4_0 (~quarter), applies globally; OLLAMA_FLASH_ATTENTION=1/0; OLLAMA_KEEP_ALIVE; OLLAMA_MAX_QUEUE default 512; set via 'systemctl edit ollama.service' -> [Service] Environment=\"VAR=value\"; per-request num_ctx in options. 'ollama ps' PROCESSOR column: '100% GPU' = fully on GPU, '100% CPU' = system memory, '48%/52% CPU/GPU' = split.",
+   "detail": "Ollama docs FAQ. Ollama issue #13337: KV cache quantization only honored for architectures with flash attention support (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl); otherwise 'the server silently falls back to f16, leading to unexpected OOMs'. Issue #15043: with OLLAMA_FLASH_ATTENTION=1 + OLLAMA_KV_CACHE_TYPE=q8_0 on unsupported models: 'V cache quantization requires flash_attn' then 'panic: unable to create llama context'. On unified memory the CPU/GPU split reading is less meaningful for headroom but non-'100% GPU' still means slower llama.cpp CPU path.",
+   "confidence": "high",
+   "source_url": "https://docs.ollama.com/faq"
+  },
+  {
+   "claim": "NVIDIA CLI coding agent playbook (Claude Code / OpenCode / Codex CLI via Ollama) uses Qwen3.6 tags: 'qwen3.6' (35B-A3B MoE, ~24GB), 'qwen3.6:35b-a3b-nvfp4' (~22GB), 'qwen3.6:35b-a3b-q8_0' (~39GB), 'qwen3.6:35b-a3b-bf16' (~71GB); 'Qwen3.6 ships with a 256K context window by default'; requires DGX OS 7.3.1 (Ubuntu 24.04.3) and Ollama v0.15+; commands 'ollama pull qwen3.6', 'ollama launch claude --model qwen3.6', 'ollama launch opencode --model qwen3.6', 'ollama launch codex --model qwen3.6'.",
+   "detail": "Troubleshooting strings: 'ollama: command not found', 'ollama launch unknown command' -> update to v0.15+, 'Connection refused to localhost:11434', CUDA context destroyed (multi-GPU) -> 'CUDA_VISIBLE_DEVICES=0'. Corti routes Claude Code to llama.cpp with 'ANTHROPIC_BASE_URL=http://localhost:8005'.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/cli-coding-agent"
+  },
+  {
+   "claim": "NemoClaw on DGX Spark: installer 'curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash'; prerequisites Ubuntu 24.04, Docker 28.x+, Node.js 22.16+; default express-install model 'qwen3.6-35b-a3b-nvfp4' on managed local vLLM at http://127.0.0.1:8000 (verify 'curl http://127.0.0.1:8000/v1/models'); ports 18789-18790 dashboard, 8080 gateway, 8000 vLLM; OpenShell embeds k3s in Docker and needs '/etc/docker/daemon.json' -> {\"default-cgroupns-mode\": \"host\"} on cgroup v2 or kubelet fails with 'Failed to start ContainerManager: failed to initialize top level QOS containers'; sandbox has no direct GPU access, inference is routed via host-side provider.",
+   "detail": "dgx-spark-playbooks/nvidia/nemoclaw README + NemoClaw dev guide. Troubleshooting: 'nemoclaw: command not found' -> source ~/.bashrc; 'Docker permission denied' -> 'sudo usermod -aG docker $USER'; 'Port 18789 already in use' -> 'lsof -i :18789'; 'origin not allowed' -> use http://127.0.0.1; CoreDNS crash loop -> re-run installer. Cgroup check 'stat -fc %T /sys/fs/cgroup/'. Policy tiers Balanced/Restricted/Open.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/nemoclaw/README.md"
+  },
+  {
+   "claim": "NVIDIA's agent-scaling guidance for DGX Spark: agents commonly use 30K-120K token contexts ('Large context windows of 30K-250K tokens are processed efficiently'); running four concurrent subagents on 32K inputs 'requires only 2.6x more time' vs one; Nemotron 120B processed a single 128K-token prompt at 2,855 tok/s (44 s prefill); recommended models Nemotron 3 Super 120B, Qwen3.5 35B, Qwen3 Coder Next 80B, Llama 3.3 70B; TRT-LLM/vLLM/SGLang for concurrency.",
+   "detail": "NVIDIA developer blog. Implication for wizard: agent profiles should size KV for >=64K-128K context x (1 + number of subagents) and prefer MoE NVFP4/MXFP4 with 3-15B active params. Kubesimplify Nemotron 3.5 Lightning (30B-A3B, 52 layers, 262,144 default context, 26 GB resident via Ollama, ~86 GB headroom): Ollama 72-87 tok/s, vLLM NVFP4 95-108 tok/s; 'Lightning required 485 tokens in 5.9 seconds versus competing model's 1,953 tokens in 26 seconds' on a tool-calling task.",
+   "confidence": "medium",
+   "source_url": "https://developer.nvidia.com/blog/scaling-autonomous-ai-agents-and-workloads-with-nvidia-dgx-spark"
+  },
+  {
+   "claim": "NVIDIA TRT-LLM playbook for Spark: image nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13; docker flags '--gpus all --ipc host --network host --ulimit memlock=-1 --ulimit stack=67108864 -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ -e HF_TOKEN=$HF_TOKEN'; models nvidia/Llama-3.1-8B-Instruct-FP4, nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16, openai/gpt-oss-20b, nvidia/Qwen3-235B-A22B-FP4 (multi-node only); KV via YAML 'free_gpu_memory_fraction: 0.9'; OOM fix 'Reduce free_gpu_memory_fraction: 0.9 or batch size'; 'export TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1' for memory pressure during load.",
+   "detail": "SGLang playbook: image lmsysorg/sglang:latest-cu130, launch '--trust-remote-code --tp 1 --attention-backend flashinfer --mem-fraction-static 0.75', 'for NVFP4 models, add the --quantization modelopt_fp4 flag', warns unified memory 'may cause issues even when within the memory capacity, requiring manual cache clearing'. Forum: TRT-LLM NVFP4 safetensors reported slower than LM Studio GGUF on Spark in early 2026; Qwen3-235B-A22B-FP4 (133B-param checkpoint incl. overhead) is listed multi-node only.",
+   "confidence": "high",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/trt-llm"
+  },
+  {
+   "claim": "Recent (mid-2026) dense-model reality on Spark: Qwen3.8-27B FP8 via vLLM decodes 8.2 tok/s single (57.9 aggregate at c=10); NVFP4 11.5 single / 84.3 aggregate; llama.cpp Q4_K_XL 11.6 tok/s; Ollama Q4_K_M with MTP 26.5 tok/s; recipe 'gpu_memory_utilization: 0.8, max_model_len: 131072, attention_backend: flashinfer, kv_cache_dtype: fp8'; FP8 'wedged under 10 concurrent requests at 32K context'; 'Must stop prior inference servers before launching new ones due to unified memory pooling'; MTP nightly caused 'hard reboots at 16K context depth with 2 concurrent requests'.",
+   "detail": "Kubesimplify (driver 580.159.03, kernel 6.17.0-1018-nvidia, ~121.7 GB usable). Also Gemma 4 31B NVFP4 vLLM: 6.15 tok/s single -> 92.1 aggregate at 16 concurrent; Qwen2.5-3B BF16 26 -> 1,462 tok/s at 64 concurrent; engine overhead on same GGUF: llama.cpp 101.6 vs Ollama 93.7 vs Docker Model Runner 99.1 tok/s.",
+   "confidence": "medium",
+   "source_url": "https://blog.kubesimplify.com/qwen3-8-27b-on-dgx-spark"
+  },
+  {
+   "claim": "RTX Spark (N1X): announced May 31, 2026 (Computex/GTC Taipei) by NVIDIA + Microsoft; 20 Arm cores (with MediaTek), Blackwell RTX GPU with 6,144 or 5,120 CUDA cores (PCI IDs 2E03 / 2E06), up to 128 GB LPDDR5X unified, ~300 GB/s (press), 45-80 W, ~1 PFLOP FP4; Windows 11 on Arm with Prism x86 emulation; first native Arm64 GeForce driver 616.00 developer preview (Jul 2026); CUDA Toolkit 13.4 developer preview is the first to target Windows 11 ARM64; llama.cpp Windows ARM64 builds need clang-cl; OEMs Asus, Dell, HP, Lenovo, Microsoft (Surface Laptop Ultra), MSI, later Acer/Gigabyte; ships fall 2026. Compute capability not yet published.",
+   "detail": "Wikipedia, XDA (300GB/s, 45-80W, MPTF), Windows Latest (INF strings 'NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)' / '(5120-core Blackwell RTX GPU)'), Conan blog (CUDA 13.4 dev preview for Windows on ARM64; 'Windows ARM64 builds of llama.cpp currently require building with Clang (clang-cl)'). Nemotron models cited for local agentic use on RTX Spark. No public data yet on Windows unified-memory reporting, Ollama/LM Studio Arm64 CUDA builds, or WSL2 CUDA on N1X.",
+   "confidence": "medium",
+   "source_url": "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "Unified-memory platform detection (GB10 / N1X) and correct headroom source",
+   "how": "Linux: nvidia-smi --query-gpu=name --format=csv,noheader contains 'GB10'; /proc/device-tree/model or dmidecode product contains 'DGX Spark' / 'GB10'; nvidia-smi memory.used/memory.total query returns '[N/A]' or 'Not Supported'. Read /proc/meminfo MemTotal and MemAvailable (expect MemTotal ~121 GiB on 128 GB Spark). Never use nvidia-smi memory or 'free' column for headroom. Windows (RTX Spark): PCI VEN_10DE&DEV_2E03 or DEV_2E06, driver >= 616.00, OS architecture ARM64; use GlobalMemoryStatusEx ullAvailPhys.",
+   "exact_strings": [
+    "NVIDIA GB10",
+    "Memory-Usage: Not Supported",
+    "[N/A]",
+    "MemAvailable:",
+    "MemTotal:",
+    "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)",
+    "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+    "NVIDIA_DEV.2E03",
+    "NVIDIA_DEV.2E06"
+   ],
+   "source_url": "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/"
+  },
+  {
+   "what": "Swap or zram enabled on a unified-memory box (OS freeze risk under memory pressure)",
+   "how": "Run 'swapon --show' (non-empty = swap active) or parse /proc/swaps for any line beyond the header; check for /dev/zram* entries and 'zramswap' or 'systemd-zram-setup@' units via systemctl; read /proc/sys/vm/swappiness (>1 is WARN if swap present).",
+   "exact_strings": [
+    "swapon --show",
+    "/proc/swaps",
+    "/dev/zram0",
+    "zramswap",
+    "vm.swappiness",
+    "when the swap is being used, the system becomes unresponsive"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/system-crashes-when-memory-is-full/352339"
+  },
+  {
+   "what": "CUDA-12 Python wheels on a CUDA-13-only DGX OS (torch/vllm/flash-attn built for cu12)",
+   "how": "pip show torch | grep Version and match suffix '+cu12'; python -c 'import torch; print(torch.version.cuda)' starts with '12.'; scan pip freeze for nvidia-cuda-runtime-cu12 / nvidia-cublas-cu12; ls /usr/local/cuda/lib64/libcudart.so.12* absent; grep service/container logs for the ImportError string. Correct state: torch.version.cuda '13.x' and wheel index cu130.",
+   "exact_strings": [
+    "ImportError: libcudart.so.12: cannot open shared object file: No such file or directory",
+    "+cu126",
+    "+cu128",
+    "nvidia-cuda-runtime-cu12",
+    "--index-url https://download.pytorch.org/whl/cu130"
+   ],
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "what": "CPU-only torch or GPU not visible to torch",
+   "how": "python -c 'import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())' expecting True and (12, 1); torch.__version__ containing '+cpu' is CRIT; also check 'python -c \"import torch;print(torch.cuda.get_arch_list())\"' contains 'sm_120' or 'sm_121' (sm_120 cubins run on sm_121).",
+   "exact_strings": [
+    "+cpu",
+    "(12, 1)",
+    "sm_120",
+    "sm_121",
+    "Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)"
+   ],
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "what": "Kernels built for the wrong architecture (sm_121 missing) in llama.cpp, vLLM, Triton, TRT-LLM",
+   "how": "grep server/container logs for the runtime error strings below; for llama.cpp verify build log/`llama-server --version`/startup log mentions 'compute capability 12.1' and that the cmake cache (build/CMakeCache.txt) has CMAKE_CUDA_ARCHITECTURES=121, 121a or 121a-real (120 = bad); for vLLM in a container run 'cuobjdump -lelf $(python -c \"import vllm,os;print(os.path.dirname(vllm.__file__))\")/_C.abi3.so | grep -c sm_120' and treat 0 as missing native Blackwell cubins; for Triton/TRT-LLM check TRITON_PTXAS_PATH is set to /usr/local/cuda/bin/ptxas when the ptxas error appears.",
+   "exact_strings": [
+    "no kernel image is available for execution on the device",
+    "ptxas fatal : Value 'sm_121a' is not defined for option 'gpu-name'",
+    "triton.runtime.errors.PTXASError: PTXAS error: Internal Triton PTX codegen error",
+    "ptxas error: Instruction 'cvt with .e2m1x2' not supported on .target 'sm_121'",
+    "compute capability 12.1",
+    "CMAKE_CUDA_ARCHITECTURES=121",
+    "TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas",
+    "TORCH_CUDA_ARCH_LIST=\"12.1\""
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-13-49-tok-s-with-qwen3-5-35b-native-sm121-kernel-build-guide/365083"
+  },
+  {
+   "what": "vLLM memory misconfiguration on unified memory (default 0.92 utilization, auto max-model-len, no headroom)",
+   "how": "Inspect running vLLM process cmdline (ps -eo args | grep 'vllm serve' or docker inspect Cmd): flag --gpu-memory-utilization absent (default 0.92) or > 0.85 -> WARN; --max-model-len absent (auto = model max, e.g. 262144) -> WARN; compute planned bytes = gpu_mem_util x MemTotal and compare with MemAvailable minus 8 GiB OS floor; grep logs for OOM and the auto-prefetch message; suggest --kv-cache-dtype fp8 and --max-num-seqs 4 when over budget.",
+   "exact_strings": [
+    "--gpu-memory-utilization",
+    "--max-model-len",
+    "--max-num-seqs",
+    "--kv-cache-dtype fp8",
+    "CUDA out of memory",
+    "Auto-prefetch is disabled",
+    "checkpoint size exceeds 90% of available RAM",
+    "The fraction of GPU memory to be used for the model executor"
+   ],
+   "source_url": "https://vllm.ai/blog/2026-06-01-vllm-dgx-spark"
+  },
+  {
+   "what": "Ollama KV-cache/flash-attention misconfiguration and model spill to CPU",
+   "how": "Read env from 'systemctl show ollama -p Environment' or /etc/systemd/system/ollama.service.d/*.conf: if OLLAMA_KV_CACHE_TYPE is q8_0/q4_0 and OLLAMA_FLASH_ATTENTION is not 1, WARN; grep journalctl -u ollama for the panic string; run 'ollama ps' and parse PROCESSOR column, anything other than '100% GPU' -> WARN; parse CONTEXT column and compute KV bytes = ctx x OLLAMA_NUM_PARALLEL x per-token bytes; if OLLAMA_CONTEXT_LENGTH unset, note default 4096 (too small for agents) unless model ships 256K default.",
+   "exact_strings": [
+    "V cache quantization requires flash_attn",
+    "panic: unable to create llama context",
+    "100% GPU",
+    "100% CPU",
+    "CPU/GPU",
+    "OLLAMA_KV_CACHE_TYPE",
+    "OLLAMA_FLASH_ATTENTION",
+    "OLLAMA_NUM_PARALLEL",
+    "OLLAMA_MAX_LOADED_MODELS",
+    "OLLAMA_CONTEXT_LENGTH",
+    "systemctl edit ollama.service"
+   ],
+   "source_url": "https://github.com/ollama/ollama/issues/15043"
+  },
+  {
+   "what": "Two or more heavy inference servers resident at once on the shared pool",
+   "how": "Enumerate listeners with 'ss -ltnp' for 8000 (vLLM/NemoClaw), 30000 (SGLang/llama.cpp playbook), 11434 (Ollama), 8080/8005 (llama.cpp), 8355 (trtllm-serve) plus 'docker ps' images matching vllm|sglang|tensorrt-llm|llama.cpp|ollama; sum RSS of those processes (or /proc/<pid>/status VmRSS) and 'ollama ps' SIZE; if two servers each > 20 GiB or combined > 0.7 x MemTotal -> WARN; Kubesimplify explicitly: 'Must stop prior inference servers before launching new ones due to unified memory pooling'.",
+   "exact_strings": [
+    "vllm serve",
+    "sglang.launch_server",
+    "llama-server",
+    "ollama runner",
+    "trtllm-serve",
+    ":8000",
+    ":30000",
+    ":11434"
+   ],
+   "source_url": "https://blog.kubesimplify.com/qwen3-8-27b-on-dgx-spark"
+  },
+  {
+   "what": "Power/thermal cap or defect limiting throughput",
+   "how": "Sample 'nvidia-smi --query-gpu=power.draw,utilization.gpu,clocks.sm,temperature.gpu,clocks.throttle_reasons.sw_thermal_slowdown,clocks.throttle_reasons.hw_slowdown --format=csv,noheader' during a short load; power ~5 W with util <5% under load = CRIT (PD defect or old driver); power plateau ~100 W with sw_thermal_slowdown 'Active' or temp >= 85 C = WARN; dmesg for the PCIe power string; 'nvidia-smi -q -d CLOCK' locked at 2150 MHz indicates user workaround in place (INFO); nvidia-smi -pl returns N/A so no power-cap check is possible via that path.",
+   "exact_strings": [
+    "Detected insufficient power on the PCIe slot (27W)",
+    "clocks.throttle_reasons.sw_thermal_slowdown",
+    "Active",
+    "nvidia-smi -lgc 200,2150",
+    "nvidia-smi --lock-gpu-clocks 0,2150",
+    "N/A"
+   ],
+   "source_url": "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+  },
+  {
+   "what": "Docker launch missing unified-memory-friendly flags",
+   "how": "docker inspect <container> and check HostConfig: IpcMode == 'host' or ShmSize >= 16 GiB (LMSYS uses --shm-size 32g, forum 30G); Ulimits contains memlock -1 (TRT-LLM playbook) ; DeviceRequests includes gpus all or Runtime nvidia; if --memory limit set, INFO that it cannot bound GPU allocations ('this parameter can only limit the memory (RAM), not the GPU's VRAM'). Mutable tag ':latest' on vllm/sglang images -> INFO (silently outdated sm_121 kernels).",
+   "exact_strings": [
+    "--ipc=host",
+    "--shm-size",
+    "--ulimit memlock=-1",
+    "--ulimit stack=67108864",
+    "--gpus all",
+    "--runtime=nvidia",
+    ":latest",
+    ":cu130-nightly",
+    "nvcr.io/nvidia/vllm:26.05-py3",
+    "lmsysorg/sglang:latest-cu130",
+    "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13"
+   ],
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/trt-llm"
+  },
+  {
+   "what": "Desktop session and page cache eating headroom before a large load",
+   "how": "'systemctl get-default' == graphical.target and a logged-in GNOME session -> INFO (2-3 GB); compute Cached+Buffers from /proc/meminfo and suggest 'sudo sh -c \"sync; echo 3 > /proc/sys/vm/drop_caches\"' before loading a model whose weights exceed MemAvailable but not MemAvailable+Cached; kernel version < 6.17.1 -> INFO about slow model load (NO_PAGE_MAPCOUNT); driver 590.x -> WARN (vLLM CUDAGraph deadlock report).",
+   "exact_strings": [
+    "graphical.target",
+    "multi-user.target",
+    "echo 3 > /proc/sys/vm/drop_caches",
+    "vm.dirty_bytes=268435456",
+    "6.17.1",
+    "590."
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "what": "NemoClaw/OpenShell prerequisites on Spark",
+   "how": "node --version >= 22.16; docker info --format '{{.ServerVersion}}' 28.x; /etc/docker/daemon.json contains \"default-cgroupns-mode\": \"host\"; 'stat -fc %T /sys/fs/cgroup/' == cgroup2fs; ports 18789, 18790, 8080, 8000 free or owned by nemoclaw/vllm; 'curl http://127.0.0.1:8000/v1/models' returns the served model; kubelet error string in openshell logs indicates cgroup fix missing.",
+   "exact_strings": [
+    "\"default-cgroupns-mode\": \"host\"",
+    "Failed to start ContainerManager: failed to initialize top level QOS containers",
+    "nemoclaw: command not found",
+    "origin not allowed",
+    "qwen3.6-35b-a3b-nvfp4",
+    "http://127.0.0.1:8000/v1/models"
+   ],
+   "source_url": "https://nvidia.github.io/NemoClaw/pr-preview/pr-543/get-started/dgx-spark.html"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "UM-FIT-001",
+   "severity": "CRIT",
+   "trigger": "Planned footprint (weights + KV(ctx x parallel x bytes/token) + runtime reserve 8-15 GiB) exceeds MemAvailable, or vLLM --gpu-memory-utilization x MemTotal > MemAvailable - 8 GiB",
+   "evidence_template": "Plan needs {need_gib} GiB (weights {w_gib} + KV {kv_gib} @ {ctx} ctx x {par} seqs + runtime {rt_gib}) but MemAvailable is {avail_gib} GiB of {total_gib} GiB; on GB10 this freezes the OS rather than OOM-killing.",
+   "why_it_matters": "On unified memory there is no separate VRAM; exhaustion locks the machine (SSH dead, black HDMI, power-cycle). Forum reports crashes at 126.5 GB used.",
+   "next_steps": [
+    "Reduce context (--max-model-len / -c / num_ctx) or parallelism (--max-num-seqs / -np / OLLAMA_NUM_PARALLEL)",
+    "Use FP8/q8_0 KV cache (--kv-cache-dtype fp8, --cache-type-k q8_0 --cache-type-v q8_0, OLLAMA_KV_CACHE_TYPE=q8_0 with OLLAMA_FLASH_ATTENTION=1)",
+    "Pick a smaller quant (NVFP4/MXFP4/Q4) or a MoE model with fewer total params",
+    "Stop other resident model servers first"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/system-crashes-when-memory-is-full/352339",
+    "https://forums.developer.nvidia.com/t/dgx-spark-stability-out-of-ram-overheating/368536",
+    "https://blog.kubesimplify.com/day-2-anatomy-of-an-llm-inference-request-from-prompt-to-answer-step-by-step"
+   ]
+  },
+  {
+   "id": "UM-SWAP-002",
+   "severity": "WARN",
+   "trigger": "swapon --show non-empty or /dev/zram* present on a GB10/N1X unified-memory host",
+   "evidence_template": "Swap active: {swap_devices} ({swap_size}); vm.swappiness={swappiness}. Community guidance for DGX Spark is to disable swap so a runaway model exits instead of freezing the system.",
+   "why_it_matters": "When the shared pool spills to swap/zram the whole box becomes unresponsive; disabling swap converts a hang into a process crash.",
+   "next_steps": [
+    "sudo swapoff -a && swapon --show  # should print nothing",
+    "Comment swap entries in /etc/fstab; disable zram units",
+    "sudo sysctl -w vm.swappiness=1 vm.min_free_kbytes=2097152 (persist in /etc/sysctl.conf)"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/system-crashes-when-memory-is-full/352339",
+    "https://github.com/natolambert/dgx-spark-setup",
+    "https://forums.developer.nvidia.com/t/dgx-spark-stability-out-of-ram-overheating/368536"
+   ]
+  },
+  {
+   "id": "UM-VLLM-003",
+   "severity": "WARN",
+   "trigger": "vLLM running without --gpu-memory-utilization (default 0.92) or with value > 0.85, or without explicit --max-model-len, on unified memory",
+   "evidence_template": "vLLM cmdline: {cmdline}. gpu-memory-utilization={util} reserves {util_gib} GiB of the {total_gib} GiB shared pool, leaving {left_gib} GiB for OS/page cache/other services. max-model-len={mml} (auto = model max) pre-allocates {kv_gib} GiB KV.",
+   "why_it_matters": "vLLM's fraction is taken from the same pool the OS runs in; a default config was measured at 117 GB (89 GB pre-allocated KV) vs 32 GB when tuned. The vLLM team's Spark guidance is 0.85 / 131072 / --max-num-seqs 4.",
+   "next_steps": [
+    "Set --gpu-memory-utilization 0.6-0.85 sized to weights + desired KV + 8 GiB floor",
+    "Set --max-model-len to the real need (e.g. 65536 or 131072) and --max-num-seqs 4 (agents) to 8-16 (batch APIs)",
+    "Add --kv-cache-dtype fp8 only if still over budget; consider --enforce-eager to drop CUDA-graph memory (slower)"
+   ],
+   "sources": [
+    "https://vllm.ai/blog/2026-06-01-vllm-dgx-spark",
+    "https://docs.vllm.ai/en/latest/configuration/engine_args.html",
+    "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+   ]
+  },
+  {
+   "id": "UM-CU12-004",
+   "severity": "CRIT",
+   "trigger": "torch.version.cuda starts with '12.' or wheel tag +cu12x, or logs contain libcudart.so.12 ImportError, on DGX OS (CUDA 13 only)",
+   "evidence_template": "torch {torch_version} built for CUDA {torch_cuda} but host has CUDA {host_cuda} and no libcudart.so.12; error seen: 'ImportError: libcudart.so.12: cannot open shared object file'.",
+   "why_it_matters": "CUDA 12 wheels cannot load on CUDA-13-only DGX OS; runtimes silently fall back to CPU or fail to start.",
+   "next_steps": [
+    "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130",
+    "Prefer NGC/official arm64 cu130 containers (nvcr.io/nvidia/vllm:26.05-py3, vllm/vllm-openai:cu130-nightly)",
+    "Do not pip install flash-attn on GB10; use SDPA/FlashInfer bundled by the runtime"
+   ],
+   "sources": [
+    "https://github.com/natolambert/dgx-spark-setup",
+    "https://github.com/vllm-project/vllm/issues/31128"
+   ]
+  },
+  {
+   "id": "UM-CPUTORCH-005",
+   "severity": "CRIT",
+   "trigger": "torch.__version__ contains '+cpu' or torch.cuda.is_available() is False on a host where nvidia-smi sees GB10",
+   "evidence_template": "torch {torch_version}: cuda.is_available()={avail}; GPU 'NVIDIA GB10' present. Expected capability (12, 1).",
+   "why_it_matters": "Silent CPU inference on a 20-core Arm CPU is 10-50x slower than the GPU path and burns the shared memory pool twice.",
+   "next_steps": [
+    "Reinstall torch from the cu130 index",
+    "Verify: python -c 'import torch;print(torch.cuda.get_device_capability())' -> (12, 1)"
+   ],
+   "sources": [
+    "https://github.com/natolambert/dgx-spark-setup"
+   ]
+  },
+  {
+   "id": "UM-SM121-006",
+   "severity": "WARN",
+   "trigger": "Runtime logs contain 'no kernel image is available for execution on the device', 'sm_121a is not defined', or 'cvt with .e2m1x2 not supported'; or llama.cpp CMakeCache has CMAKE_CUDA_ARCHITECTURES=120; or vLLM _C.abi3.so has zero sm_120 cubins",
+   "evidence_template": "{runtime} built without native Blackwell (sm_121) kernels: {evidence}. Measured impact on Spark: 13 tok/s vs 48.6 tok/s for Qwen3.5-35B after rebuild.",
+   "why_it_matters": "Wrong-arch builds either fail outright or fall back to slow generic/PTX paths, costing up to 4x decode throughput.",
+   "next_steps": [
+    "llama.cpp: rebuild with -DCMAKE_CUDA_ARCHITECTURES=121 (or 121a-real); confirm 'compute capability 12.1' in startup log",
+    "Triton/TRT-LLM: export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas",
+    "vLLM: use a recent cu130 arm64 image; verify cuobjdump -lelf _C.abi3.so | grep -c sm_120 > 0"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/llama-cpp",
+    "https://forums.developer.nvidia.com/t/dgx-spark-13-49-tok-s-with-qwen3-5-35b-native-sm121-kernel-build-guide/365083",
+    "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006"
+   ]
+  },
+  {
+   "id": "UM-OLLAMA-007",
+   "severity": "WARN",
+   "trigger": "OLLAMA_KV_CACHE_TYPE=q8_0|q4_0 without OLLAMA_FLASH_ATTENTION=1, or model architecture not in the flash-attention allowlist, or 'ollama ps' PROCESSOR != '100% GPU'",
+   "evidence_template": "Ollama env: KV_CACHE_TYPE={kv} FLASH_ATTENTION={fa}; ollama ps: {model} PROCESSOR='{proc}' CONTEXT={ctx} SIZE={size}. Quantized KV silently falls back to f16 (or panics: 'V cache quantization requires flash_attn') when flash attention is unavailable.",
+   "why_it_matters": "Memory plans built on q8_0 KV are wrong by 2x if the runtime falls back to f16; a CPU/GPU split means the llama.cpp CPU path is in use.",
+   "next_steps": [
+    "Set Environment=\"OLLAMA_FLASH_ATTENTION=1\" and Environment=\"OLLAMA_KV_CACHE_TYPE=q8_0\" via systemctl edit ollama.service, then systemctl restart ollama",
+    "Use models with FA support (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl) or accept f16 KV in the budget",
+    "Check num_ctx / OLLAMA_CONTEXT_LENGTH: default 4096 is too small for coding agents; Qwen3.6 ships 256K by default"
+   ],
+   "sources": [
+    "https://github.com/ollama/ollama/issues/13337",
+    "https://github.com/ollama/ollama/issues/15043",
+    "https://docs.ollama.com/faq"
+   ]
+  },
+  {
+   "id": "UM-MULTI-008",
+   "severity": "WARN",
+   "trigger": "Two or more model servers (vLLM :8000, SGLang :30000, Ollama :11434 with loaded models, llama-server, trtllm-serve) resident with combined RSS/model size > 70% of MemTotal, or OLLAMA_MAX_LOADED_MODELS default 3 with large models",
+   "evidence_template": "Resident servers: {servers_with_gib}. Combined {sum_gib} GiB of {total_gib} GiB; MemAvailable {avail_gib} GiB.",
+   "why_it_matters": "Every server carves from the same 121 GiB; vLLM's pre-allocation plus an Ollama model can exceed the pool without any single process looking oversized.",
+   "next_steps": [
+    "Stop the server you are not using (systemctl stop ollama / docker stop vllm)",
+    "Set OLLAMA_MAX_LOADED_MODELS=1 and OLLAMA_KEEP_ALIVE appropriately",
+    "Use a router (llama-swap/LiteLLM) to load/unload instead of co-residency"
+   ],
+   "sources": [
+    "https://blog.kubesimplify.com/qwen3-8-27b-on-dgx-spark",
+    "https://forums.developer.nvidia.com/t/running-a-full-llm-stack-on-dgx-spark-gb10-your-application-litellm-llama-swap-vllm-llama-cpp-ollama/367580",
+    "https://docs.ollama.com/faq"
+   ]
+  },
+  {
+   "id": "UM-POWER-009",
+   "severity": "WARN",
+   "trigger": "Under load GPU power ~5 W with util < 5% (CRIT), or power plateau ~100 W with clocks.throttle_reasons.sw_thermal_slowdown=Active / temperature >= 85 C (WARN), or dmesg 'Detected insufficient power on the PCIe slot (27W)' (CRIT)",
+   "evidence_template": "nvidia-smi sample: power {p} W, util {u}%, sm {clk} MHz, temp {t} C, sw_thermal_slowdown={thr}. Spec: GPU max 120 W, system 240 W PSU.",
+   "why_it_matters": "Thermal capping halves sustained throughput; the 27 W PD defect needs RMA; the 5 W state is a driver bug fixed by 580.x/CUDA 13.",
+   "next_steps": [
+    "sudo apt dist-upgrade; sudo fwupdmgr refresh && sudo fwupdmgr update",
+    "Improve airflow / ambient < 25 C; consider nvidia-smi -lgc 200,2150 to avoid firmware shutdowns",
+    "If 27W PCIe message present, contact NVIDIA support (hardware)"
+   ],
+   "sources": [
+    "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode",
+    "https://forums.developer.nvidia.com/t/only-getting-half-the-advertised-performance-and-capping-at-100w/352253",
+    "https://github.com/eugr/spark-vllm-docker"
+   ]
+  },
+  {
+   "id": "UM-DOCKER-010",
+   "severity": "INFO",
+   "trigger": "Inference container lacks --ipc=host or --shm-size >= 16g, or TRT-LLM/vLLM container lacks --ulimit memlock=-1, or uses a mutable :latest tag",
+   "evidence_template": "Container {name} ({image}): IpcMode={ipc} ShmSize={shm} Ulimits={ulimits}. NVIDIA/LMSYS Spark recipes use --ipc=host, --shm-size 32g, --ulimit memlock=-1 --ulimit stack=67108864.",
+   "why_it_matters": "Small /dev/shm breaks multi-process engines; memlock limits break pinned allocations; :latest may lack sm_121 kernels.",
+   "next_steps": [
+    "docker run --gpus all --ipc=host --shm-size 32g --ulimit memlock=-1 --ulimit stack=67108864 ...",
+    "Pin image tags (e.g. nvcr.io/nvidia/vllm:26.05-py3, lmsysorg/sglang:latest-cu130 -> a dated tag)"
+   ],
+   "sources": [
+    "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/trt-llm",
+    "https://www.lmsys.org/blog/2025-11-03-gpt-oss-on-nvidia-dgx-spark/",
+    "https://blog.kubesimplify.com/day-5-local-llm-inference-engines-wrappers-and-what-to-pick"
+   ]
+  },
+  {
+   "id": "UM-DENSE-011",
+   "severity": "INFO",
+   "trigger": "User selects a dense model > 30B params for interactive/agent use with single-stream decode target > 10 tok/s",
+   "evidence_template": "{model} {quant}: {w_gib} GiB weights -> bandwidth-bound ceiling ~{ceil} tok/s at 273 GB/s (measured: Llama 3.1 70B FP8 2.7 tok/s; Qwen3.8-27B FP8 8.2 tok/s). MoE alternatives: gpt-oss-120b MXFP4 ~50-60 tok/s, Nemotron 3 Super 120B NVFP4 ~23-38 tok/s, Qwen3.6-35B-A3B ~50-80 tok/s.",
+   "why_it_matters": "Decode reads every active weight per token; dense 70B at 4-bit is capped near 7 tok/s regardless of engine.",
+   "next_steps": [
+    "Prefer MoE with 3-15B active params for interactive latency",
+    "Use speculative decoding (MTP/EAGLE3) where available (+80-100%)",
+    "Reserve dense 70B for batch/offline jobs with high concurrency"
+   ],
+   "sources": [
+    "https://blog.kubesimplify.com/day-2-anatomy-of-an-llm-inference-request-from-prompt-to-answer-step-by-step",
+    "https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/",
+    "https://forums.developer.nvidia.com/t/measured-inference-benchmarks-on-a-single-dgx-spark-same-harness-across-ollama-llama-cpp-and-vllm-notes-data-published/379766"
+   ]
+  },
+  {
+   "id": "UM-CACHE-012",
+   "severity": "INFO",
+   "trigger": "MemAvailable < planned footprint but MemAvailable + (Cached + Buffers) >= footprint; or graphical.target active before a > 80 GiB load",
+   "evidence_template": "MemAvailable {avail_gib} GiB, page cache {cache_gib} GiB, desktop session active ({target}). Dropping caches / headless mode frees ~{free_gib} GiB.",
+   "why_it_matters": "Page cache from prior model files and GNOME (2-3 GB) delay or block loads and disable vLLM auto-prefetch.",
+   "next_steps": [
+    "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' before loading",
+    "sudo systemctl set-default multi-user.target for headless serving",
+    "sudo sysctl vm.dirty_bytes=268435456"
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886",
+    "https://forums.developer.nvidia.com/t/unified-memory-kernel-init-allocations-flashinfer-deepgemm-nvfp4-consume-50gb-before-weight-loading-starts-disabling-auto-prefetch-on-large-models/378585"
+   ]
+  },
+  {
+   "id": "UM-AGENT-013",
+   "severity": "WARN",
+   "trigger": "Agent profile (coding agent / NemoClaw / RAG) with context budget < 32K tokens, or KV not sized for (1 + subagents) x context",
+   "evidence_template": "Agent workload '{agent}' with ctx={ctx} parallel={par}: KV {kv_gib} GiB. NVIDIA guidance: agents commonly use 30K-120K contexts; four subagents at 32K cost ~2.6x wall time; Ollama default context is 4096.",
+   "why_it_matters": "Coding agents fail or thrash with small contexts; vLLM --max-num-seqs and Ollama OLLAMA_NUM_PARALLEL must cover concurrent tool calls.",
+   "next_steps": [
+    "vLLM: --max-model-len 65536-131072, --max-num-seqs 4, --enable-prefix-caching (default), --enable-auto-tool-choice --tool-call-parser <model>",
+    "Ollama: OLLAMA_CONTEXT_LENGTH=65536 (or num_ctx), OLLAMA_NUM_PARALLEL=2-4, OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0",
+    "llama.cpp: -c 65536 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -np 2"
+   ],
+   "sources": [
+    "https://developer.nvidia.com/blog/scaling-autonomous-ai-agents-and-workloads-with-nvidia-dgx-spark",
+    "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/cli-coding-agent",
+    "https://vlaicu.io/posts/dgx-llamacpp-playbook/"
+   ]
+  },
+  {
+   "id": "UM-NEMOCLAW-014",
+   "severity": "WARN",
+   "trigger": "NemoClaw/OpenShell present but node < 22.16, daemon.json lacks default-cgroupns-mode host, or ports 18789/8080/8000 conflict",
+   "evidence_template": "node {node_ver}; /etc/docker/daemon.json default-cgroupns-mode={mode}; cgroup fs {cgfs}; listeners on 18789/8080/8000: {owners}.",
+   "why_it_matters": "OpenShell embeds k3s in Docker; on cgroup v2 without host cgroupns kubelet fails ('Failed to start ContainerManager...').",
+   "next_steps": [
+    "sudo nemoclaw setup-spark (writes daemon.json fix) or add {\"default-cgroupns-mode\": \"host\"} and restart docker",
+    "Install Node 22: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -",
+    "Verify inference: curl http://127.0.0.1:8000/v1/models"
+   ],
+   "sources": [
+    "https://nvidia.github.io/NemoClaw/pr-preview/pr-543/get-started/dgx-spark.html",
+    "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/nemoclaw/README.md"
+   ]
+  },
+  {
+   "id": "UM-DRIVER-015",
+   "severity": "INFO",
+   "trigger": "Driver major version 590 detected with vLLM in use; or kernel < 6.17.1 with large GGUF loads",
+   "evidence_template": "Driver {drv}, kernel {kernel}. Community report: driver 590.x CUDAGraph capture deadlock on GB10; kernel 6.17.1 NO_PAGE_MAPCOUNT needed for fast llama.cpp model loading.",
+   "why_it_matters": "Known-good stack per NVIDIA playbooks is DGX OS 7.x, driver 580.x, CUDA 13.0.",
+   "next_steps": [
+    "Stay on 580.x until vLLM confirms 590 fix, or run vLLM with --enforce-eager as a workaround",
+    "Use --no-mmap for llama.cpp on older kernels"
+   ],
+   "sources": [
+    "https://github.com/eugr/spark-vllm-docker",
+    "https://github.com/ggml-org/llama.cpp/discussions/16578"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Headroom check on GB10 (nvidia-smi memory is N/A)",
+   "command": "awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf \"Used: %.1f GB / %.1f GB\\n\",(t-a)/1048576,t/1048576}' /proc/meminfo  ;  free -h",
+   "notes": "Use MemAvailable ('available' column), not 'free'. Expect MemTotal ~121 GiB on a 128 GB Spark.",
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "context": "Swap/zram state and disable",
+   "command": "swapon --show ; cat /proc/swaps ; sudo swapoff -a ; sudo sysctl -w vm.swappiness=1 vm.min_free_kbytes=2097152",
+   "notes": "'swapon --show' should print nothing after fix; persist in /etc/fstab and /etc/sysctl.conf.",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "Drop page cache / headless before a large load",
+   "command": "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' ; sudo systemctl set-default multi-user.target ; sudo sysctl vm.dirty_bytes=268435456",
+   "notes": "Desktop costs 2-3 GB; drop_caches fixes 'model loading freeze' reports.",
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "context": "Power/thermal probe",
+   "command": "nvidia-smi --query-gpu=power.draw,utilization.gpu,clocks.sm,temperature.gpu,clocks.throttle_reasons.sw_thermal_slowdown --format=csv,noheader ; dmesg | grep -i 'insufficient power' ; sudo nvidia-smi -lgc 200,2150",
+   "notes": "Healthy under load ~'35.65 W, 96 %, 2522 MHz'; '4.80 W, 2 %' = fault. nvidia-smi -pl returns N/A (no user power cap). Clock lock is a community workaround for firmware shutdowns (~1-2% cost).",
+   "source_url": "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+  },
+  {
+   "context": "PyTorch install and verification on DGX OS (CUDA 13, aarch64)",
+   "command": "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 ; python -c 'import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_capability())'",
+   "notes": "Expect cuda '13.x', True, (12, 1). Warning about capability 12.1 vs max 12.0 is benign. Do not install flash-attn.",
+   "source_url": "https://github.com/natolambert/dgx-spark-setup"
+  },
+  {
+   "context": "Triton/TRT-LLM ptxas fix for sm_121a",
+   "command": "export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas   # with mpirun: mpirun -x TRITON_PTXAS_PATH ...",
+   "notes": "Fixes 'ptxas fatal : Value sm_121a is not defined for option gpu-name'.",
+   "source_url": "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006"
+  },
+  {
+   "context": "vLLM (vLLM team's Spark reference, MoE NVFP4 agent-serving)",
+   "command": "docker run -d --name vllm --ipc=host --restart unless-stopped --gpus all -p 8000:8000 -e HF_TOKEN=\"$HF_TOKEN\" -v ~/.cache/huggingface:/root/.cache/huggingface vllm/vllm-openai:cu130-nightly nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 --served-model-name nemotron-3-super --trust-remote-code --max-model-len 131072 --gpu-memory-utilization 0.85 --max-num-seqs 4 --reasoning-parser nemotron_v3 --enable-auto-tool-choice --tool-call-parser qwen3_coder",
+   "notes": "Leave --kv-cache-dtype unset unless memory-bound; leave --quantization unset for pre-quantized NVFP4. Warm up with a ping request (~25 s JIT). Readiness: curl -sS http://localhost:8000/v1/models | jq -r '.data[0].id'.",
+   "source_url": "https://vllm.ai/blog/2026-06-01-vllm-dgx-spark"
+  },
+  {
+   "context": "vLLM (NVIDIA playbook NGC image)",
+   "command": "docker run -it --gpus all -p 8000:8000 nvcr.io/nvidia/vllm:26.05-py3 vllm serve ${HF_MODEL_HANDLE} --gpu-memory-utilization 0.8 --max-model-len 131072 --kv-cache-dtype fp8 --attention-backend flashinfer --max-num-seqs 8",
+   "notes": "Playbook ranges: util 0.4-0.9, max-model-len 2048-262144, max-num-seqs 4-10, backend TRITON_ATTN or flashinfer. Prereqs: nvcc --version (CUDA 13.0), docker, python3.12, nvidia-container-toolkit.",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/vllm"
+  },
+  {
+   "context": "vLLM minimal-footprint mode (memory-creep thread; 117 GB -> 32 GB)",
+   "command": "docker run --runtime=nvidia -e VLLM_USE_FLASHINFER_MOE_FP4=0 -e VLLM_NVFP4_GEMM_BACKEND=marlin -e VLLM_TEST_FORCE_FP8_MARLIN=1 <image> python3 -m vllm.entrypoints.openai.api_server --enforce-eager --gpu-memory-utilization 0.2 --kv-cache-dtype fp8",
+   "notes": "--enforce-eager removes ~13 GB torch.compile/CUDA-graph memory at a latency cost.",
+   "source_url": "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886"
+  },
+  {
+   "context": "vLLM high-concurrency batch extraction (gpt-oss-120b MXFP4)",
+   "command": "--max-model-len 65536 --gpu-memory-utilization 0.65 --enable-prefix-caching --trust-remote-code   (env: VLLM_USE_FLASHINFER_MOE_FP4=1 VLLM_FLASHINFER_MOE_BACKEND=throughput)",
+   "notes": "Aggregate peaked at c=256 (862 tok/s) and fell beyond; KV was only ~9% used at peak.",
+   "source_url": "https://dendro-logic.com/engineering/nvidia-dgx-spark-concurrency-benchmark/"
+  },
+  {
+   "context": "Verify vLLM build has native Blackwell cubins",
+   "command": "cuobjdump -lelf $(python -c \"import vllm,os;print(os.path.dirname(vllm.__file__))\")/_C.abi3.so | grep -c sm_120",
+   "notes": "0 = missing (expect ~4x slower decode); 50+ = good. Build env if rebuilding: TORCH_CUDA_ARCH_LIST=\"12.1\" VLLM_TARGET_DEVICE=cuda VLLM_TEST_FORCE_FP8_MARLIN=1 MAX_JOBS=4.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-13-49-tok-s-with-qwen3-5-35b-native-sm121-kernel-build-guide/365083"
+  },
+  {
+   "context": "SGLang (LMSYS Spark image, gpt-oss)",
+   "command": "docker run --gpus all --shm-size 32g -p 30000:30000 -v ~/.cache/huggingface:/root/.cache/huggingface -v ~/tiktoken_encodings:/tiktoken_encodings --env HF_TOKEN=<secret> --env TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings --ipc=host lmsysorg/sglang:spark python3 -m sglang.launch_server --model-path openai/gpt-oss-120b --host 0.0.0.0 --port 30000 --reasoning-parser gpt-oss --tool-call-parser gpt-oss",
+   "notes": "~70 tok/s (20b) and ~50 tok/s (120b). NVIDIA SGLang playbook uses lmsysorg/sglang:latest-cu130 with --attention-backend flashinfer --mem-fraction-static 0.75 --tp 1; add --quantization modelopt_fp4 for NVFP4 checkpoints.",
+   "source_url": "https://www.lmsys.org/blog/2025-11-03-gpt-oss-on-nvidia-dgx-spark/"
+  },
+  {
+   "context": "TensorRT-LLM (NVIDIA playbook)",
+   "command": "docker run --rm -it --gpus all --ipc host --network host --ulimit memlock=-1 --ulimit stack=67108864 -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ -e HF_TOKEN=$HF_TOKEN nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 trtllm-serve nvidia/Llama-3.1-8B-Instruct-FP4 --port 8355 --max_batch_size 64 --trust_remote_code",
+   "notes": "KV via YAML free_gpu_memory_fraction: 0.9 (lower on OOM); TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1 for load-time pressure; nvidia/Qwen3-235B-A22B-FP4 is multi-node only.",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/trt-llm"
+  },
+  {
+   "context": "llama.cpp build for GB10",
+   "command": "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DGGML_RPC=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real && cmake --build build --config Release --target llama-server -j",
+   "notes": "121 / 121a / 121a-real all valid; 120 -> 'no kernel image is available'. Old cmake rejecting 121a: pip install --upgrade cmake or -DCMAKE_CUDA_ARCHITECTURES=OFF -DCMAKE_CUDA_FLAGS=\"-gencode arch=compute_121a,code=sm_121a\". One-liner: bash <(curl -s https://ggml.ai/dgx-spark.sh).",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/llama-cpp"
+  },
+  {
+   "context": "llama.cpp server (agent-friendly, unified memory)",
+   "command": "./build/bin/llama-server -hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q4_K_XL --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 -c 65536 --jinja --spec-type draft-mtp --spec-draft-n-max 3 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+   "notes": "--no-mmap avoids known Spark mmap slow-load (~5x); keep KV at q8_0 or higher; --jinja required for tool calling; -c 0 = model default (can be 256K -> large KV). Health: curl -sf http://127.0.0.1:30000/health.",
+   "source_url": "https://vlaicu.io/posts/dgx-llamacpp-playbook/"
+  },
+  {
+   "context": "llama.cpp benchmark harness used by ggml maintainers on Spark",
+   "command": "llama-bench -m model.gguf -fa 1 -d 0,4096,8192,16384,32768 -p 2048 -n 32 -ub 2048 -mmp 0 ; llama-batched-bench -m model.gguf -fa 1 -c 300000 -ub 2048 -npp 4096,8192 -ntg 32 -npl 1,2,4,8,16,32 --no-mmap",
+   "notes": "gpt-oss-120b MXFP4: pp2048 ~1,956 t/s, tg32 ~60 t/s at d0, ~40 t/s at d32768.",
+   "source_url": "https://github.com/ggml-org/llama.cpp/discussions/16578"
+  },
+  {
+   "context": "Ollama service tuning on Spark",
+   "command": "sudo systemctl edit ollama.service   # [Service] Environment=\"OLLAMA_FLASH_ATTENTION=1\" Environment=\"OLLAMA_KV_CACHE_TYPE=q8_0\" Environment=\"OLLAMA_NUM_PARALLEL=2\" Environment=\"OLLAMA_MAX_LOADED_MODELS=1\" Environment=\"OLLAMA_CONTEXT_LENGTH=65536\" ; sudo systemctl restart ollama ; ollama ps",
+   "notes": "Defaults: context 4096, parallel 1, max loaded 3 x GPUs, KV f16. Check 'ollama ps' PROCESSOR = '100% GPU'. Nemotron 3.5 Lightning needs Ollama v0.32.9+; ollama launch needs v0.15+.",
+   "source_url": "https://docs.ollama.com/faq"
+  },
+  {
+   "context": "CLI coding agent via Ollama (NVIDIA playbook)",
+   "command": "ollama pull qwen3.6 ; ollama launch claude --model qwen3.6   # or: ollama launch opencode --model qwen3.6 ; ollama launch codex --model qwen3.6",
+   "notes": "Tags: qwen3.6 (~24GB), qwen3.6:35b-a3b-nvfp4 (~22GB), :35b-a3b-q8_0 (~39GB), :35b-a3b-bf16 (~71GB); 256K default context.",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/cli-coding-agent"
+  },
+  {
+   "context": "NemoClaw / OpenShell on Spark",
+   "command": "curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash ; stat -fc %T /sys/fs/cgroup/ ; cat /etc/docker/daemon.json ; curl http://127.0.0.1:8000/v1/models ; openshell sandbox list",
+   "notes": "Needs Node 22.16+, Docker 28.x, daemon.json {\"default-cgroupns-mode\": \"host\"}; default local model qwen3.6-35b-a3b-nvfp4 on managed vLLM :8000; dashboard 18789-18790, gateway 8080.",
+   "source_url": "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/nemoclaw/README.md"
+  },
+  {
+   "context": "Windows on Arm (RTX Spark) toolchain notes",
+   "command": "CUDA Toolkit 13.4 developer preview (Windows 11 ARM64); llama.cpp must be built with clang-cl; GeForce driver 616.00 Arm64 developer preview",
+   "notes": "Compute capability and unified-memory reporting APIs for N1X not yet published; wizard should gate on driver >= 616 and PCI DEV_2E03/2E06.",
+   "source_url": "https://blog.conan.io/cuda/gpu/armv8/arm64/windows/conan/nvidia/jetson/jetpack/2026/07/30/CUDA-Meets-Windows-On-Arm64-NVIDIA-RTX-Spark.html"
+  }
+ ],
+ "open_questions": [
+  "Exact bytes/param for GGUF Q4_K_M / UD-Q4_K_XL (~0.6 B/param) was not confirmed from a primary source; use measured file sizes (e.g. Qwen3.8-27B Q4_K_XL 16.68 GB for 27B = 0.62 B/param) until verified.",
+  "Nemotron-3-Super KV/state cost per token: attention KV is ~8 KiB/token (8 attention layers x 2 kv heads x 128 x 2 x 2 B) but Frank Denneman measured ~7 GB per Ollama parallel slot at 262K, implying Mamba state + buffers dominate; the wizard needs a per-architecture 'state' term for hybrid Mamba models (Nemotron 3/3.5, Qwen3.8 Gated DeltaNet).",
+  "gpt-oss sliding-window layers (sliding_window 128 on alternating layers) mean real KV is roughly half the full-attention upper bound; confirm how vLLM/llama.cpp actually allocate for hybrid SWA models before using the smaller number.",
+  "Whether DGX OS 7.x ships with swap or zram enabled by default was not confirmed (community guides tell users to run swapoff -a, and LMSYS suggested enabling swap for gpt-oss-120b stability in Oct 2025); the wizard should detect rather than assume.",
+  "Precise OS/firmware reservation on current DGX OS 7.3.x: sources disagree between ~119 GiB and ~121.7 GiB MemTotal and 3-7 GB OS baseline; measure at runtime.",
+  "vLLM's exact runtime/JIT overhead on GB10 varies widely by version (3 GB runtime + 13 GB compile/graphs in one report; ~50 GB transient kernel-init allocation in another with nvcr.io/nvidia/vllm:26.07-py3); the wizard should use a conservative 15 GiB reserve and re-measure MemAvailable after startup.",
+  "Whether the NVFP4 kernel gap on sm_121 (no cvt.e2m1x2; Marlin fallback) still applies in vLLM >= 0.26 / NGC 26.05+; the vLLM team's June 2026 post serves NVFP4 Nemotron at 22.7-23.7 tok/s while Kubesimplify reports ~38 tok/s, suggesting kernel paths differ by build.",
+  "Driver 590.x CUDAGraph deadlock on GB10 is a single-source community report (eugr README); needs confirmation before making it a WARN rule.",
+  "RTX Spark (N1X) specifics are unpublished: compute capability (likely sm_12x), Windows unified-memory reporting (nvidia-smi/NVML vs GlobalMemoryStatusEx), whether Ollama/LM Studio ship Arm64 CUDA builds at launch, WSL2 CUDA support, and real sustained bandwidth (press says ~300 GB/s) and 45-80 W thermal behavior under decode.",
+  "Ollama's published DGX Spark blog (prefill/decode numbers cited by Kubesimplify: Llama 3.1 8B Q4 7,614/38, gpt-oss-20b 3,224/58, DeepSeek R1 14B Q4 5,919/20) could not be fetched directly (404 at guessed URLs); treat as medium confidence.",
+  "Qwen3-235B-A22B NVFP4 on a single Spark: NVIDIA's TRT-LLM playbook lists nvidia/Qwen3-235B-A22B-FP4 as multi-node only; at ~0.56 B/param the ~133B-param checkpoint is ~70-75 GB and might fit single-node with small context, but no single-Spark tokens/s number was found."
+ ],
+ "sources": [
+  "https://vllm.ai/blog/2026-06-01-vllm-dgx-spark",
+  "https://www.lmsys.org/blog/2025-10-13-nvidia-dgx-spark/",
+  "https://www.lmsys.org/blog/2025-11-03-gpt-oss-on-nvidia-dgx-spark/",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/llama-cpp",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/vllm",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/ollama",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/cli-coding-agent",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/sglang",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/tree/main/nvidia/trt-llm",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/nemoclaw/README.md",
+  "https://github.com/NVIDIA/dgx-spark-playbooks/blob/main/nvidia/connect-two-sparks/assets/performance_benchmarking_guide.md",
+  "https://nvidia.github.io/NemoClaw/pr-preview/pr-543/get-started/dgx-spark.html",
+  "https://developer.nvidia.com/blog/scaling-autonomous-ai-agents-and-workloads-with-nvidia-dgx-spark",
+  "https://build.nvidia.com/spark/nemotron",
+  "https://docs.nvidia.com/dgx/dgx-spark/",
+  "https://forums.developer.nvidia.com/t/memory-creep-on-dgx-spark-where-your-128-gb-actually-goes-and-how-to-stop-it/364886",
+  "https://forums.developer.nvidia.com/t/unified-memory-kernel-init-allocations-flashinfer-deepgemm-nvfp4-consume-50gb-before-weight-loading-starts-disabling-auto-prefetch-on-large-models/378585",
+  "https://forums.developer.nvidia.com/t/system-crashes-when-memory-is-full/352339",
+  "https://forums.developer.nvidia.com/t/dgx-spark-stability-out-of-ram-overheating/368536",
+  "https://forums.developer.nvidia.com/t/dgx-spark-13-49-tok-s-with-qwen3-5-35b-native-sm121-kernel-build-guide/365083",
+  "https://forums.developer.nvidia.com/t/measured-inference-benchmarks-on-a-single-dgx-spark-same-harness-across-ollama-llama-cpp-and-vllm-notes-data-published/379766",
+  "https://forums.developer.nvidia.com/t/only-getting-half-the-advertised-performance-and-capping-at-100w/352253",
+  "https://forums.developer.nvidia.com/t/investigating-performance-issue-bottleneck/359200",
+  "https://forums.developer.nvidia.com/t/tensorrt-llm-1-3-0rc5/366006",
+  "https://forums.developer.nvidia.com/t/dgx-spark-memory-dashboard-live-gib-occupancy-map-can-i-load-next/381279",
+  "https://forums.developer.nvidia.com/t/dgx-spark-vllm-deep-dive-historical-troubleshooting-and-guide/379391",
+  "https://blog.kubesimplify.com/day-2-anatomy-of-an-llm-inference-request-from-prompt-to-answer-step-by-step",
+  "https://blog.kubesimplify.com/day-3-the-dgx-spark-unpacked-gb10-unified-memory-sm-121-and-the-one-reason-this-hardware-exists",
+  "https://blog.kubesimplify.com/day-5-local-llm-inference-engines-wrappers-and-what-to-pick",
+  "https://blog.kubesimplify.com/qwen3-8-27b-on-dgx-spark",
+  "https://blog.kubesimplify.com/nemotron-3-5-lightning-on-dgx-spark",
+  "https://dendro-logic.com/engineering/nvidia-dgx-spark-concurrency-benchmark/",
+  "https://corti.com/running-gpt-oss-120b-on-a-single-nvidia-dgx-spark-a-practical-guide/",
+  "https://frankdenneman.ai/posts/2026-03-23-understanding-unified-memory-dgx-spark-nemoclaw-nemotron/",
+  "https://vlaicu.io/posts/dgx-llamacpp-playbook/",
+  "https://github.com/eugr/spark-vllm-docker",
+  "https://github.com/natolambert/dgx-spark-setup",
+  "https://github.com/ggml-org/llama.cpp/discussions/16514",
+  "https://github.com/ggml-org/llama.cpp/discussions/16578",
+  "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md",
+  "https://github.com/ollama/ollama/issues/13337",
+  "https://github.com/ollama/ollama/issues/15043",
+  "https://github.com/ollama/ollama/blob/main/docs/faq.mdx",
+  "https://docs.ollama.com/faq",
+  "https://github.com/vllm-project/vllm/issues/31128",
+  "https://github.com/vllm-project/vllm/issues/36821",
+  "https://docs.vllm.ai/en/latest/configuration/engine_args.html",
+  "https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache.html",
+  "https://huggingface.co/unsloth/Llama-3.1-8B-Instruct/raw/main/config.json",
+  "https://huggingface.co/unsloth/Llama-3.3-70B-Instruct/raw/main/config.json",
+  "https://huggingface.co/Qwen/Qwen3-32B/raw/main/config.json",
+  "https://huggingface.co/Qwen/Qwen3-235B-A22B/raw/main/config.json",
+  "https://huggingface.co/openai/gpt-oss-120b/raw/main/config.json",
+  "https://huggingface.co/openai/gpt-oss-20b/raw/main/config.json",
+  "https://huggingface.co/openai/gpt-oss-120b",
+  "https://huggingface.co/openai/gpt-oss-20b",
+  "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B/raw/main/config.json",
+  "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B/raw/main/config.json",
+  "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/raw/main/config.json",
+  "https://huggingface.co/nvidia/Qwen3-235B-A22B-FP4",
+  "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode",
+  "https://en.wikipedia.org/wiki/Nvidia_RTX_Spark",
+  "https://www.xda-developers.com/nvidia-rtx-spark-windows-on-arm-reinvent-the-pc/",
+  "https://www.windowslatest.com/2026/07/18/nvidia-begins-preparing-n1x-windows-11-gpu-drivers-ahead-of-rtx-spark-arm-pcs-launch/",
+  "https://blog.conan.io/cuda/gpu/armv8/arm64/windows/conan/nvidia/jetson/jetpack/2026/07/30/CUDA-Meets-Windows-On-Arm64-NVIDIA-RTX-Spark.html"
+ ]
+}

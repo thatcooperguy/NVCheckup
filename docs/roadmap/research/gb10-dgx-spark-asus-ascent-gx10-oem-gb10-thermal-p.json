@@ -1,0 +1,857 @@
+{
+ "topic": "GB10 (DGX Spark / ASUS Ascent GX10 / OEM GB10) thermal, power and stability behavior: nvidia-smi power/clock/thermal fields, USB-PD power-negotiation wedge, log-less hard power-off, EC fan-curve regression, sleep/wake/HDMI issues, and firmware fixes",
+ "facts": [
+  {
+   "claim": "On GB10 every nvidia-smi power-limit field reports N/A and `nvidia-smi -pl` is not supported.",
+   "detail": "Verbatim `nvidia-smi -q` 'GPU Power Readings' block from a DGX Spark (driver 580, DGX OS 7.5): 'Average Power Draw : 14.11 W', 'Instantaneous Power Draw : 15.36 W', 'Current Power Limit : N/A', 'Requested Power Limit : N/A', 'Default Power Limit : N/A', 'Min Power Limit : N/A', 'Max Power Limit : N/A'. Community docs note the GPU power limit is nominally ~140 W (SoC TDP) but is not exposed. Clock capping via -lgc is the only user-level knob.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304"
+  },
+  {
+   "claim": "GB10 nvidia-smi clock fields: Max Clocks Graphics/SM/Video = 3003 MHz, Applications Clocks Graphics = 2418 MHz, Memory clock = N/A, Supported Clocks = N/A.",
+   "detail": "Verbatim: 'Max Clocks / Graphics : 3003 MHz / SM : 3003 MHz / Memory : N/A / Video : 3003 MHz'. Healthy sustained load clocks reported by users: ~2200-2600 MHz (2385-2455 MHz typical stock boost); `nvidia-smi -q -d SUPPORTED_CLOCKS` reports 'Supported Clocks : N/A'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-clock-pinned-at-721-mhz-under-full-load-no-throttling-not-liftable-via-nvidia-smi/376039"
+  },
+  {
+   "claim": "GB10 nvidia-smi Temperature section exposes 'GPU T.Limit Temp' but Shutdown/Slowdown T.Limit are N/A and 'GPU Max Operating T.Limit Temp : 0 C'.",
+   "detail": "Verbatim block: 'GPU Current Temp : 44 C', 'GPU T.Limit Temp : 50 C', 'GPU Shutdown T.Limit Temp : N/A', 'GPU Slowdown T.Limit Temp : N/A', 'GPU Max Operating T.Limit Temp : 0 C', 'GPU Target Temperature : N/A', 'Memory Current Temp : N/A', 'Memory Max Operating T.Limit Temp : N/A'. A diagnostic must not treat these N/A / 0 C values as errors.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304"
+  },
+  {
+   "claim": "GB10 'Clocks Event Reasons' section field names and a separate 'Clocks Event Reasons Counters' section (microseconds) are present on driver 580.",
+   "detail": "Verbatim: 'Clocks Event Reasons / Idle : Not Active / Applications Clocks Setting : Not Active / SW Power Cap : Not Active / HW Slowdown : Not Active / HW Thermal Slowdown : Not Active / HW Power Brake Slowdown : Not Active / Sync Boost : Not Active / SW Thermal Slowdown : Not Active / Display Clock Setting : Not Active' then 'Clocks Event Reasons Counters / SW Power Capping : 1369386233 us / Sync Boost : 0 us / SW Thermal Slowdown : 0 us / HW Thermal Slowdown : 0 us / HW Power Braking : 0 us'. In the PD-wedge state all reasons read Not Active while the SW Power Capping counter is huge.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304"
+  },
+  {
+   "claim": "nvidia-smi reports 'Fan Speed : N/A' on GB10 and no fan telemetry is available via /sys/class/thermal or /sys/class/hwmon; fan control is done by the Embedded Controller.",
+   "detail": "Users investigating throttling found 'Fan: N/A' in nvidia-smi and no fan RPM anywhere in sysfs; the kernel journal had 'no matching thermal, throttling, fan, or ACPI entries' during throttle events. ACPI thermal zones are exposed as type 'acpitz' (thermal_zone0/2/5 observed).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044"
+  },
+  {
+   "claim": "The 'PD wedge' / power-limited signature is: GPU clock pinned at a fixed low value (611, 650 or 721 MHz observed) at 95-99% utilization, power draw ~10-16 W (or ~5 W / 30 W variants), temperature ~44-55 C, GPU T.Limit Temp 50 C, P0 pstate, all throttle reasons Not Active, and `nvidia-smi -lgc` silently has no effect.",
+   "detail": "Thread 376039: 'clocks.sm 721 MHz clocks.max.sm 3003 MHz utilization.gpu 96 % power.draw ~10 W temp 55 C'; 'sudo nvidia-smi -lgc 3003 -> silently has no effect; clock stays 721 MHz'. Thread 370304: Graphics 650 MHz, 14-15 W, T.Limit 50 C. Sggin1 doc: 611 MHz / ~13-16 W / 'temperature reading appearing capped at ~50 C'. The wedge survives warm reboots.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-clock-pinned-at-721-mhz-under-full-load-no-throttling-not-liftable-via-nvidia-smi/376039"
+  },
+  {
+   "claim": "NVIDIA's official recovery for the power-limited state is a full cold power cycle: unplug both the unit and the power supply from the wall.",
+   "detail": "aniculescu (NVIDIA), 2026-06-30: 'Unplugging the unit AND the power supply from the wall should bring the unit back to normal operation.' Users add: hold the power button 10 s to 1 min with power removed, wait 1-10 min, reconnect PSU before peripherals. One user also reported success after 'disable Fast Boot in the BIOS'. NVIDIA, 2026-06-30: 'The power limiting issue is still being investigated by engineering'; 2026-08-11: 'Others have said that latest firmware updates have fixed this issue for them... if you have an OEM device... ask for RMA.'",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/gb10-is-power-limited-after-crash/366590"
+  },
+  {
+   "claim": "Community root-cause model: the USB-C PD controller (MCU inside the 240 W brick) gets stuck after an OOM/crash/sleep event and a warm reboot cannot reset it because the brick rails stay powered.",
+   "detail": "Sggin1 GX10_PD_Throttle_Fix.md (verified on ASUS Ascent GX10, last updated 2026-05-19): cold drain = shutdown -h now, unplug 240 W USB-C PSU from wall AND unit, unplug ALL USB-C peripherals, hold power button ~30 s, wait 60+ s, replug PSU only, power on. Known recurrence triggers: 'Sleep/resume cycles, crashes mid-load, and warm reboots after firmware updates.' No firmware gives permanent immunity.",
+   "confidence": "medium",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "claim": "Healthy vs wedged baseline numbers (community): healthy GB10 under load ~2200-2600 MHz, ~80-100 W sustained GPU power, ~55-60 bf16 TFLOPS; wedged 611 MHz, ~13 W, ~18 TFLOPS. Pass threshold used by tools: >=1400 MHz and >=40 W sustained for 30 s.",
+   "detail": "Table in Sggin1 doc: 'GPU clock under load 611 MHz vs ~2200-2600 MHz; Package power ~13 W vs ~80-100 W; GPU power limit shows as 30 W or lower in safety mode vs ~140 W; Temps under load capped at 50 C vs 70-90 C is normal; Throttle-check tool threshold <1400 MHz = flagged'.",
+   "confidence": "medium",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "claim": "A permanent ~30 W 'safety mode' variant on ASUS Ascent GX10 (BIOS 0102, EC 2.75.3.3, DGX OS 7.2.3) was not fixed by the ASUS 'double flash' PD firmware procedure; NVIDIA advised RMA via ASUS.",
+   "detail": "NVES (NVIDIA): 'As this is ASUS GB10 unit, recommend you reachout to ASUS support for a replacement / RMA'. The poster also quoted dmesg 'mlx5_core 0000:01:00.0: mlx5_pcie_event:326:(pid 165): Detected insufficient power on the PCIe slot (27W).' and 'pci 000f:01:00.0: 0.000 Gb/s available PCIe bandwidth, limited by Unknown x0 link'. Dated 2025-12-20..25.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/asus-ascent-gx10-dgx-spark-permanent-power-throttle-at-30w-safety-mode-pd-firmware-negotiation-failure/355255"
+  },
+  {
+   "claim": "The dmesg line 'Detected insufficient power on the PCIe slot (27W).' from mlx5_core appears on healthy DGX Sparks and is considered benign; it must not be used alone as a power-fault indicator.",
+   "detail": "Exact string: 'mlx5_core 0000:01:00.1: mlx5_pcie_event:326:(pid 14203): Detected insufficient power on the PCIe slot (27W).' Moderator (2026-05-23): message 'has been discussed before and is considered benign'; ib_write_bw showed 111.55 Gb/s per channel on those systems.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-pcie-slot-power-message/371156"
+  },
+  {
+   "claim": "GPU stuck at ~5 W / 0% utilization with 'Power Limits: N/A' and clean dmesg was caused by a stale driver stack (550.54.15 + CUDA 12.4) and fixed by upgrading to 580.95.05 + CUDA 13.0.",
+   "detail": "Reported 2026-01-04, resolved 2026-01-14. Firmware at the time: EC 0x02004b03 (2025-10-24), SoC/UEFI 0x02009009 (2025-10-24). Healthy reference under gpu-burn: '28W / N/A' at '96%' P0.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426"
+  },
+  {
+   "claim": "Random hard power-off under sustained GPU load leaves no kernel/journal evidence: the journal truncates mid-line, no panic/OOM/hung-task/MCE/Xid, /sys/fs/pstore empty, no vmcore in /var/crash, previous boot has no shutdown record.",
+   "detail": "tonyd2wild README: 'no shutdown records - every boot ends still running', 'No OOM-killer output, no kernel panic, no hung-task, no MCE, no Xid', '/sys/fs/pstore is empty', kernel taint value 4096 (out-of-tree nvidia.ko only), 'Box is suddenly OFF (not rebooting - off until you power-cycle it)'. Forum 373251 (2026-06-13): crashkernel=2G configured but no vmcore; 'the systemd journal simply truncates mid-line'; /dev/ipmi0 absent (no BMC). GB10 has no BMC/SEL.",
+   "confidence": "high",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "claim": "A custom fsync'd black-box logger showed GPU power swinging 18-95 W within 30 s during vLLM prefill immediately before a hard power-off; days with peaks of 82-85 W survived, while SoC temperature (94-97 C) was similar on crash and non-crash days.",
+   "detail": "OS journal ended 19:42:43, logger continued to 19:43:20; fs recovery reported 'journal was not closed cleanly'. Mitigation used: 'sudo nvidia-smi -lgc 300,2100' reducing peak GPU power from ~85 W to ~50 W with ~10% inference slowdown. Dated 2026-06-20.",
+   "confidence": "medium",
+   "source_url": "https://note.com/nob75note/n/ned4cc56ead79?hl=en"
+  },
+  {
+   "claim": "Community mitigation for hard power-off is a GPU clock cap `sudo nvidia-smi -lgc 300,2200` made persistent with a oneshot systemd unit; reported ~5% throughput cost and zero crashes afterwards.",
+   "detail": "Verbatim: 'sudo nvidia-smi -lgc 300,2200 # min 300 MHz, max 2200 MHz (default boost is ~2418)'; verify 'nvidia-smi -q -d CLOCK | head -20'; revert 'sudo nvidia-smi -rgc'. Unit gb10-clock-cap.service is Type=oneshot, After=/Wants= nvidia-persistenced, ExecStop runs -rgc. Measured table: 2455 MHz stock ~47 W ~72 C; 2300 ~34 W ~67 C; 2200 ~32 W ~66 C; 2000 ~27 W ~63 C; 1800 ~23 W ~61 C. Caveat: 'A unified-memory over-commit fault produces an identical log-less signature.' Other users used -lgc 300,2100 / 200,2150 / 300,2400.",
+   "confidence": "high",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "claim": "Hard power-off correlated with firmware generation in one 2x2 sample: crashing units ran 'pre-production firmware (SBIOS 5.36_0ACUM018, Sep-2025 AMI)' while stable units ran 'production stack (GX10DGX.0104, Mar-2026)'.",
+   "detail": "Anecdotal correlation from the tonyd2wild repo. SBIOS string '5.36_0ACUM018' also appears on FE units in forum threads 373251 (dated 2025-08-06) and 380263 (dated 09/12/2025); another FE unit reports 'AMI 2.25, 12/25/2025'.",
+   "confidence": "low",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "claim": "NVIDIA staff guidance for units powering off under load: keep systems unstacked, ensure airflow, use the supplied adapter on stable wall power; shutdown reports are under investigation (2026-08-07) and units failing field diagnostics are RMA'd.",
+   "detail": "Neill (NVIDIA), 2026-07-13: 'keep the systems unstacked, ensure clear airflow, and confirm each system is on stable wall power with the supplied adapter.' Thread 377478, 2026-08-07: 'Shutdown issues reported by some DGX Spark/GB10 users are being investigated.' Field diag failure quoted: 'nvidia-smi reported about 77 C, but the hidden package sensor reached 96.6 C' with 'Thermal resistance is too high' (MODS-020000281445). Users also fixed recurrences by re-pasting dried TIM and unstacking units.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/sparks-have-recently-powered-off-randomly/376103"
+  },
+  {
+   "claim": "A hard-off unit idled abnormally hot (~47-48 C after idling overnight vs 30-35 C on healthy units) and died within ~60 s of load at 'GPU 79C util 96% 82.4 W'.",
+   "detail": "Telemetry block: '22:59 GPU 74C util 96% 79.4 W <- stress test begins / 23:00 GPU 79C util 96% 82.4 W <- last sample before death'. System: DGX OS 7.5.0, kernel 6.17.0-1021-nvidia, driver 580.159.03, vBIOS 9A.0B.25.00.00, SBIOS AMI 5.36_0ACUM018. Another user hypothesized the SoC/CPU sensor (~100 C) rather than GPU temp triggers the cut.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251"
+  },
+  {
+   "claim": "NVIDIA considers 86 C GPU under stress in-spec: 'The temperature readings you show are well within limits for a GPU under stress.'",
+   "detail": "aniculescu, 2025-10-31. Users under sustained training report 77-80 C GPU at 86-90 W and CPU ~85 C; Dell GB10 measured <48 dBA at 1 ft. Later regression threads report 85-90 C GPU with 'SW Thermal Slowdown' active.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-thermal-throttling/349647"
+  },
+  {
+   "claim": "After EC/UEFI firmware updates some GB10 units (OEM) show ACPI thermal zones at 96-97 C with fans not ramping, GPU 85-90 C, 'SW Thermal Slowdown' active and clocks dropping from ~2385-2411 MHz to ~2190-2379 MHz.",
+   "detail": "Readings: thermal_zone0 and thermal_zone5 (type acpitz) up to 96800 mC, thermal_zone2 ~87700-88000 mC; SW Thermal Slowdown counter ~19-23 s, HW Thermal Slowdown ~3-4 s. OEM (GX10) firmware involved: EC 0x02000005->0x02000006, UEFI 0x03000006->0x03000007, USB-PD 0x00000507->0x00000516. Static analysis claimed EC fan table '48% at 85 C, 54% at 93 C, 68% at 95 C and 100% at 97 C'. dgx-spark-fieldiag 2.0.4-1 could not install (missing ofed-scripts).",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044"
+  },
+  {
+   "claim": "One user resolved the fan-curve regression by downgrading the Embedded Controller from 0x03000508 to 0x02004e18 with `sudo fwupdmgr downgrade <DEVICE_ID>`; NVIDIA could not reproduce on Founders Edition.",
+   "detail": "Before: idle ~60 C, load 96-97 C with 'virtually inaudible fan speeds'; after: idle ~32 C, load 35-37 C at ~120-125 W per node. Commands quoted: 'sudo fwupdmgr get-devices', 'sudo fwupdmgr downgrade <YOUR_DEVICE_ID>', 'echo \"1\" | sudo fwupdmgr downgrade <DEVICE_ID> -y', plus 'sudo nvidia-smi -lgc 200,2100' as interim. aniculescu, 2026-08-05: 'We have not been able to reproduce this on an FE DGX Spark. If you have an OEM device, please contact your provider support'.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069"
+  },
+  {
+   "claim": "NVIDIA FE firmware wave of late April 2026 shipped three capsules: Embedded Controller 0x02004e18->0x03000302, UEFI Device Firmware (SoC) 0x0200941a->0x0200980f, USB Power Delivery Controller 0x00000507->0x00000516.",
+   "detail": "Release-note text: EC 'This update improves the performance and stability of the Embedded Controller in DGX Spark'; UEFI '...System-on-Chip Firmware including UEFI and GPU in DGX Spark'; USB PD 'This update improves the performance and stability of the USB Power Delivery Controller in DGX Spark for USB-C Ports'. Update path: sudo apt update; sudo apt dist-upgrade; sudo fwupdmgr refresh --force; sudo fwupdmgr upgrade; fwupdmgr get-history. Took 10-15 min with reboot. Posted 2026-04-28.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/fyi-new-firmware-available/368339"
+  },
+  {
+   "claim": "NVIDIA FE firmware wave of 2026-07-15: Embedded Controller 0x03000302->0x03000508 and UEFI Device Firmware 0x0200980f->0x02009b0b.",
+   "detail": "Same generic 'improves the performance and stability' text. Availability via fwupdmgr lagged for some users ('fwupdmgr says nothing to update' on 07-16); moderator 07-18: 'Release date for updates will vary based on vendor.' The official release notes list the same components in decimal: EC 3.5.8 (=0x03000508), USB Power Delivery 0.5.22 (=0x00000516), SoC 2.155.11 (=0x02009b0b), UEFI 1.110.13, TPM 7.516.1.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/new-firmware-available/376890"
+  },
+  {
+   "claim": "Official DGX Spark release notes list firmware EC 3.5.8, USB Power Delivery 0.5.22, SoC 2.155.11, UEFI 1.110.13, TPM 7.516.1 and note July 2026 fixed 'System and display instability when hot-plugging displays' and enhanced OOM handling; January 2026 added ConnectX-7 hot-plug saving up to 18 W.",
+   "detail": "July 2026 release: DGX OS 7.5.0, GPU driver 580.159.03, CUDA 13.0.2, kernel 6.17; 'Enhances Out-of-Memory (OOM) handling with GB10's unified memory architecture'; Display Reserved Memory toggle 2 GB/4 GB. Announcement posts themselves (Feb/Apr/Jun/Jul 2026) do not mention any PD-negotiation or hard-power-off fix.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+  },
+  {
+   "claim": "ASUS Ascent GX10 BIOS/firmware bundles: 0103 (2026-03-18) SOC 0x305, EC 2.78.18, PD 0x507 (5.7); 0104 (2026-05-07) SOC FW 3.0.6, EC 2.78.18.3, PD 5.7, 'Fixed ~35% lower NCCL Bandwidth'; 0105 (2026-08-11) SOC FW 3.0.7, EC 3.3.2.4, PD 5.22, 'Coreboot robustness improvement', 'NCCL performance improvement', USB detection and display compatibility.",
+   "detail": "ASUS distributes via its helpdesk BIOS page and LVFS; forum users also applied capsules manually with './capsule_update.sh usbpd_5.7.cap'. Users reported lower case temperatures and ~8-10 W lower idle after 0103. Vendor firmware tracks (NVIDIA/ASUS/Dell) are separately signed and not interchangeable.",
+   "confidence": "high",
+   "source_url": "https://www.asus.com/networking-iot-servers/desktop-ai-supercomputer/ultra-small-ai-supercomputers/asus-ascent-gx10/helpdesk_bios?model2Name=ASUS-Ascent-GX10"
+  },
+  {
+   "claim": "ASUS GX10 USB-C PD firmware 0x00000507 (LVFS release 133405, tested by ASUS 2026-01-30) description: 'Isolated the SBU mux when the U4_RDY signal is low. Added a workaround to the MSI Dongle EXIT_DP_MODE issue.'",
+   "detail": "fwupd device label: 'GX10 USB-C PD FW Controller Update', GUID fe75bb1c-5ccc-4936-b603-cc7cf945dc30, Release Flags 'Trusted metadata / Is upgrade / Tested by trusted vendor'. After flashing, Sggin1 recommends `fwupdmgr update --assume-yes --no-reboot-check` followed by a second cold drain (not a warm reboot); ESRT 'Current version' may still show the old value (quirk) - trust 'Update State: Success' and load-test behavior.",
+   "confidence": "medium",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "claim": "Official docs require the supplied 240 W power supply and warn that another adapter can reduce performance, prevent boot or cause unexpected shutdowns.",
+   "detail": "Hardware overview: 'Use of the provided 240W power supply is required for optimal performance. Using a different or lower-rated power supply may result in reduced system performance, failure to boot, or unexpected shutdowns.' Known Issues: 'Using a different adapter may reduce performance, prevent boot, or cause unexpected shutdowns.' Power budget: 140 W TDP to GB10 SoC, '100W is available for other system components (ConnectX-7, Wi-Fi, SSD, USB-C, etc.)'. 'Ideal Operating Temperature' 5 C to 30 C. Rear ports: 4x USB-C (one for power), HDMI 2.1a, 10 GbE, 2x QSFP.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/hardware.html"
+  },
+  {
+   "claim": "nvidia-smi power.draw on DGX Spark measures GPU power only, not system power; peak system power is 240 W, GB10 SoC (CPU+GPU) TDP 140 W.",
+   "detail": "MackenzieNVIDIA, 2025-10-31: 'When measuring power usage via NVIDIA-smi, the wattage displayed measures only GPU power.' The FE adapter is USB-C PD 3.1 EPR 48 V/5 A 240 W; the Dell Pro Max GB10 ships a 280 W USB-C adapter (per third-party comparison).",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-power-clarification/349668"
+  },
+  {
+   "claim": "Known issue: attached HDMI display can enter deep sleep after long inactivity and not wake on keyboard/mouse; workaround is to press a physical button on the monitor.",
+   "detail": "Verbatim: 'In some cases, after a long period of inactivity, the attached HDMI display might go into a deep sleep mode and not wake up when you press a key or move the mouse.' Workaround: 'Press a physical button on the monitor to wake it up.' Forum threads confirm the system stays up (SSH works); NVIDIA staff suggested `xset dpms force on`, checking monitor OSD deep-sleep toggles, DP version, hot-plugging the cable, and `sudo nvidia-bug-report.sh`. Same page documents nvidia-smi 'Memory-Usage: Not Supported' as expected on iGPU.",
+   "confidence": "high",
+   "source_url": "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html"
+  },
+  {
+   "claim": "Sleep/suspend is disabled by default on DGX Spark but overridable; headless units may still suspend because the GDM greeter session's GNOME power settings trigger it, not systemd.",
+   "detail": "aniculescu, 2026-07-21: 'Yes, sleep/suspend mode is disabled by default, but it is overrideable if desired.' In thread 375767 masking sleep.target did not help; fix: 'sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type nothing' and '...sleep-inactive-ac-timeout 0'. Journal evidence: GDM greeter 'logged out due to idle' followed by NetworkManager removing the gdm-owned Wi-Fi connection ('connection-removed'). Verify with 'journalctl -b | grep -i suspend'.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/configure-dgx-so-it-does-not-go-into-power-standby-mode/375767"
+  },
+  {
+   "claim": "Explicit s2idle suspend fails on DGX Spark with driver 580.173.02: kernel WARNING in nvidia/nv.c:4784 nv_set_system_power_state and nvidia-suspend.service fails writing /proc/driver/nvidia/suspend.",
+   "detail": "Exact strings: 'WARNING: CPU: 5 PID: 49701 at nvidia/nv.c:4784 nv_set_system_power_state+0x248/0x3c8 [nvidia]'; 'PM: suspend entry (s2idle)'; nvidia-sleep.sh line 45 echo write error (I/O error) to /proc/driver/nvidia/suspend. Kernel 6.17.0-1029-nvidia, BIOS 5.36_0ACUM018 (09/12/2025). Reported 2026-08-15, no NVIDIA response in thread. Community guides also list sleep/resume as a PD-wedge trigger.",
+   "confidence": "high",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-suspend-service-fails-nv-set-system-power-state-warning-nv-c-4784-s2idle-suspend-does-not-complete-on-dgx-spark-gb10/380263"
+  },
+  {
+   "claim": "GPU idle temperature/power may not return to baseline after sustained load (63-64 C, ~11.5 W at 0% util for 50+ min vs 38-40 C, 8-10 W after fresh boot).",
+   "detail": "Driver nvidia-driver-580-open 580.173.02, kernel 6.17.0-1031-nvidia, Ubuntu 24.04.4. Posted 2026-09-02, unresolved.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065"
+  },
+  {
+   "claim": "dmesg on a DGX Spark with random shutdowns contained 'ACPI: thermal: [Firmware Bug]: No valid trip points!' for thermal zones, 'platform NVDA8800:00: failed to claim resource 0' and 'processor cpu0: EM: CPUs of 0-4,10-14 must have the same capacity'; causality was never established.",
+   "detail": "Thread unresolved as of 2026-01-11; NVIDIA (NVES) asked for Spark Field Diagnostics and logs. NVDA8800 is the ACPI device for the System Power Budget Manager (SPBM) that the community spark_hwmon driver binds to.",
+   "confidence": "low",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-constantly-shut-down-after-first-set-up/357216"
+  },
+  {
+   "claim": "Community hwmon driver spark_hwmon exposes SPBM telemetry from ACPI device NVDA8800: 8 temperature zones (tj_max, cpu_e_clu0, cpu_p_clu0, cpu_e_clu1, cpu_p_clu1, gpu, soc, dla), 14 power channels (sys_total, soc_pkg, cpu_gpu, cpu_p, cpu_e, vcore, dc_input, gpu, prereg, dla, pl1, pl2, syspl1, syspl2) and status attrs prochot, pl_level, tj_max_c.",
+   "detail": "Not present in stock DGX OS; only relevant if the user has installed it ('watch -n 0.1 sensors spbm-*'). Stock GB10 exposes ACPI 'acpitz' thermal zones and nvidia-smi GPU temp; 'sudo tegrastats' is also cited for SoC temperature.",
+   "confidence": "medium",
+   "source_url": "https://github.com/antheas/spark_hwmon"
+  },
+  {
+   "claim": "Community CLI spark-gpu-throttle-check flags PD throttling when clocks stay below 1400 MHz under a cuBLAS load; it queries clocks.current.graphics, clocks.max.graphics, pstate, power.draw, clocks_throttle_reasons.active.",
+   "detail": "Exact command: 'nvidia-smi --query-gpu=clocks.current.graphics,clocks.max.graphics,pstate,power.draw,clocks_throttle_reasons.active --format=csv,noheader,nounits'. Strings: 'PASS - GPU clocks look healthy under load.', 'FAIL - GPU IS THROTTLED', 'Clock never exceeded threshold under load.', 'Likely cause: bad USB PD power negotiation.', 'Try: disconnect power brick from wall and Spark, wait a minute, then reconnect.', 'WARNING - GPU clocks are intermittently low.' Throttled systems typically <850 MHz.",
+   "confidence": "high",
+   "source_url": "https://github.com/hoesing/spark-gpu-throttle-check"
+  },
+  {
+   "claim": "Community CLI spark-doctor has rules 'power.low_draw_under_load' (high GPU utilization with suspiciously low power draw, e.g. 14 W cap) and 'thermal.shutdown_risk' (GPU temp >= 85/90 C or thermal events in logs), plus 'memory.uma_pressure'.",
+   "detail": "Collects nvidia-smi, /proc/pressure/*, /proc/meminfo, dmesg, docker info, thermal zones; exit codes 0 clean / 1 warning / 2 critical / 3 collector failure. Prior art for NVCheckup thresholds.",
+   "confidence": "medium",
+   "source_url": "https://github.com/joeynyc/spark-doctor"
+  },
+  {
+   "claim": "`nvidia-smi -r` (GPU reset) usually fails on DGX Spark because the GPU is held by Xorg/GDM; nvidia-smi -lgc/-rgc clock caps do not persist across reboot and need a systemd unit.",
+   "detail": "Sggin1: 'sudo nvidia-smi -r # GPU reset (often fails on Spark: held by Xorg/GDM)'. tonyd2wild: 'Since the clock cap doesn't survive reboots, install the provided systemd service'.",
+   "confidence": "medium",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "claim": "Field diagnostics package for RMA qualification is dgx-spark-fieldiag (run 'sudo ./partnerdiag --field', ~30 min, requires Secure Boot disabled); it includes a PowerStress test that itself triggered a hard power-off on an affected unit.",
+   "detail": "websterdav (2026-08-30): PowerStress started 08:21:32, system powered off ~6 min later. Sggin1 lists the collection bundle: nvidia-bug-report.sh, dmesg -T, journalctl -b -0, fwupdmgr get-devices, nvidia-smi -q.",
+   "confidence": "medium",
+   "source_url": "https://forums.developer.nvidia.com/t/sparks-have-recently-powered-off-randomly/376103"
+  },
+  {
+   "claim": "Wild Pines AI field data (2026-04-18): one GX10 node ran 10-15 C hotter than an identical twin (87 C vs 68 C at ~74 W) and hard-shut down; capping at 2200 MHz gave '65-69 C, sustained 96% util, zero shutdowns'; ASUS firmware 0103 reportedly cut temps 8-10 C.",
+   "detail": "Dashboard polled nvidia-smi every 10 s into SQLite: '23:57 78 C 45 W 96%', '00:02 87 C 73 W 96%', '00:04 85 C 74 W' last reading before shutdown. 62 of 73 hours exceeded 85 C over three days before mitigation.",
+   "confidence": "medium",
+   "source_url": "https://www.wildpines.ai/blog/your-dgx-spark-is-cooking-itself/"
+  }
+ ],
+ "detection_heuristics": [
+  {
+   "what": "GB10 identity gate (apply all GB10 rules only when true)",
+   "how": "Match nvidia-smi --query-gpu=name output containing 'GB10' (e.g. 'NVIDIA GB10'), or /proc/device-tree/model / dmidecode -s system-product-name containing 'DGX Spark', 'Ascent GX10', 'Pro Max with GB10', 'ZGX Nano', 'EdgeXpert', and uname -m == aarch64. Also nvidia-smi -q shows 'Max Clocks / Graphics : 3003 MHz' and Power Limit fields all 'N/A'.",
+   "exact_strings": [
+    "NVIDIA GB10",
+    "DGX Spark",
+    "Ascent GX10",
+    "Graphics                                       : 3003 MHz",
+    "Current Power Limit                            : N/A",
+    "Memory-Usage: Not Supported"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304"
+  },
+  {
+   "what": "USB-PD power-negotiation wedge (GPU power-limited, clocks pinned low)",
+   "how": "Sample `nvidia-smi --query-gpu=clocks.sm,clocks.max.sm,utilization.gpu,power.draw,temperature.gpu,pstate,clocks_event_reasons.active --format=csv,noheader,nounits` several times (>=20 samples over ~10-30 s). Flag if utilization.gpu >= 90 for the majority of samples AND clocks.sm never exceeds 1400 MHz AND power.draw < 40 W. Corroborate via `nvidia-smi -q -d PERFORMANCE`: all 'Clocks Event Reasons' lines 'Not Active' while 'SW Power Capping' counter is large (hundreds of seconds). Typical pinned values 611 / 650 / 721 MHz at 10-16 W, temp 44-55 C, 'GPU T.Limit Temp : 50 C'. If the machine is idle, NVCheckup cannot confirm; report as 'cannot evaluate, run under load'. Also check dmesg for a preceding OOM / CUDA process kill and journal for a recent suspend/resume, both known triggers.",
+   "exact_strings": [
+    "SW Power Cap                                   : Not Active",
+    "SW Power Capping                               : ",
+    "GPU T.Limit Temp                               : 50 C",
+    "Supported Clocks                               : N/A",
+    "611 MHz",
+    "650 MHz",
+    "721 MHz"
+   ],
+   "source_url": "https://github.com/hoesing/spark-gpu-throttle-check"
+  },
+  {
+   "what": "Log-less hard power-off in a previous boot (EC/PSU hard cut)",
+   "how": "Run `journalctl --list-boots`; for the previous boot (`journalctl -b -1 -n 50 --no-pager`) check whether the tail contains any orderly shutdown markers ('Reached target Power-Off', 'systemd-shutdown', 'reboot: Power down', 'Stopped target Graphical Interface'). If none are present, the boot ended abruptly. Corroborate with `last -x shutdown reboot | head`, `/sys/fs/pstore` being empty, no files in /var/crash, and absence of 'Kernel panic', 'Out of memory', 'Xid', 'hung task', 'thermal' in `journalctl -b -1 -k`. Optional: `cat /proc/sys/kernel/tainted` == 4096 indicates only the out-of-tree nvidia module. Additional evidence: fsck/ext4 'journal was not closed cleanly' or 'recovering journal' in current boot dmesg. Do not attribute cause; both EC over-current/thermal cut and UVM over-commit livelock produce this signature.",
+   "exact_strings": [
+    "Reached target Power-Off",
+    "systemd-shutdown",
+    "reboot: Power down",
+    "recovering journal",
+    "Kernel panic",
+    "Out of memory",
+    "hung task",
+    "NVRM: Xid"
+   ],
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "what": "Active or recent thermal slowdown on GB10",
+   "how": "Parse `nvidia-smi -q -d PERFORMANCE,TEMPERATURE`. Flag WARN if 'SW Thermal Slowdown : Active' or 'HW Thermal Slowdown : Active', or if the counters 'SW Thermal Slowdown' / 'HW Thermal Slowdown' under 'Clocks Event Reasons Counters' are > 0 us. Also read /sys/class/thermal/thermal_zone*/type and /temp; flag if any 'acpitz' zone >= 95000 (millidegrees). Treat 'GPU Shutdown T.Limit Temp : N/A', 'GPU Slowdown T.Limit Temp : N/A', 'GPU Max Operating T.Limit Temp : 0 C' and 'Fan Speed : N/A' as expected on GB10, not as faults. Note fan RPM is not observable from Linux on GB10 (EC-controlled).",
+   "exact_strings": [
+    "SW Thermal Slowdown                            : Active",
+    "HW Thermal Slowdown                            : Active",
+    "SW Thermal Slowdown                            : ",
+    "HW Thermal Slowdown                            : ",
+    "acpitz",
+    "Fan Speed                                      : N/A",
+    "GPU Max Operating T.Limit Temp                 : 0 C"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044"
+  },
+  {
+   "what": "Firmware level (EC / UEFI-SoC / USB-PD) via fwupd",
+   "how": "Run `fwupdmgr get-devices --json` (or plain) and pick devices whose name contains 'Embedded Controller', 'UEFI' / 'System-on-Chip' / 'SoC', 'USB Power Delivery' / 'USB-C PD'. Compare 'Current version' to the latest known FE track: EC 0x03000508 (3.5.8), UEFI/SoC 0x02009b0b (2.155.11), USB PD 0x00000516 (0.5.22) as of 2026-07. For ASUS GX10 compare BIOS string to 0105 (2026-08-11: SOC FW 3.0.7, EC 3.3.2.4, PD 5.22). Older EC values seen: 0x02004b03, 0x02004e18, 0x03000302; PD 0x00000507. Also run `fwupdmgr get-upgrades` (read-only) and report pending updates. Vendor tracks are not interchangeable; never suggest cross-vendor capsules. Note the ESRT quirk: 'Current version' may lag after a flash; 'Update State: Success' in get-history is the reliable signal.",
+   "exact_strings": [
+    "Embedded Controller",
+    "UEFI Device Firmware",
+    "USB Power Delivery Controller",
+    "GX10 USB-C PD FW Controller Update",
+    "0x03000508",
+    "0x02009b0b",
+    "0x00000516",
+    "0x00000507",
+    "0x02004e18",
+    "0x03000302",
+    "Update State:      Success",
+    "Needs reboot"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/new-firmware-available/376890"
+  },
+  {
+   "what": "Pre-production / early SBIOS string",
+   "how": "`sudo dmidecode -s bios-version` and `-s bios-release-date`. String '5.36_0ACUM018' (AMI, dates 2025-08-06 or 09/12/2025) is the pre-production SBIOS present on several units reporting hard power-offs and suspend failures; 'GX10DGX.0104' / ASUS BIOS '0104'/'0105' are 2026 production images. Report as INFO with firmware-update advice; correlation is anecdotal.",
+   "exact_strings": [
+    "5.36_0ACUM018",
+    "GX10DGX.0104",
+    "AMI"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251"
+  },
+  {
+   "what": "Stale driver stack causing 5 W / 0 % utilization",
+   "how": "If nvidia-smi driver version starts with '550.' (or anything < 580) on a GB10, and CUDA reports 12.x, flag CRIT: known signature is ~5 W, 0 % utilization, clean dmesg, workloads fall back to CPU. Fixed by 580.95.05 + CUDA 13.0 or newer.",
+   "exact_strings": [
+    "550.54.15",
+    "CUDA Version: 12.4",
+    "580.95.05",
+    "580.159.03",
+    "580.173.02"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426"
+  },
+  {
+   "what": "User-applied clock cap present (mitigation in place)",
+   "how": "Check `systemctl list-unit-files | grep -i clock-cap` for 'gb10-clock-cap.service' (tonyd2wild) and `nvidia-smi -q -d CLOCK` where 'Clocks / Graphics' under load sits at a round cap (2100/2150/2200/2300/2400 MHz) well below 'Max Clocks : 3003 MHz'; `nvidia-smi -q -d PERFORMANCE` may show 'Applications Clocks Setting : Active'. Report INFO: clock cap active, explain expected ~5-10 % throughput loss and how to revert (`nvidia-smi -rgc`) - never change it automatically.",
+   "exact_strings": [
+    "gb10-clock-cap.service",
+    "nvidia-smi -lgc 300,2200",
+    "nvidia-smi -rgc",
+    "Applications Clocks Setting                    : Active"
+   ],
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "what": "Suspend attempted / failing (s2idle) on GB10",
+   "how": "`journalctl -b -k | grep -E 'PM: suspend entry|nv_set_system_power_state|nv.c:4784'` and `systemctl status nvidia-suspend.service`. Presence of 'PM: suspend entry (s2idle)' plus 'WARNING: CPU: ... at nvidia/nv.c:4784 nv_set_system_power_state' or nvidia-suspend.service 'failed' indicates an unsupported/failed suspend. Also check `cat /sys/power/mem_sleep` and whether sleep targets are masked (`systemctl is-enabled sleep.target`). Check GDM greeter power policy: `sudo -u gdm dbus-run-session gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type` != 'nothing' means a headless box can auto-suspend.",
+   "exact_strings": [
+    "PM: suspend entry (s2idle)",
+    "nv_set_system_power_state",
+    "nvidia/nv.c:4784",
+    "nvidia-suspend.service",
+    "/proc/driver/nvidia/suspend",
+    "sleep-inactive-ac-type",
+    "logged out due to idle",
+    "connection-removed"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-suspend-service-fails-nv-set-system-power-state-warning-nv-c-4784-s2idle-suspend-does-not-complete-on-dgx-spark-gb10/380263"
+  },
+  {
+   "what": "Benign / expected messages that must NOT be escalated on GB10",
+   "how": "Whitelist in dmesg: 'mlx5_core ... Detected insufficient power on the PCIe slot (27W).' (present on healthy units, moderator-confirmed benign). In nvidia-smi: 'Memory-Usage: Not Supported', 'Fan Speed : N/A', all 'Power Limit : N/A', 'GPU Shutdown T.Limit Temp : N/A', 'Memory : N/A' clocks, 'Supported Clocks : N/A'. Emit at most an INFO note.",
+   "exact_strings": [
+    "Detected insufficient power on the PCIe slot (27W).",
+    "mlx5_pcie_event:326",
+    "Memory-Usage: Not Supported",
+    "Fan Speed                                      : N/A"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/connectx-pcie-slot-power-message/371156"
+  },
+  {
+   "what": "Elevated idle temperature / idle power (possible cooling degradation or stuck power state)",
+   "how": "With utilization.gpu == 0 for >= 60 s, flag INFO if temperature.gpu >= 55 C or power.draw >= 15 W at idle (healthy fresh-boot idle is 30-40 C and 4-10 W). A unit that later hard-powered-off idled at 47-48 C; post-load plateau of 63-64 C / 11.5 W is an open NVIDIA thread. Advisory only (airflow, stacking, ambient 5-30 C, dried TIM reports).",
+   "exact_strings": [
+    "utilization.gpu",
+    "temperature.gpu",
+    "power.draw"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065"
+  },
+  {
+   "what": "Firmware-bug ACPI thermal trip-point messages",
+   "how": "grep dmesg for 'ACPI: thermal: [Firmware Bug]: No valid trip points!' and 'platform NVDA8800:00: failed to claim resource 0'. Seen on a unit with unexplained shutdowns but never tied to a cause; report INFO only and include in the collected evidence bundle.",
+   "exact_strings": [
+    "ACPI: thermal: [Firmware Bug]: No valid trip points!",
+    "platform NVDA8800:00: failed to claim resource 0",
+    "EM: CPUs of 0-4,10-14 must have the same capacity"
+   ],
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-constantly-shut-down-after-first-set-up/357216"
+  }
+ ],
+ "candidate_rules": [
+  {
+   "id": "GB10_PD_POWER_WEDGE",
+   "severity": "CRIT",
+   "trigger": "GB10 detected AND during a >=10 s sampling window utilization.gpu >= 90 % in most samples AND max(clocks.sm) < 1400 MHz AND max(power.draw) < 40 W (optionally: all 'Clocks Event Reasons' Not Active while 'SW Power Capping' counter > 60 s).",
+   "evidence_template": "GPU is power-limited: SM clock pinned at {clocks_sm} MHz (max {clocks_max} MHz) at {util}% utilization drawing {power} W, temp {temp} C. Clocks Event Reasons: all Not Active; SW Power Capping counter {swpc_us} us. Power Limit fields: N/A (expected on GB10). This matches the DGX Spark / GX10 USB-C power-delivery 'wedge' (611/650/721 MHz, ~10-16 W).",
+   "why_it_matters": "The GB10 is stuck in a low-power fallback state (~13-30 W) instead of ~80-100 W; throughput drops 2-3x. It is not thermal, `nvidia-smi -lgc` has no effect, and it survives warm reboots. It commonly follows an OOM/crash, sleep/resume, or a firmware flash. NVIDIA engineering has acknowledged it as under investigation (2026-06-30) and says later firmware fixed it for some users (2026-08-11).",
+   "next_steps": [
+    "Do a full cold power cycle (NVIDIA guidance): shut down, unplug the 240 W USB-C power supply from BOTH the wall and the unit, unplug all other USB-C devices (docks, hubs, monitors), hold the power button ~30 s, wait at least 60 s, reconnect only the power supply, then power on.",
+    "Re-run this check under load (or `python3 spark-gpu-throttle-check.py`): healthy is >=1400 MHz and >=40 W sustained; typical ~2200 MHz / ~90 W.",
+    "Check firmware with `fwupdmgr get-devices` and `fwupdmgr get-upgrades` (read-only); latest FE track as of 2026-07: EC 0x03000508, UEFI 0x02009b0b, USB PD 0x00000516; ASUS GX10 BIOS 0105. Apply only your vendor's capsules via your vendor's channel, then power-cycle cold again rather than warm reboot.",
+    "If it recurs after firmware update and cold drain, collect `sudo nvidia-bug-report.sh`, `fwupdmgr get-devices`, `nvidia-smi -q` and open a forum/support case; OEM units are being directed to OEM support/RMA.",
+    "Do not use `nvidia-smi -r` (fails while GDM holds the GPU) and do not expect `-lgc` to help in this state."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-clock-pinned-at-721-mhz-under-full-load-no-throttling-not-liftable-via-nvidia-smi/376039",
+    "https://forums.developer.nvidia.com/t/gb10-is-power-limited-after-crash/366590",
+    "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md",
+    "https://github.com/hoesing/spark-gpu-throttle-check"
+   ]
+  },
+  {
+   "id": "GB10_LOGLESS_HARD_POWEROFF",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND previous boot (journalctl -b -1) ends without orderly shutdown markers AND no panic/OOM/Xid/thermal lines in its kernel log AND /sys/fs/pstore empty (optionally: current boot dmesg shows ext4 'recovering journal').",
+   "evidence_template": "Previous boot ({boot_id}, ended {last_ts}) has no shutdown record; last line: '{last_line}'. No kernel panic, OOM-killer, Xid or thermal messages found; /sys/fs/pstore is empty; no vmcore in /var/crash. This is the signature of a hardware-level power cut (EC/PSU) or a unified-memory over-commit livelock on DGX Spark.",
+   "why_it_matters": "Multiple DGX Spark/GX10 owners report the box switching off 'like a light switch' under sustained GPU load with nothing logged; NVIDIA stated on 2026-08-07 that shutdown issues are being investigated and has RMA'd units that fail field diagnostics (e.g. 'Thermal resistance is too high'). Root causes seen: power spikes to ~95 W during prefill, dried thermal compound / stacked units, pre-production firmware, faulty PDU/adapter, and UVM over-commit.",
+   "next_steps": [
+    "Confirm the supplied 240 W adapter (Dell: 280 W) is plugged directly into a stable wall outlet; docs: another adapter 'may ... cause unexpected shutdowns'. Do not power through marginal PDUs/strips.",
+    "Unstack units, clear intake/exhaust, keep ambient within the documented 5-30 C; check idle temperature (healthy 30-40 C).",
+    "Update OS and firmware via your vendor channel (`sudo apt update && sudo apt dist-upgrade`, `fwupdmgr get-upgrades`), then shut down and cold power-cycle.",
+    "Reduce memory over-commit: leave headroom (e.g. vLLM --gpu-memory-utilization 0.85-0.92) and avoid running several large models at once; the July 2026 DGX OS release improved OOM handling.",
+    "Optional community mitigation (manual, user's choice, not applied by this tool): `sudo nvidia-smi -lgc 300,2200` caps peak power (~5-10 % slower) and can be persisted with a systemd oneshot (github.com/tonyd2wild/dgx-spark-hard-poweroff-fix); revert with `sudo nvidia-smi -rgc`.",
+    "If it persists, run NVIDIA field diagnostics (`dgx-spark-fieldiag`, `sudo ./partnerdiag --field`), collect `sudo nvidia-bug-report.sh`, and contact NVIDIA/OEM support for RMA evaluation."
+   ],
+   "sources": [
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251",
+    "https://forums.developer.nvidia.com/t/sparks-have-recently-powered-off-randomly/376103",
+    "https://forums.developer.nvidia.com/t/spark-abruptly-shuts-down/377478",
+    "https://note.com/nob75note/n/ned4cc56ead79?hl=en",
+    "https://docs.nvidia.com/dgx/dgx-spark/hardware.html"
+   ]
+  },
+  {
+   "id": "GB10_THERMAL_SLOWDOWN_ACTIVE",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND ('SW Thermal Slowdown : Active' OR 'HW Thermal Slowdown : Active' OR SW/HW Thermal Slowdown counters > 0 us OR any acpitz thermal zone >= 95000 mC OR temperature.gpu >= 90 C).",
+   "evidence_template": "Thermal slowdown observed: GPU {temp} C, SW Thermal Slowdown {sw_state} ({sw_us} us accumulated), HW Thermal Slowdown {hw_state} ({hw_us} us). ACPI zones: {zone_list}. Fan telemetry is not exposed on GB10 (Fan Speed : N/A); fan control is in the Embedded Controller.",
+   "why_it_matters": "NVIDIA considers ~86 C under stress in-spec, but sustained 85-90 C GPU with acpitz zones at 96-97 C and inaudible fans was reported after EC/UEFI updates on OEM units (fan curve targets ~48 % at 85 C, 100 % at 97 C), and several hard power-offs were preceded by 85-98 C readings. A hidden package sensor can be ~20 C above nvidia-smi's GPU temperature.",
+   "next_steps": [
+    "Improve airflow: unstack, unblock vents, lower ambient (docs ideal 5-30 C), consider vertical placement/external fan.",
+    "Check firmware: `fwupdmgr get-devices`; compare to the latest vendor release. On ASUS GX10, users reported lower temps after BIOS 0103+; on FE the current EC is 0x03000508 (NVIDIA could not reproduce a fan regression on FE).",
+    "If throttling began right after an EC/UEFI update on an OEM unit, contact the OEM (NVIDIA's guidance 2026-08-05) and record `fwupdmgr get-history`; do not downgrade firmware unless the vendor advises it.",
+    "Run field diagnostics if temperatures remain high at modest power; a 'Thermal resistance is too high' failure qualified units for RMA.",
+    "Optional user-side mitigation (manual): a clock cap via `nvidia-smi -lgc` lowers temps ~6-10 C at ~5-10 % throughput cost."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044",
+    "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069",
+    "https://forums.developer.nvidia.com/t/dgx-spark-thermal-throttling/349647",
+    "https://forums.developer.nvidia.com/t/spark-abruptly-shuts-down/377478"
+   ]
+  },
+  {
+   "id": "GB10_FIRMWARE_BEHIND_LATEST",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND fwupdmgr reports EC < 0x03000508 OR UEFI/SoC < 0x02009b0b OR USB PD < 0x00000516 on an NVIDIA FE unit (or ASUS BIOS < 0105), OR `fwupdmgr get-upgrades` lists pending capsules.",
+   "evidence_template": "Firmware: Embedded Controller {ec_ver}, UEFI/SoC {soc_ver}, USB Power Delivery {pd_ver} (vendor {vendor}). Latest known: FE EC 0x03000508 / UEFI 0x02009b0b / PD 0x00000516 (July 2026); ASUS GX10 BIOS 0105 (2026-08-11, EC 3.3.2.4, PD 5.22). Pending via fwupd: {pending}.",
+   "why_it_matters": "NVIDIA's 2026 firmware waves explicitly target 'performance and stability of the USB Power Delivery Controller ... for USB-C Ports' and of the EC; NVIDIA staff report the power-limiting issue was fixed for some users by the latest firmware, and a 2x2 field sample tied hard power-offs to pre-production SBIOS. OEM tracks lag NVIDIA by weeks and are separately signed.",
+   "next_steps": [
+    "Review pending updates read-only: `sudo fwupdmgr refresh && sudo fwupdmgr get-upgrades`.",
+    "Apply only via your vendor's channel (DGX Dashboard / `sudo fwupdmgr upgrade` for FE; ASUS helpdesk or LVFS for GX10). Ensure stable power and close workloads first.",
+    "After flashing, shut down and perform a cold power cycle (unplug PSU from wall and unit) rather than a warm reboot; then verify `fwupdmgr get-history` shows 'Update State: Success'. ESRT 'Current version' may lag.",
+    "Re-test GPU under load afterwards (>=1400 MHz, >=40 W)."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/fyi-new-firmware-available/368339",
+    "https://forums.developer.nvidia.com/t/new-firmware-available/376890",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+    "https://www.asus.com/networking-iot-servers/desktop-ai-supercomputer/ultra-small-ai-supercomputers/asus-ascent-gx10/helpdesk_bios?model2Name=ASUS-Ascent-GX10",
+    "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+   ]
+  },
+  {
+   "id": "GB10_PREPRODUCTION_SBIOS",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND dmidecode bios-version contains '5.36_0ACUM018' (or bios-release-date in 2025).",
+   "evidence_template": "SBIOS '{bios_version}' dated {bios_date} is a 2025 pre-production AMI image; 2026 production images (e.g. GX10DGX.0104, ASUS 0104/0105) are available.",
+   "why_it_matters": "Units reporting log-less hard power-offs and failed s2idle suspend in mid-2026 were running this SBIOS; one field sample showed all crashing units on it and all stable units on March-2026 firmware. Correlation is anecdotal but firmware update is the first thing NVIDIA support asks for.",
+   "next_steps": [
+    "Check and apply vendor firmware updates (see GB10_FIRMWARE_BEHIND_LATEST).",
+    "Cold power-cycle after updating."
+   ],
+   "sources": [
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251"
+   ]
+  },
+  {
+   "id": "GB10_STALE_DRIVER_LOW_POWER",
+   "severity": "CRIT",
+   "trigger": "GB10 detected AND driver major version < 580 (e.g. 550.54.15) or CUDA < 13.0, especially with power.draw ~5 W and 0 % utilization during a workload.",
+   "evidence_template": "Driver {driver} / CUDA {cuda} on GB10. Known signature: GPU stays at ~5 W, 0 % utilization, 'Power Limits: N/A', clean dmesg; workloads silently fall back to CPU. Fixed by 580.95.05 + CUDA 13.0 or newer.",
+   "why_it_matters": "GB10 (sm_121) requires the 580-open driver and CUDA 13; older stacks leave the GPU unused and look like a power fault.",
+   "next_steps": [
+    "Update DGX OS: `sudo apt update && sudo apt dist-upgrade` then reboot; confirm `nvidia-smi` shows 580.x and CUDA 13.x.",
+    "Re-run a GPU load test (e.g. gpu-burn or spark-gpu-throttle-check) and confirm power scales to tens of watts at high utilization."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426",
+    "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+   ]
+  },
+  {
+   "id": "GB10_CLOCK_CAP_PRESENT",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND (unit file gb10-clock-cap.service exists OR 'Applications Clocks Setting : Active' OR locked clocks range reported by nvidia-smi -q -d CLOCK with max < 3003 MHz).",
+   "evidence_template": "A GPU clock cap is in effect: locked range {min}-{max} MHz (hardware max 3003 MHz), via {source}. This is a community mitigation for hard power-offs / power spikes; expected cost ~5-10 % throughput.",
+   "why_it_matters": "Users apply `nvidia-smi -lgc 300,2200` (or 2100/2400) to stop power-spike hard power-offs; the tool should recognise it, not report it as throttling, and never change it automatically.",
+   "next_steps": [
+    "No action required if intentional. To remove: `sudo nvidia-smi -rgc` or disable the systemd unit (`sudo systemctl disable --now gb10-clock-cap.service`).",
+    "If you did not set this, check /etc/systemd/system for the unit and review who installed it.",
+    "Note the cap does not fix the USB-PD wedge (clocks pinned ~600-700 MHz regardless)."
+   ],
+   "sources": [
+    "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+    "https://www.wildpines.ai/blog/your-dgx-spark-is-cooking-itself/"
+   ]
+  },
+  {
+   "id": "GB10_S2IDLE_SUSPEND_FAILURE",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND journal contains 'PM: suspend entry (s2idle)' AND ('nv_set_system_power_state' WARNING at nvidia/nv.c:4784 OR nvidia-suspend.service failed).",
+   "evidence_template": "Suspend was attempted ({count} entries 'PM: suspend entry (s2idle)') and the NVIDIA driver logged 'WARNING: ... at nvidia/nv.c:4784 nv_set_system_power_state' / nvidia-suspend.service failed writing /proc/driver/nvidia/suspend (driver {driver}).",
+   "why_it_matters": "Suspend is disabled by default on DGX Spark (NVIDIA, 2026-07-21) and s2idle does not complete with driver 580.173.02; sleep/resume cycles are also a reported trigger for the USB-PD power wedge.",
+   "next_steps": [
+    "Keep suspend disabled: in GNOME Settings > Power set Automatic Suspend Off; for headless systems also set the GDM greeter policy: `sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'` and `... sleep-inactive-ac-timeout 0`.",
+    "Optionally mask sleep targets: `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target` (note: this alone did not stop GDM-triggered suspend).",
+    "After any suspend event, verify GPU power/clock behaviour under load (PD wedge check) and cold power-cycle if wedged.",
+    "Report the nv.c:4784 warning with `sudo nvidia-bug-report.sh` on the NVIDIA forum thread."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/nvidia-suspend-service-fails-nv-set-system-power-state-warning-nv-c-4784-s2idle-suspend-does-not-complete-on-dgx-spark-gb10/380263",
+    "https://forums.developer.nvidia.com/t/is-sleep-suspend-disabled-by-default/377582",
+    "https://forums.developer.nvidia.com/t/configure-dgx-so-it-does-not-go-into-power-standby-mode/375767"
+   ]
+  },
+  {
+   "id": "GB10_HEADLESS_AUTOSUSPEND_RISK",
+   "severity": "WARN",
+   "trigger": "GB10 detected AND no display connected (or GDM greeter active with no user session) AND GDM power policy sleep-inactive-ac-type != 'nothing' (or journal shows 'logged out due to idle' followed by NetworkManager 'connection-removed').",
+   "evidence_template": "GDM greeter power policy is '{policy}' with timeout {timeout}s; journal shows {n} idle-logout/suspend events. Headless DGX Sparks suspend from the login screen and drop gdm-owned Wi-Fi, becoming unreachable until physically woken.",
+   "why_it_matters": "Users running headless lost SSH/Wi-Fi after 16-20 h; masking systemd sleep targets did not help because GNOME at the greeter initiates suspend. Suspend/resume is also a reported trigger for the PD power wedge.",
+   "next_steps": [
+    "Set greeter policy: `sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'` and `sleep-inactive-ac-timeout 0`; set Automatic Suspend Off in the user session too.",
+    "Make Wi-Fi system-wide (`nmcli connection modify <SSID> connection.permissions ''`) and disable Wi-Fi powersave via /etc/NetworkManager/conf.d/.",
+    "Verify later with `uptime` over SSH and `journalctl -b | grep -i suspend`."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/configure-dgx-so-it-does-not-go-into-power-standby-mode/375767",
+    "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-automatically-suspends-when-running-headless-despite-power-config-changes/353777"
+   ]
+  },
+  {
+   "id": "GB10_HDMI_DEEP_SLEEP_KNOWN_ISSUE",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND an HDMI/USB-C display is connected (drm connector status 'connected') AND user reports black screen / no wake, or DGX OS release older than July 2026.",
+   "evidence_template": "Display {connector} connected. DGX Spark has a documented known issue: after long inactivity the HDMI display may enter deep sleep and not wake on keyboard/mouse; the system itself stays up (SSH works). July 2026 DGX OS fixed 'System and display instability when hot-plugging displays'.",
+   "why_it_matters": "Owners mistake a sleeping monitor for a hung or crashed system and hard-reset the box (which can also disturb power-delivery state).",
+   "next_steps": [
+    "Press a physical button on the monitor / power-cycle the monitor; disable monitor 'deep sleep' in its OSD (NVIDIA staff guidance).",
+    "Verify the system is alive over SSH; try `xset dpms force on` from SSH.",
+    "Update DGX OS to the July 2026 release or later.",
+    "If the display still fails, collect `sudo nvidia-bug-report.sh` before rebooting and report on the forum."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-monitor-goes-black-wont-wake-up/348159",
+    "https://forums.developer.nvidia.com/t/dgx-spark-hdmi-display-stops-working-every/351461",
+    "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+   ]
+  },
+  {
+   "id": "GB10_POWER_ADAPTER_ADVISORY",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND (GB10_LOGLESS_HARD_POWEROFF or GB10_PD_POWER_WEDGE fired) — emit as companion advisory.",
+   "evidence_template": "DGX Spark requires the supplied 240 W USB-C PD 3.1 EPR (48 V/5 A) adapter; NVIDIA docs: using a different or lower-rated supply 'may result in reduced system performance, failure to boot, or unexpected shutdowns.' Peak system power is 240 W (140 W SoC + 100 W other); nvidia-smi shows GPU power only. Dell Pro Max GB10 ships a 280 W adapter.",
+   "why_it_matters": "Third-party chargers, hubs/docks on the power port, damaged cables and marginal PDUs have all been implicated in fallback power modes and hard power-offs; the PD controller lives in the brick.",
+   "next_steps": [
+    "Use the supplied adapter and cable, plugged directly into a wall outlet; inspect the adapter and cable for damage (NVIDIA support asks this first).",
+    "Do not power the unit through USB-C docks/hubs; unplug all USB-C peripherals when doing a cold power-cycle.",
+    "If using a PDU/UPS, test on a different circuit; one user's PDU fault capped a Spark at ~35 W."
+   ],
+   "sources": [
+    "https://docs.nvidia.com/dgx/dgx-spark/hardware.html",
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-power-clarification/349668",
+    "https://forums.developer.nvidia.com/t/system-powers-off/362483"
+   ]
+  },
+  {
+   "id": "GB10_EXPECTED_NA_FIELDS",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND nvidia-smi reports N/A for power limits / fan / memory clock / shutdown-slowdown T.Limit, or 'Memory-Usage: Not Supported'.",
+   "evidence_template": "On GB10 the following nvidia-smi values are normal and not faults: 'Current/Default/Min/Max Power Limit : N/A', 'Fan Speed : N/A', 'Memory : N/A' (clocks), 'Supported Clocks : N/A', 'GPU Shutdown T.Limit Temp : N/A', 'GPU Slowdown T.Limit Temp : N/A', 'GPU Max Operating T.Limit Temp : 0 C', 'Memory-Usage: Not Supported'. `nvidia-smi -pl` is unsupported.",
+   "why_it_matters": "Generic GPU health rules (missing power limit, fan 0/N/A, missing memory clock) would produce false alarms on the unified-memory iGPU platform.",
+   "next_steps": [
+    "No action. Use clocks.sm, power.draw, utilization.gpu, temperature.gpu, Clocks Event Reasons and ACPI thermal zones as the health signals on GB10."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304",
+    "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044"
+   ]
+  },
+  {
+   "id": "GB10_MLX5_PCIE_POWER_MSG_BENIGN",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND dmesg contains 'Detected insufficient power on the PCIe slot (27W).' from mlx5_core.",
+   "evidence_template": "dmesg: '{line}'. This ConnectX-7 message appears on healthy DGX Sparks and is considered benign by NVIDIA forum moderators; network throughput (ib_write_bw ~111 Gb/s per port) is unaffected.",
+   "why_it_matters": "It looks like a power fault and has been misattributed to the 30 W safety-mode issue; only treat it as supporting evidence if the PD-wedge rule also fires.",
+   "next_steps": [
+    "No action. If GPU power/clock checks also fail, see GB10_PD_POWER_WEDGE."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/connectx-pcie-slot-power-message/371156",
+    "https://forums.developer.nvidia.com/t/asus-ascent-gx10-dgx-spark-permanent-power-throttle-at-30w-safety-mode-pd-firmware-negotiation-failure/355255"
+   ]
+  },
+  {
+   "id": "GB10_IDLE_TEMP_ELEVATED",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND utilization.gpu == 0 for >= 60 s AND (temperature.gpu >= 55 C OR power.draw >= 15 W).",
+   "evidence_template": "Idle GPU at {temp} C / {power} W with 0 % utilization; healthy fresh-boot idle is ~30-40 C and ~4-10 W. Elevated idle can indicate blocked airflow, stacking, high ambient, degraded thermal interface, or a GPU that did not return to baseline after load (open NVIDIA thread 2026-09-02).",
+   "why_it_matters": "A unit that later hard-powered-off idled at 47-48 C versus 30-35 C for healthy units; dried thermal compound and stacked enclosures have been implicated.",
+   "next_steps": [
+    "Check placement (unstacked, vents clear, ambient 5-30 C).",
+    "Compare against a reboot: if idle temp/power stays high after reboot, consider field diagnostics and contacting support.",
+    "Avoid mechanical fixes (re-pasting) unless out of warranty or advised by support."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065",
+    "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251",
+    "https://forums.developer.nvidia.com/t/sparks-have-recently-powered-off-randomly/376103"
+   ]
+  },
+  {
+   "id": "GB10_ACPI_THERMAL_FIRMWARE_BUG_MSG",
+   "severity": "INFO",
+   "trigger": "GB10 detected AND dmesg contains 'ACPI: thermal: [Firmware Bug]: No valid trip points!' or 'platform NVDA8800:00: failed to claim resource 0'.",
+   "evidence_template": "dmesg: '{line}'. Seen on a DGX Spark with unexplained shutdowns; not confirmed as a cause. NVDA8800 is the SoC power-budget (SPBM) ACPI device.",
+   "why_it_matters": "Included in the evidence bundle so support can correlate; low confidence.",
+   "next_steps": [
+    "No direct action; include `sudo dmesg -T` in any support bundle and keep firmware current."
+   ],
+   "sources": [
+    "https://forums.developer.nvidia.com/t/dgx-spark-constantly-shut-down-after-first-set-up/357216",
+    "https://github.com/antheas/spark_hwmon"
+   ]
+  }
+ ],
+ "commands_and_flags": [
+  {
+   "context": "Sample GPU load/clock/power for PD-wedge detection (community tool's exact query)",
+   "command": "nvidia-smi --query-gpu=clocks.current.graphics,clocks.max.graphics,pstate,power.draw,clocks_throttle_reasons.active --format=csv,noheader,nounits",
+   "notes": "Healthy under load: >1400 MHz (typically ~2200-2450) and >=40 W; wedged: 611/650/721 MHz, 10-16 W, P0. Newer drivers also accept clocks_event_reasons.active.",
+   "source_url": "https://github.com/hoesing/spark-gpu-throttle-check"
+  },
+  {
+   "context": "Quick health triple used in field guides",
+   "command": "nvidia-smi --query-gpu=power.draw,utilization.gpu,clocks.sm --format=csv,noheader",
+   "notes": "Healthy reference during LLM inference: '35.65 W, 96 %, 2522 MHz'; 30 W safety mode: '4.80 W, 2 %, 2411 MHz' (idle) then no scaling under load.",
+   "source_url": "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode"
+  },
+  {
+   "context": "Full throttle-reason and thermal detail",
+   "command": "nvidia-smi -q -d PERFORMANCE,TEMPERATURE,CLOCK,POWER",
+   "notes": "Parse 'Clocks Event Reasons' (Active/Not Active) and 'Clocks Event Reasons Counters' (us). Expect Power Limit fields N/A, Fan N/A, 'GPU Max Operating T.Limit Temp : 0 C' on GB10.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304"
+  },
+  {
+   "context": "Check whether a clock cap is in effect",
+   "command": "nvidia-smi -q -d CLOCK | head -20",
+   "notes": "tonyd2wild verification step: 'Clocks: Graphics' should sit at/below ~2200 MHz under load when the cap is applied. Max Clocks stays 3003 MHz.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "context": "Community mitigation for hard power-off (USER-INITIATED ONLY; NVCheckup must not run it)",
+   "command": "sudo nvidia-smi -lgc 300,2200",
+   "notes": "Caps GPU max clock at 2200 MHz (default boost ~2418). ~5 % slower LLM inference; not persistent across reboot; revert with `sudo nvidia-smi -rgc`. Variants used: 300,2100 / 200,2150 / 300,2400. Does not fix the PD wedge.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "context": "Revert a clock cap",
+   "command": "sudo nvidia-smi -rgc",
+   "notes": "Resets locked GPU clocks; also used as ExecStop in gb10-clock-cap.service.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "context": "Persist the clock cap (community systemd unit)",
+   "command": "sudo cp systemd/gb10-clock-cap.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now gb10-clock-cap.service && systemctl status gb10-clock-cap.service",
+   "notes": "Unit is Type=oneshot, After=/Wants=nvidia-persistenced.service, ExecStart runs nvidia-smi -lgc 300,2200, ExecStop runs nvidia-smi -rgc. NVCheckup should only detect its presence.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "context": "Identify log-less hard power-off",
+   "command": "journalctl --list-boots; journalctl -b -1 -n 50 --no-pager; journalctl -b -1 -k | grep -Ei 'panic|out of memory|xid|hung task|thermal'; ls -la /sys/fs/pstore /var/crash; cat /proc/sys/kernel/tainted; last -x shutdown reboot | head",
+   "notes": "Signature: previous boot ends mid-line with no shutdown target lines, pstore empty, no vmcore, taint 4096 (nvidia only). kdump with crashkernel=2G captured nothing on an affected unit.",
+   "source_url": "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix"
+  },
+  {
+   "context": "Firmware inventory (read-only)",
+   "command": "sudo fwupdmgr get-devices; sudo fwupdmgr refresh; sudo fwupdmgr get-upgrades; sudo fwupdmgr get-history",
+   "notes": "Device names seen: 'Embedded Controller', 'UEFI Device Firmware', 'USB Power Delivery Controller' (FE) / 'GX10 USB-C PD FW Controller Update' (ASUS, GUID fe75bb1c-5ccc-4936-b603-cc7cf945dc30). Latest FE (2026-07): EC 0x03000508, UEFI 0x02009b0b, PD 0x00000516. get-history 'Update State: Success' is the trustworthy post-flash signal.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "Official OS + firmware update procedure (DGX Dashboard is the recommended path)",
+   "command": "sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh --force && sudo fwupdmgr upgrade && sudo reboot",
+   "notes": "From NVIDIA firmware announcement and the OS & Component Update Guide. Community strongly advises a cold power cycle (unplug PSU) after PD/EC flashes instead of a warm reboot.",
+   "source_url": "https://forums.developer.nvidia.com/t/fyi-new-firmware-available/368339"
+  },
+  {
+   "context": "Non-interactive firmware flash without auto-reboot so the follow-up can be a cold drain",
+   "command": "sudo fwupdmgr update --assume-yes --no-reboot-check",
+   "notes": "Sggin1 procedure: flash, then `sudo shutdown -h now`, unplug PSU from wall and unit, hold power ~30 s, wait 60 s, replug, boot. Advisory only.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "OTA status check on DGX OS",
+   "command": "nvidia-spark-ota-check is-ota-available",
+   "notes": "Returns true/false; a 'torn-score' option was mentioned for detecting incomplete OTA updates.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251"
+  },
+  {
+   "context": "SBIOS identification",
+   "command": "sudo dmidecode -s bios-version; sudo dmidecode -s bios-release-date; sudo dmidecode -s system-product-name",
+   "notes": "Observed FE strings: '5.36_0ACUM018' (2025-08-06 / 09/12/2025), 'AMI 2.25' (12/25/2025); ASUS BIOS '0102'/'0103'/'0104'/'0105'.",
+   "source_url": "https://forums.developer.nvidia.com/t/system-powers-off/362483"
+  },
+  {
+   "context": "ACPI thermal zones (only thermal telemetry besides nvidia-smi on stock DGX OS)",
+   "command": "for z in /sys/class/thermal/thermal_zone*; do echo \"$z $(cat $z/type) $(cat $z/temp)\"; done",
+   "notes": "Type 'acpitz'; values in millidegrees. Throttling reports: zone0/zone5 up to 96800, zone2 ~88000. No fan RPM anywhere in sysfs; `sudo tegrastats` also cited for SoC temps.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044"
+  },
+  {
+   "context": "Suspend diagnostics",
+   "command": "cat /sys/power/mem_sleep; systemctl is-enabled sleep.target suspend.target; systemctl status nvidia-suspend.service; journalctl -b -k | grep -E 'PM: suspend entry|nv_set_system_power_state|nv.c:4784'; journalctl -b | grep -i suspend",
+   "notes": "Failure strings: 'PM: suspend entry (s2idle)', 'WARNING: CPU: ... at nvidia/nv.c:4784 nv_set_system_power_state+0x248/0x3c8 [nvidia]', write error to /proc/driver/nvidia/suspend.",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-suspend-service-fails-nv-set-system-power-state-warning-nv-c-4784-s2idle-suspend-does-not-complete-on-dgx-spark-gb10/380263"
+  },
+  {
+   "context": "Prevent GDM-greeter auto-suspend on headless units (advisory)",
+   "command": "sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'; sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 0",
+   "notes": "Masking sleep.target alone was ineffective because GNOME at the login screen triggers suspend. Read the value with `gsettings get` for detection.",
+   "source_url": "https://forums.developer.nvidia.com/t/configure-dgx-so-it-does-not-go-into-power-standby-mode/375767"
+  },
+  {
+   "context": "Mask systemd sleep targets (advisory)",
+   "command": "sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target",
+   "notes": "Recommended in community guides to avoid sleep/resume-triggered PD wedge; insufficient by itself for GDM-triggered suspend.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "Display wake attempt over SSH when HDMI monitor is black",
+   "command": "xset dpms force on",
+   "notes": "Suggested by NVIDIA staff; also press the monitor's physical button / disable monitor deep-sleep in OSD.",
+   "source_url": "https://forums.developer.nvidia.com/t/dgx-spark-hdmi-display-stops-working-every/351461"
+  },
+  {
+   "context": "Support bundle collection before power-cycling",
+   "command": "sudo nvidia-bug-report.sh; sudo dmesg -T > dmesg.txt; journalctl -b -0 > journal.txt; sudo fwupdmgr get-devices > fw.txt; nvidia-smi -q > smi.txt",
+   "notes": "kernel.dmesg_restrict=1 on DGX OS so dmesg needs sudo. Produces nvidia-bug-report.log.gz requested by NVIDIA staff in most threads.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "NVIDIA field diagnostics for RMA qualification",
+   "command": "sudo apt install dgx-spark-fieldiag && sudo ./partnerdiag --field",
+   "notes": "~30 min; requires Secure Boot disabled; includes PowerStress. Version 2.0.4-1 had an unmet 'ofed-scripts' dependency for one user. Output 'Thermal resistance is too high' (MODS-020000281445) led to RMA.",
+   "source_url": "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md"
+  },
+  {
+   "context": "EC firmware rollback performed by a user (NOT recommended by NVIDIA; advisory context only)",
+   "command": "sudo fwupdmgr downgrade <DEVICE_ID>",
+   "notes": "User rolled EC 0x03000508 back to 0x02004e18 to restore fan ramp; NVIDIA could not reproduce on FE and directs OEM owners to OEM support.",
+   "source_url": "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069"
+  },
+  {
+   "context": "Optional community hwmon telemetry (if installed)",
+   "command": "watch -n 0.1 sensors 'spbm-*'",
+   "notes": "Requires antheas/spark_hwmon out-of-tree driver bound to ACPI NVDA8800; exposes soc/gpu/cpu cluster temps, sys_total/dc_input/gpu power, pl1/pl2/syspl1/syspl2 limits, prochot, pl_level.",
+   "source_url": "https://github.com/antheas/spark_hwmon"
+  }
+ ],
+ "open_questions": [
+  "Exact device-name strings printed by `fwupdmgr get-devices` on an NVIDIA FE DGX Spark (forum posts paraphrase 'Embedded Controller', 'UEFI Device Firmware', 'USB Power Delivery Controller'; not verified verbatim from fwupd output). Need a real capture for robust parsing, plus the mapping of hex versions to the decimal forms in the release notes (inferred: 0x03000508 = 3.5.8, 0x00000516 = 0.5.22, 0x02009b0b = 2.155.11).",
+  "Whether the negotiated USB-PD contract (voltage/current, EPR) is readable from userspace on GB10 (/sys/class/typec, /sys/class/power_supply, ucsi). No source showed a way to observe the PD state directly; detection is inferred from GPU clocks/power.",
+  "The EC's actual hard-cut thresholds (temperature and/or current) that cause log-less power-off; NVIDIA has not published them and states it cannot reproduce internally.",
+  "Exact `clocks_event_reasons.active` bitmask value reported in the PD-wedge state (expected 0x0 given all reasons Not Active), and whether the 'SW Power Capping' counter growing while 'SW Power Cap' reads Not Active is a reliable discriminator.",
+  "Whether the EC fan-curve regression (idle ~60 C, load 96-97 C, inaudible fans) exists on FE units with EC 0x03000508 or only on OEM (GX10) builds; NVIDIA says no FE reproduction. Whether ASUS BIOS 0105 (EC 3.3.2.4, 2026-08-11) resolves it.",
+  "Whether the July 2026 FE firmware (EC 0x03000508 / UEFI 0x02009b0b) or USB PD 0x00000516 actually fixes the PD wedge and hard power-off; NVIDIA only says 'others have said that latest firmware updates have fixed this issue for them'.",
+  "Whether `nvidia-smi -lgc` limits persist across reboot on current DGX OS (community says no, hence the systemd unit) and whether NVIDIA endorses clock capping at all (no official statement found).",
+  "Default `/sys/class/thermal/thermal_zoneN/type` names beyond 'acpitz' and which zone maps to GPU vs SoC/CPU on GB10; only zone0/2/5 readings were published.",
+  "Whether 'ACPI: thermal: [Firmware Bug]: No valid trip points!' and 'platform NVDA8800:00: failed to claim resource 0' appear on every DGX Spark (benign) or only on faulty units.",
+  "HP ZGX Nano adapter rating is inconsistently documented (280 W internal vs 240 W external); MSI/Gigabyte/Acer adapter ratings not confirmed from primary sources.",
+  "RTX Spark / N1X (Windows on Arm) thermal/power behavior: no sources found in this research pass; all findings here are Linux/DGX OS GB10 only.",
+  "Kongvut blog (2026-08-23) on the 2200 MHz clock-cap fix returned HTTP 403 and could not be read; the ASUS 'New firmware released by NVIDIA enhances system stability' FAQ PDF (2025-11-13) could not be parsed."
+ ],
+ "sources": [
+  "https://github.com/Sggin1/DGX-SPARK/blob/main/GX10_PD_Throttle_Fix.md",
+  "https://github.com/tonyd2wild/dgx-spark-hard-poweroff-fix",
+  "https://github.com/hoesing/spark-gpu-throttle-check",
+  "https://github.com/joeynyc/spark-doctor",
+  "https://github.com/antheas/spark_hwmon",
+  "https://forums.developer.nvidia.com/t/dgx-spark-grace-blackwell-gb10-performance-drop-gpu-trapped-in-15w-650mhz-loop-with-50-c-artificial-t-limit-temp/370304",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-clock-pinned-at-721-mhz-under-full-load-no-throttling-not-liftable-via-nvidia-smi/376039",
+  "https://forums.developer.nvidia.com/t/gb10-is-power-limited-after-crash/366590",
+  "https://forums.developer.nvidia.com/t/asus-ascent-gx10-dgx-spark-permanent-power-throttle-at-30w-safety-mode-pd-firmware-negotiation-failure/355255",
+  "https://forums.developer.nvidia.com/t/power-delivery-bug-how-im-catching-it-early/366944",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-is-stuck-at-5w-power-and-0-utilization-even-after-all-nvidia-firmware-updates/356426",
+  "https://forums.developer.nvidia.com/t/connectx-pcie-slot-power-message/371156",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-reproducibly-hard-powers-off-under-gpu-load-fully-updated-zero-crash-capture/373251",
+  "https://forums.developer.nvidia.com/t/sparks-have-recently-powered-off-randomly/376103",
+  "https://forums.developer.nvidia.com/t/spark-abruptly-shuts-down/377478",
+  "https://forums.developer.nvidia.com/t/system-powers-off/362483",
+  "https://forums.developer.nvidia.com/t/dgxspark-temperature-too-high-automatic-shutdown/363370",
+  "https://forums.developer.nvidia.com/t/dgx-spark-constantly-shut-down-after-first-set-up/357216",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-thermal-throttling-after-ec-uefi-updates-acpi-zones-96-97c-fans-not-ramping/377044",
+  "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-gb10-thermal-throttling-fan-curve-fix-via-ec-firmware-rollback/377069",
+  "https://forums.developer.nvidia.com/t/dgx-spark-thermal-throttling/349647",
+  "https://forums.developer.nvidia.com/t/status-and-experience-on-thermal-performance/351345",
+  "https://forums.developer.nvidia.com/t/dgx-spark-gb10-gpu-idle-temperature-power-does-not-return-to-baseline-after-sustained-load/382065",
+  "https://forums.developer.nvidia.com/t/dgx-spark-power-clarification/349668",
+  "https://forums.developer.nvidia.com/t/fyi-new-firmware-available/368339",
+  "https://forums.developer.nvidia.com/t/new-firmware-available/376890",
+  "https://forums.developer.nvidia.com/t/asus-ascent-gx10-firmware-update/364160",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-02-2026/360362",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-04-2026/368114",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-june-2026-release/371965",
+  "https://forums.developer.nvidia.com/t/dgx-spark-software-updates-july-2026-release/376736",
+  "https://forums.developer.nvidia.com/t/nvidia-suspend-service-fails-nv-set-system-power-state-warning-nv-c-4784-s2idle-suspend-does-not-complete-on-dgx-spark-gb10/380263",
+  "https://forums.developer.nvidia.com/t/is-sleep-suspend-disabled-by-default/377582",
+  "https://forums.developer.nvidia.com/t/configure-dgx-so-it-does-not-go-into-power-standby-mode/375767",
+  "https://forums.developer.nvidia.com/t/nvidia-dgx-spark-automatically-suspends-when-running-headless-despite-power-config-changes/353777",
+  "https://forums.developer.nvidia.com/t/dgx-spark-monitor-goes-black-wont-wake-up/348159",
+  "https://forums.developer.nvidia.com/t/dgx-spark-hdmi-display-stops-working-every/351461",
+  "https://forums.developer.nvidia.com/t/dgx-spark-not-waking-up-if-monitor-on-hdmi-switch/357519",
+  "https://forums.developer.nvidia.com/t/dgx-spark-doesnt-wake-up-display-monitors-after-being-idle-for-few-minutes/358484",
+  "https://docs.nvidia.com/dgx/dgx-spark/known-issues.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/hardware.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html",
+  "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html",
+  "https://www.asus.com/networking-iot-servers/desktop-ai-supercomputer/ultra-small-ai-supercomputers/asus-ascent-gx10/helpdesk_bios?model2Name=ASUS-Ascent-GX10",
+  "https://www.wildpines.ai/blog/your-dgx-spark-is-cooking-itself/",
+  "https://note.com/nob75note/n/ned4cc56ead79?hl=en",
+  "https://ai-muninn.com/en/blog/dgx-spark-30w-power-safety-mode",
+  "https://www.itechguides.com/all-nvidia-dgx-spark-versions-so-far-1-generation-8-official-systems/",
+  "https://www.chargerlab.com/teardown-of-the-nvidia-dgx-spark-original-240w-usb-c-power-adapter/"
+ ]
+}
