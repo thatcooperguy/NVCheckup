@@ -467,6 +467,7 @@ func ApplyToReport(r *types.Report, red *Redactor) {
 	}
 
 	redactPlatform(&r.Platform, r.DGXOS, r.Cluster, r.Ecosystem, red)
+	redactUnifiedMemory(r.UnifiedMemory, red)
 }
 
 // ApplyToSnapshot redacts the identifying fields of a Snapshot in place.
@@ -491,6 +492,19 @@ func ApplyToSnapshot(s *types.Snapshot, red *Redactor) {
 		redactAI(s.AI, red)
 	}
 	redactPlatform(s.Platform, s.DGXOS, nil, nil, red)
+	redactUnifiedMemory(s.UnifiedMemory, red)
+}
+
+// redactUnifiedMemory scrubs the /proc/swaps device paths, which may be swap
+// files under a user's home directory (e.g. /home/<user>/swapfile). Device
+// nodes such as /dev/zram0 pass through unchanged.
+func redactUnifiedMemory(u *types.UnifiedMemoryInfo, red *Redactor) {
+	if u == nil {
+		return
+	}
+	for i := range u.SwapDevices {
+		u.SwapDevices[i] = red.RedactPath(u.SwapDevices[i])
+	}
 }
 
 // redactWindows scrubs monitor names (which can embed serial-like ids) and

@@ -29,6 +29,36 @@ const nvidiaSmiTableGB10 = `+---------------------------------------------------
 +-----------------------------------------------------------------------------------------+
 `
 
+// A dGPU whose ECC column says "Not Supported" while Memory-Usage is numeric:
+// must not be treated as unified memory.
+const nvidiaSmiTableECCNotSupported = `+-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.65.06              Driver Version: 580.65.06      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4070        Off |   00000000:01:00.0 Off |        Not Supported |
+|  0%   35C    P8              9W /  200W |     100MiB /   8192MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+`
+
+// The GB10 table with the Processes section cut off (as stripProcessSection
+// leaves it): the status row alone must still be recognised.
+const nvidiaSmiTableGB10NoProcesses = `+-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.159.03             Driver Version: 580.159.03     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GB10                    On  |   0000000F:01:00.0 Off |                  N/A |
+| N/A   38C    P8              4W /  N/A  |       Not Supported    |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+`
+
 // GB10 query row: memory.total/free/used print "[N/A], [N/A], [N/A]" (spec 2.1)
 // and the full BDF with domain 000F is kept.
 func TestApplyGPUQueryRows_GB10MemoryNotSupported(t *testing.T) {
@@ -100,6 +130,14 @@ func TestTableShowsMemoryNotSupported(t *testing.T) {
 	}
 	if tableShowsMemoryNotSupported(nvidiaSmiTableWithProcesses) {
 		t.Error("RTX 3090 table (3545MiB / 24576MiB) flagged as Not Supported")
+	}
+	// "Not Supported" in the Volatile Uncorr. ECC column of the first row of a
+	// GPU block must not count: only the Memory-Usage cell of the status row.
+	if tableShowsMemoryNotSupported(nvidiaSmiTableECCNotSupported) {
+		t.Error("ECC column 'Not Supported' with numeric Memory-Usage flagged as Not Supported")
+	}
+	if !tableShowsMemoryNotSupported(nvidiaSmiTableGB10NoProcesses) {
+		t.Error("GB10 table without a Processes section not recognised")
 	}
 	// Only GPUs without a query answer are marked; an answered GPU keeps its value.
 	gpus := []types.GPUInfo{

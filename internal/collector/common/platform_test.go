@@ -272,6 +272,37 @@ func TestClassifyPhase1_Windows(t *testing.T) {
 	if p.Class != "" || p.IsWindowsOnArm || p.ProcessEmulated || p.NativeMachine != "AMD64" || p.UnifiedMemory {
 		t.Errorf("x64 desktop = %+v", p)
 	}
+
+	// x64 desktop whose driver 616.00 gives WDDM DriverVersion 32.0.16.1600:
+	// the version suffix is corroboration only and needs row 1 (WoA), so a
+	// discrete RTX 5090 must stay unclassed (spark-rules.json: WoA + PNP).
+	rtx5090 := windowsAdapter{Name: "NVIDIA GeForce RTX 5090", PNPDeviceID: `PCI\VEN_10DE&DEV_2B85&SUBSYS_00000000&REV_A1\4&1&0&0019`, InfFilename: "oem42.inf", DriverVersion: "32.0.16.1600"}
+	in = platformInputs{GOOS: "windows", GOARCH: "amd64", ProcessorArchitecture: 9, Adapters: []windowsAdapter{rtx5090}}
+	p = classifyPhase1(in)
+	if p.Class != "" || p.GPUSoC != "" || p.IsWindowsOnArm || p.UnifiedMemory {
+		t.Errorf("x64 desktop with 616.00 WDDM version = %+v", p)
+	}
+	// The same adapter with nv_surface_woa.inf on x64 is likewise not enough.
+	rtx5090.InfFilename = "nv_surface_woa.inf"
+	in = platformInputs{GOOS: "windows", GOARCH: "amd64", ProcessorArchitecture: 9, Adapters: []windowsAdapter{rtx5090}}
+	if p = classifyPhase1(in); p.Class != "" {
+		t.Errorf("x64 desktop with nv_surface_woa.inf = %+v", p)
+	}
+
+	// On a Windows-on-Arm host the corroborating signals do count: an NVIDIA
+	// adapter with an unknown PNP id but the 616.00 INF/version is rtx-spark.
+	unknownN1X := windowsAdapter{Name: "NVIDIA Display Adapter", PNPDeviceID: `PCI\VEN_10DE&DEV_0000&SUBSYS_00011414`, InfFilename: "nv_surface_woa.inf", DriverVersion: "32.0.16.1600"}
+	in = platformInputs{GOOS: "windows", GOARCH: "arm64", Adapters: []windowsAdapter{unknownN1X}}
+	p = classifyPhase1(in)
+	if p.Class != ClassRTXSpark || p.GPUSoC != socN1X || !p.IsWindowsOnArm {
+		t.Errorf("WoA + corroborating INF/version = %+v", p)
+	}
+	// A non-NVIDIA adapter on WoA never matches (Qualcomm Adreno).
+	adreno := windowsAdapter{Name: "Qualcomm(R) Adreno(TM) X1-85 GPU", PNPDeviceID: `PCI\VEN_17CB&DEV_0000`, InfFilename: "qcdx.inf", DriverVersion: "31.0.16.1600"}
+	in = platformInputs{GOOS: "windows", GOARCH: "arm64", Adapters: []windowsAdapter{adreno}}
+	if p = classifyPhase1(in); p.Class != "" {
+		t.Errorf("WoA with Adreno = %+v", p)
+	}
 }
 
 func TestIsRTXSparkAdapter(t *testing.T) {
@@ -282,8 +313,10 @@ func TestIsRTXSparkAdapter(t *testing.T) {
 		{"", `PCI\VEN_10DE&DEV_2E03&SUBSYS_00011414`, "", "", true},
 		{"", `pci\ven_10de&dev_2e06&subsys_0001103c`, "", "", true},
 		{"NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)", "", "", "", true},
-		{"NVIDIA Display", `PCI\VEN_10DE&DEV_0000`, "nv_surface_woa.inf", "", true},
-		{"NVIDIA Display", `PCI\VEN_10DE&DEV_0000`, "", "32.0.16.1600", true},
+		// INF / WDDM version are corroboration only (need WoA): not strong.
+		{"NVIDIA Display", `PCI\VEN_10DE&DEV_0000`, "nv_surface_woa.inf", "", false},
+		{"NVIDIA Display", `PCI\VEN_10DE&DEV_0000`, "", "32.0.16.1600", false},
+		{"NVIDIA GeForce RTX 5090", `PCI\VEN_10DE&DEV_2B85`, "oem12.inf", "32.0.16.1600", false},
 		{"Intel Display", `PCI\VEN_8086&DEV_A7A0`, "nv_surface_woa.inf", "32.0.16.1600", false},
 		{"NVIDIA GeForce RTX 4090", `PCI\VEN_10DE&DEV_2684`, "oem12.inf", "32.0.15.6094", false},
 		{"NVIDIA GeForce RTX 4060 Laptop GPU", `PCI\VEN_10DE&DEV_28A0`, "nvltwi.inf", "32.0.15.6094", false},
@@ -293,6 +326,44 @@ func TestIsRTXSparkAdapter(t *testing.T) {
 		if got := IsRTXSparkAdapter(c.name, c.pnp, c.inf, c.drv); got != c.want {
 			t.Errorf("IsRTXSparkAdapter(%q,%q,%q,%q) = %v, want %v", c.name, c.pnp, c.inf, c.drv, got, c.want)
 		}
+	}
+
+	weak := []struct {
+		pnp, inf, drv string
+		want          bool
+	}{
+		{`PCI\VEN_10DE&DEV_0000`, "nv_surface_woa.inf", "", true},
+		{`PCI\VEN_10DE&DEV_0000`, "NV_SURFACE_WOA.INF", "", true},
+		{`PCI\VEN_10DE&DEV_0000`, "", "32.0.16.1600", true},
+		{`PCI\VEN_10DE&DEV_0000`, "", "16.1600", true},
+		{`PCI\VEN_10DE&DEV_2684`, "oem12.inf", "32.0.15.6094", false},
+		{`PCI\VEN_8086&DEV_A7A0`, "nv_surface_woa.inf", "32.0.16.1600", false}, // not NVIDIA
+		{"", "nv_surface_woa.inf", "32.0.16.1600", false},
+	}
+	for _, c := range weak {
+		if got := IsRTXSparkAdapterCorroborated(c.pnp, c.inf, c.drv); got != c.want {
+			t.Errorf("IsRTXSparkAdapterCorroborated(%q,%q,%q) = %v, want %v", c.pnp, c.inf, c.drv, got, c.want)
+		}
+	}
+}
+
+// dmidecode -s prints one or more "# SMBIOS ..." comment lines before the
+// value; the value must survive.
+func TestFirstValueLine(t *testing.T) {
+	out := "# SMBIOS implementations newer than version 3.x are not fully supported.\n" +
+		"# SMBIOS implementations newer than version 3.x are not fully supported.\n" +
+		"NVIDIA_DGX_Spark\n"
+	if got := firstValueLine(out); got != "NVIDIA_DGX_Spark" {
+		t.Errorf("firstValueLine with comments = %q", got)
+	}
+	if got := firstValueLine("\n  ASUSTeK COMPUTER INC.  \n"); got != "ASUSTeK COMPUTER INC." {
+		t.Errorf("firstValueLine plain = %q", got)
+	}
+	if got := firstValueLine("# only a comment\n\n"); got != "" {
+		t.Errorf("firstValueLine comment only = %q", got)
+	}
+	if got := firstValueLine(""); got != "" {
+		t.Errorf("firstValueLine empty = %q", got)
 	}
 }
 
@@ -443,6 +514,18 @@ func TestApplyPlatformFlags_Rows(t *testing.T) {
 			name:   "row 5 by nvidia-smi name NVIDIA GB10",
 			report: newReport("arm64", "", gb10GPU()),
 			class:  ClassDGXSpark, soc: socGB10, unified: true, gpuOnPackage: true, pcieOnPackage: true, computeCap: "12.1",
+		},
+		{
+			name: "row 5 name match is a whole token: NVIDIA GB100 with numeric memory on amd64 is not dgx-spark",
+			report: newReport("amd64", "", types.GPUInfo{Index: 0, Name: "NVIDIA GB100", Vendor: "NVIDIA", IsNVIDIA: true,
+				VRAMTotalMB: 196608, ComputeCap: "10.0", MemoryReporting: MemoryReportingDedicated}),
+			class: "", soc: "", unified: false, computeCap: "10.0",
+		},
+		{
+			name: "row 5 name match is a whole token: NVIDIA GB100 on arm64 is arm64-dgpu (row 8), not dgx-spark",
+			report: newReport("arm64", "", types.GPUInfo{Index: 0, Name: "NVIDIA GB100 HGX", Vendor: "NVIDIA", IsNVIDIA: true,
+				VRAMTotalMB: 196608, ComputeCap: "10.0", MemoryReporting: MemoryReportingDedicated}),
+			class: ClassArm64DGPU, soc: "", unified: false, computeCap: "10.0",
 		},
 		{
 			name: "row 5 by lspci device id when nvidia-smi is dead (GSP failure)",

@@ -64,6 +64,7 @@ func TestApplyToReport_SparkStructs(t *testing.T) {
 			Images:        []types.ContainerImage{{Ref: "registry.local/alice/vllm:cu130-nightly", Arch: "arm64"}, {Ref: "nvcr.io/nvidia/vllm:26.05-py3", Arch: "arm64"}},
 			TorchWarnings: []string{"Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. (/home/alice/.venv)"},
 		},
+		UnifiedMemory: &types.UnifiedMemoryInfo{SwapDevices: []string{"/home/alice/swapfile", "/dev/zram0", "/swap.img"}},
 	}
 	rep.Platform = types.PlatformInfo{Class: "dgx-spark", Vendor: "NVIDIA", Model: "NVIDIA_DGX_Spark", BIOSVersion: "5.36_0ACUM023",
 		Firmware: []types.FirmwareComponent{{Name: "UEFI Device Firmware", Version: "2.155.11"}}, PrevBootLastLine: "spark-a1b2 systemd-shutdown[1]: Journal stopped"}
@@ -95,6 +96,9 @@ func TestApplyToReport_SparkStructs(t *testing.T) {
 	}
 	if rep.Platform.PrevBootLastLine != "<host> systemd-shutdown[1]: Journal stopped" {
 		t.Errorf("prev boot line = %q", rep.Platform.PrevBootLastLine)
+	}
+	if sw := rep.UnifiedMemory.SwapDevices; len(sw) != 3 || sw[0] != "<home>/swapfile" || sw[1] != "/dev/zram0" || sw[2] != "/swap.img" {
+		t.Errorf("swap devices = %v", sw)
 	}
 	if rep.Platform.Firmware[0].Version != "2.155.11" || rep.Platform.BIOSVersion != "5.36_0ACUM023" || rep.Platform.Model != "NVIDIA_DGX_Spark" {
 		t.Errorf("platform versions altered: %+v", rep.Platform)

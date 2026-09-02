@@ -3,6 +3,7 @@ package common
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -92,11 +93,24 @@ func TestReadLinuxCPUModel_SimRoot(t *testing.T) {
 		t.Errorf("x86 = %q", got)
 	}
 	write(cpuinfoGB10)
-	got := readLinuxCPUModel(5)
-	// With lscpu on PATH the lscpu names win, otherwise the MIDR decode; both
-	// name the two GB10 clusters.
-	if got != "Cortex-X925 / Cortex-A725" && got == "" {
-		t.Errorf("GB10 = %q", got)
+	// MIDR-only cpuinfo: with lscpu absent from PATH the MIDR decode must name
+	// the two GB10 clusters exactly.
+	t.Setenv("PATH", t.TempDir())
+	if got := readLinuxCPUModel(5); got != "Cortex-X925 / Cortex-A725" {
+		t.Errorf("GB10 via MIDR = %q", got)
+	}
+	// With a fake lscpu on PATH printing the GB10 layout the lscpu names win
+	// (Linux only: the shim is a shell script).
+	if runtime.GOOS == "linux" {
+		bin := t.TempDir()
+		script := "#!/bin/sh\ncat <<'LSCPU'\n" + lscpuGB10 + "\nLSCPU\n"
+		if err := os.WriteFile(filepath.Join(bin, "lscpu"), []byte(script), 0755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		if got := readLinuxCPUModel(5); got != "Cortex-X925 / Cortex-A725" {
+			t.Errorf("GB10 via lscpu shim = %q", got)
+		}
 	}
 	// RAM from the simulated meminfo.
 	p := filepath.Join(root, "proc", "meminfo")

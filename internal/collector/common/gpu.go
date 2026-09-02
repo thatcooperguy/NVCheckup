@@ -162,9 +162,12 @@ func applyTableMemoryReporting(gpus []types.GPUInfo, table string) {
 }
 
 // tableShowsMemoryNotSupported reports whether a GPU status row of the
-// nvidia-smi table prints "Not Supported" where "usedMiB / totalMiB" belongs.
-// Header lines and the Processes section are skipped so the "N/A" of the ECC
-// column or of the process list cannot trigger it.
+// nvidia-smi table prints "Not Supported" in the Memory-Usage cell, where
+// "usedMiB / totalMiB" belongs (spec 2.1). Only the middle cell (index 2 after
+// splitting on '|') of the second row of each GPU block is inspected - that row
+// is recognised by the Pwr:Usage/Cap "x / y" in its first cell - so a "Not
+// Supported" in the Volatile Uncorr. ECC column of the first row, header lines
+// and the Processes section cannot trigger it.
 func tableShowsMemoryNotSupported(table string) bool {
 	for _, l := range strings.Split(table, "\n") {
 		if strings.Contains(l, "Processes:") {
@@ -173,7 +176,16 @@ func tableShowsMemoryNotSupported(table string) bool {
 		if !strings.HasPrefix(strings.TrimSpace(l), "|") || strings.Contains(l, "Memory-Usage") {
 			continue
 		}
-		if strings.Contains(l, tableMemoryNotSupported) && !strings.Contains(l, "MiB /") {
+		cells := strings.Split(l, "|")
+		if len(cells) < 4 {
+			continue
+		}
+		// Status row: first cell holds "Fan Temp Perf Pwr:Usage/Cap" with a '/'.
+		if !strings.Contains(cells[1], "/") {
+			continue
+		}
+		mem := cells[2]
+		if strings.Contains(mem, tableMemoryNotSupported) && !strings.Contains(mem, "MiB") {
 			return true
 		}
 	}

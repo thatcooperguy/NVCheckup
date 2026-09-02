@@ -89,6 +89,11 @@ var nvidiaKernelRe = regexp.MustCompile(`^\d+\.\d+\.\d+-\d+-nvidia(-64k|-lowlate
 // lspciIDRe finds the "[vvvv:dddd]" id pair on an lspci -nn line.
 var lspciIDRe = regexp.MustCompile(`\[([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\]`)
 
+// gb10NameRe matches the exact row 5 nvidia-smi name "NVIDIA GB10" as a whole
+// token (spec 2.1 quotes the name verbatim), so a "NVIDIA GB100 ..." datacenter
+// part is not mistaken for the Spark SoC.
+var gb10NameRe = regexp.MustCompile(`(^|\s)` + regexp.QuoteMeta(nvidiaSmiNameGB10) + `(\s|$)`)
+
 // dmiSysfsDir holds the world-readable DMI strings on Linux.
 const dmiSysfsDir = "/sys/class/dmi/id"
 
@@ -198,12 +203,27 @@ func readDMI(timeout int) map[string]string {
 	for _, k := range dmiKeys {
 		r := util.RunCommand(timeout, "dmidecode", "-s", k.dmidecode)
 		if r.Err == nil {
-			if v := firstLine(r.Stdout); v != "" && !strings.HasPrefix(v, "#") {
+			if v := firstValueLine(r.Stdout); v != "" {
 				dmi[k.sysfs] = v
 			}
 		}
 	}
 	return dmi
+}
+
+// firstValueLine returns the first non-empty line of dmidecode -s output that
+// is not a comment. dmidecode prints "# SMBIOS implementations newer than
+// version 3.x are not fully supported." (one or more '#' lines) before the
+// value, so taking the first line would drop the value.
+func firstValueLine(out string) string {
+	for _, l := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		return t
+	}
+	return ""
 }
 
 // readKernelRelease prefers /proc/sys/kernel/osrelease (so NVC_SIM_ROOT can
@@ -343,10 +363,14 @@ func classifyWindows(in platformInputs, p *types.PlatformInfo) {
 		p.NativeMachine = "AMD64"
 	}
 
-	// Row 2: RTX Spark N1X adapter (PNP DEV_2E03 / DEV_2E06, name token, INF,
-	// WDDM DriverVersion ending 16.1600).
+	// Row 2: RTX Spark N1X adapter. The PNP id (DEV_2E03 / DEV_2E06) and the
+	// name token are sufficient on their own; the INF name and the WDDM
+	// DriverVersion suffix only corroborate on a Windows-on-Arm host (row 1),
+	// because spark-rules.json rtx-spark-detected triggers on "WoA + PNP" and a
+	// 616.00-series WDDM version on an x64 desktop must not class a discrete GPU.
 	for _, a := range in.Adapters {
-		if IsRTXSparkAdapter(a.Name, a.PNPDeviceID, a.InfFilename, a.DriverVersion) {
+		if IsRTXSparkAdapter(a.Name, a.PNPDeviceID, a.InfFilename, a.DriverVersion) ||
+			(p.IsWindowsOnArm && IsRTXSparkAdapterCorroborated(a.PNPDeviceID, a.InfFilename, a.DriverVersion)) {
 			p.Class = ClassRTXSpark
 			p.GPUSoC = socN1X
 			break
@@ -360,24 +384,33 @@ func classifyWindows(in platformInputs, p *types.PlatformInfo) {
 	p.BIOSDate = in.BIOSDate
 }
 
-// IsRTXSparkAdapter applies the row 2 tests to one Windows display adapter.
-// The PNP id and the name token are each sufficient on their own; the INF name
-// and the WDDM version suffix are corroborating signals that only count together
-// with an NVIDIA vendor id, because a version suffix alone is too weak.
+// IsRTXSparkAdapter applies the strong row 2 tests to one Windows display
+// adapter: the PNP id (VEN_10DE&DEV_2E03 / DEV_2E06, S50) or the adapter name
+// token "RTX Spark N1X" are each sufficient on their own (spec 3.1 row 2). The
+// INF name and WDDM version are deliberately not consulted here; see
+// IsRTXSparkAdapterCorroborated. The infFilename / driverVersion parameters are
+// kept so existing callers compile.
 func IsRTXSparkAdapter(name, pnpDeviceID, infFilename, driverVersion string) bool {
+	_, _ = infFilename, driverVersion
 	pnp := strings.ToUpper(pnpDeviceID)
 	if strings.Contains(pnp, "VEN_10DE&DEV_2E03") || strings.Contains(pnp, "VEN_10DE&DEV_2E06") {
 		return true
 	}
-	if strings.Contains(name, rtxSparkNameToken) {
-		return true
+	return strings.Contains(name, rtxSparkNameToken)
+}
+
+// IsRTXSparkAdapterCorroborated applies the weak row 2 signals - INF
+// nv_surface_woa.inf or a WDDM DriverVersion ending 16.1600 (spec 2.2: only the
+// tail is confirmed) - to an NVIDIA (VEN_10DE) adapter. They are corroboration
+// only: callers must additionally know the host is Windows on Arm (row 1),
+// otherwise a 616.00-series driver on an x64 desktop would class a discrete
+// GPU as rtx-spark (spark-rules.json rtx-spark-detected: "WoA + PNP").
+func IsRTXSparkAdapterCorroborated(pnpDeviceID, infFilename, driverVersion string) bool {
+	pnp := strings.ToUpper(pnpDeviceID)
+	if !strings.Contains(pnp, "VEN_10DE") {
+		return false
 	}
-	if strings.Contains(pnp, "VEN_10DE") {
-		if strings.EqualFold(infFilename, rtxSparkINF) || strings.HasSuffix(driverVersion, rtxSparkWDDMTail) {
-			return true
-		}
-	}
-	return false
+	return strings.EqualFold(infFilename, rtxSparkINF) || strings.HasSuffix(driverVersion, rtxSparkWDDMTail)
 }
 
 // IsNvidiaKernelFlavour reports whether a kernel release string names
@@ -575,8 +608,9 @@ func classifyFromGPUs(r *types.Report, p *types.PlatformInfo) {
 		if !g.IsNVIDIA {
 			continue
 		}
-		// Row 5: nvidia-smi -L name "NVIDIA GB10" or lspci device id 2e12.
-		if strings.Contains(g.Name, nvidiaSmiNameGB10) || strings.EqualFold(g.PCIDeviceID, pciDeviceGB10) {
+		// Row 5: nvidia-smi -L name "NVIDIA GB10" (whole token, so "NVIDIA
+		// GB100" does not match) or lspci device id 2e12.
+		if gb10NameRe.MatchString(g.Name) || strings.EqualFold(g.PCIDeviceID, pciDeviceGB10) {
 			p.Class = ClassDGXSpark
 			p.GPUSoC = socGB10
 			return
