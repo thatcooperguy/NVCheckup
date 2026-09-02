@@ -29,7 +29,7 @@ It is a single-binary diagnostic tool that scans your NVIDIA GPU environment, id
 nvcheckup run --mode full --zip
 ```
 
-Typically in 20-60 seconds (add 30-40 s with `--network`), NVCheckup:
+Typically in 20-60 seconds (add 30-60 s with `--network`), NVCheckup:
 
 - **Scans** your GPU, driver, CUDA toolkit, PCIe link, thermal state, and system configuration
 - **Detects** driver crashes (Event ID 4101, nvlddmkm), module loading failures, version mismatches
@@ -227,8 +227,8 @@ NVCheckup is built on a simple principle: **your data stays on your machine.**
 | Guarantee | Detail |
 |-----------|--------|
 | No telemetry | Zero analytics, zero tracking, zero phone-home |
-| Network | None, unless you pass `--network` to `run` or use `network-test`. Then NVCheckup runs an ICMP ping and a traceroute to `1.1.1.1` and a DNS lookup of `google.com`, locally. Nothing is uploaded anywhere. |
-| Read-only | `run`, `snapshot`, `doctor`, and `self-test` never modify anything. `fix` is opt-in: it asks for confirmation, journals every change, and can be reversed with `undo`. |
+| Network | None, unless you pass `--network` to `run`, answer yes to the network question in `doctor`, or use `network-test`. Then NVCheckup runs an ICMP ping and a traceroute to `1.1.1.1` and a DNS lookup of `google.com`, locally. Nothing is uploaded anywhere. |
+| Read-only | `run`, `snapshot`, `compare`, and `doctor` never modify anything. `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in: it asks for confirmation, journals every change, and can be reversed with `undo`. |
 | No background services | No daemons, no scheduled tasks, no auto-updates |
 | PII redaction ON by default | For both `run` and `snapshot`. Usernames, hostnames, home paths, IPs, and email addresses are scrubbed. |
 
@@ -257,7 +257,7 @@ Passwords, tokens, API keys, browser data, SSH keys, clipboard contents, process
 
 Redaction is on by default for `run` and `snapshot`:
 - Your home directory becomes `<home>` (`C:\Users\yourname\AppData\...` becomes `<home>\AppData\...`)
-- Other profile paths become `C:\Users\<user>\...`; your username as a bare word becomes `<user>`
+- Other profile paths become `C:\Users\<user>\...`; your username as a bare word becomes `<user>` (standalone usernames shorter than 3 characters are not replaced, to avoid mangling ordinary words; paths containing them still are)
 - Machine hostname becomes `<host>`
 - Public IPs become `<public-ip-redacted>`
 - LAN IPs become `<lan-ip>`
@@ -284,7 +284,7 @@ nvcheckup run [flags]
 |------|---------|-------------|
 | `--mode` | `full` | `gaming`, `ai`, `creator`, `streaming`, `full` |
 | `--out` | `.` | Output directory |
-| `--zip` | off | Create a zip bundle |
+| `--zip` | off | Bundle the generated report files into `nvcheckup-bundle-<timestamp>.zip` |
 | `--json` | off | Generate structured `report.json` |
 | `--md` | off | Generate GitHub/Reddit-ready `report.md` |
 | `--network` | off | Opt in to network probes (ping and traceroute to 1.1.1.1, DNS lookup of google.com) |
@@ -292,7 +292,7 @@ nvcheckup run [flags]
 | `--timeout` | `30` | Per-command timeout in seconds |
 | `--redact` | **on** | Redact PII from all output |
 | `--no-redact` | off | Disable PII redaction |
-| `--include-logs` | off | Include extended system logs in bundle |
+| `--include-logs` | off | Linux only: add `journalctl` and `dmesg` snippets to the report data. Ignored on Windows. Adds no extra files to the zip bundle |
 
 ### `nvcheckup fix`
 
@@ -320,8 +320,8 @@ How it behaves:
 
 - Elevation is checked **before** you are prompted. If an action needs admin/root and you are not elevated, `fix` tells you and exits without asking.
 - You are shown a preview and must type `yes` to proceed. Anything else aborts.
-- Every applied change is written to a journal at `<user config dir>/nvcheckup/nvcheckup-changes.json` (Windows: `%APPDATA%\nvcheckup\nvcheckup-changes.json`; Linux: `~/.config/nvcheckup/nvcheckup-changes.json`). Use `--journal DIR` to override. `--out DIR` is accepted as a deprecated alias.
-- `--dry-run` prints exactly what would be executed and changes nothing. Listing fixes, `--dry-run` and `undo` without `--id` do not even create the journal directory; it is created only when a change is applied or undone.
+- Every applied change is written to a journal at `<user config dir>/nvcheckup/nvcheckup-changes.json` (Windows: `%APPDATA%\nvcheckup\nvcheckup-changes.json`; Linux: `~/.config/nvcheckup/nvcheckup-changes.json`). On Linux, `sudo nvcheckup fix` journals under the invoking user's `~/.config/nvcheckup` when `SUDO_USER` is set, otherwise under `/root/.config/nvcheckup`. Use `--journal DIR` to override. `--out DIR` is accepted as a deprecated alias.
+- `--dry-run` prints exactly what would be executed and changes nothing. It runs only the read-only capture commands the action uses to record the current state (for example `reg query`, `powercfg /getactivescheme`, `modinfo`, a package listing). Listing fixes, `--dry-run` and `undo` without `--id` do not even create the journal directory; it is created only when a change is applied or undone.
 
 ### `nvcheckup undo`
 
@@ -361,7 +361,7 @@ nvcheckup compare [--out DIR] [--md] before.json after.json
 
 ### `nvcheckup doctor`
 
-Interactive guided mode. Asks 5 questions, then runs targeted checks. Read-only.
+Interactive guided mode. Asks six questions (primary use case including Creator, the issue, any recent change, extended logs, whether to run the opt-in network probes, and output format), then runs targeted checks. Read-only; network probes run only if you answer yes to that question.
 
 ```
 nvcheckup doctor
@@ -369,7 +369,7 @@ nvcheckup doctor
 
 ### `nvcheckup self-test`
 
-Verifies your environment has the tools NVCheckup needs and that the collector queries it relies on (for example the `nvidia-smi` fields) actually work on your driver. No modifications.
+Verifies your environment has the tools NVCheckup needs and that the collector queries it relies on (for example the `nvidia-smi` fields) actually work on your driver. It never changes system settings; it creates and removes one temporary file in the current directory to verify write access.
 
 ```
 nvcheckup self-test
@@ -388,7 +388,7 @@ Prints the version and disclaimer. Also accepts `--version` and `-v`.
 | `report.txt` | Human-readable, forum-pasteable | Always |
 | `report.json` | Structured, machine-parseable (`metadata.schema_version`, `findings[].id`) | `--json` |
 | `report.md` | GitHub/Reddit markdown with tables | `--md` |
-| `bundle.zip` | Report + logs archive | `--zip` |
+| `nvcheckup-bundle-<timestamp>.zip` | Zip containing the generated report files | `--zip` |
 
 Every text and markdown report ends with a privacy footer stating that the report was generated locally, whether network probes were run at your request, and that `run` did not modify your system.
 

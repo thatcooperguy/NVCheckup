@@ -60,6 +60,27 @@ the documentation was checked against what the binary actually does.
   `Processes:` section.
 - Source is gofmt-clean; the lint job now enforces it.
 - Module path is `github.com/thatcooperguy/nvcheckup`.
+- A failed `undo` no longer marks the journal entry as undone; the entry stays
+  retryable.
+- `undo` checks elevation before prompting, using the same preflight as `fix`.
+- The "network healthy" finding requires actual ping samples; a probe that
+  returned none no longer reports a healthy connection.
+- The summary line shows `PCIe: ... (DOWNSHIFTED ...)` only when a PCIe WARN
+  finding actually fired; otherwise an idle link is labelled as idle.
+- On Linux, `grep` exiting 1 (no match) inside a collector is an empty result,
+  not a collector error.
+- Windows remediation actions run `reg.exe` and `powercfg.exe` from
+  `%SystemRoot%\System32` instead of whatever `PATH` resolves first.
+- Every remediation command runs under the executor's timeout, so a hung
+  command cannot stall `fix` or `undo` indefinitely.
+- The nouveau checks fire only when a nouveau kernel module is actually built
+  for the running kernel; an absent module is no longer reported as a conflict.
+- `self-test`'s write-permission check is documented for what it is: it creates
+  and removes one temporary file (`.nvcheckup-selftest-write`) in the current
+  directory and changes no system settings.
+- CUDA toolkit detection follows the `/usr/local/cuda` symlink to the versioned
+  installation it points at.
+- WSL2 detection works on distributions booted with systemd.
 
 ### Changed
 
@@ -71,8 +92,23 @@ the documentation was checked against what the binary actually does.
   `nvcheckup compare [--out DIR] [--md] a.json b.json`. Extra positionals are an error.
 - The change journal moved from the current directory to the user config
   directory (`%APPDATA%\nvcheckup\nvcheckup-changes.json` on Windows,
-  `~/.config/nvcheckup/nvcheckup-changes.json` on Linux). `fix` and `undo` accept
-  `--journal DIR`; `--out` remains as a deprecated alias.
+  `~/.config/nvcheckup/nvcheckup-changes.json` on Linux). On Linux,
+  `sudo nvcheckup fix` journals under the invoking user's `~/.config/nvcheckup`
+  when `SUDO_USER` is set, otherwise under `/root/.config/nvcheckup`. `fix` and
+  `undo` accept `--journal DIR`; `--out` remains as a deprecated alias.
+- Unused `RunConfig` fields that no code path read were removed from `pkg/types`.
+- CI runs `self-test` on the built binary instead of through `go run`, which
+  collapsed every non-zero exit code to 1; `govulncheck` runs with the current
+  stable Go. The release workflow runs vet and tests before building and uses a
+  read-only token except for the publish step.
+- Documentation corrected against the binary's real output: `--include-logs` is
+  Linux-only and adds `journalctl`/`dmesg` snippets to the report data (nothing
+  extra goes into the zip); `doctor` asks six questions, including the network
+  probe opt-in and a Creator use case; the `report.json` schema in `PRODUCT.md`
+  is regenerated from real output (`thermal`, `pcie`, `displays` and `network`
+  are top-level, not nested in `gpus[]`); `--dry-run` runs only read-only
+  capture commands; network probes add 30-60 s; standalone usernames shorter
+  than 3 characters are not redacted (paths containing them still are).
 - `undo --id` reverses the newest successful, not-yet-undone entry for that id.
 - Text and markdown report footers state that the report was generated locally,
   whether network probes ran at your request, and that `run` did not modify the

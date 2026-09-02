@@ -127,7 +127,10 @@ the project that changes the user's system, so they get the most scrutiny.
    The journal is user-writable; never copy its contents verbatim into a
    privileged path or command.
 5. **Make preview truthful.** `Preview` should print the exact command or
-   registry write that `Apply` will perform. `--dry-run` must execute nothing.
+   registry write that `Apply` will perform. `--dry-run` may run only the
+   action's read-only capture commands (for example `reg query`,
+   `powercfg /getactivescheme`, `modinfo`, a package listing) and must change
+   nothing.
 6. **Use the `Executor` interface** for every command so tests can substitute a
    fake and assert the argv without touching the machine.
 7. **Test** apply, undo, undo-when-absent, and a tampered journal entry with the

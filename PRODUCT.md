@@ -15,7 +15,7 @@ It is designed for four moments:
 3. **"What changed?"** — You updated a driver or kernel and need to compare before/after state.
 4. **"Just do the safe thing."** — A finding has a known, reversible fix and you would rather apply it with a journal than edit the registry by hand.
 
-Diagnostics (`run`, `snapshot`, `compare`, `doctor`, `self-test`) never modify your system. `fix` modifies it only after an interactive confirmation, journals what it did, and `undo` reverses it. Nothing is sent anywhere. Nothing runs in the background.
+Diagnostics (`run`, `snapshot`, `compare`, `doctor`, `self-test`) never change system settings; `self-test` creates and removes one temporary file in the current directory to verify write access. `fix` modifies the system only after an interactive confirmation, journals what it did, and `undo` reverses it. Nothing is sent anywhere. Nothing runs in the background.
 
 ---
 
@@ -46,7 +46,7 @@ nvcheckup run [flags]
 |------|---------|-------------|
 | `--mode` | `full` | Diagnostic focus: `gaming`, `ai`, `creator`, `streaming`, `full` |
 | `--out` | `.` | Output directory for all generated files |
-| `--zip` | off | Package reports + logs into a timestamped zip bundle |
+| `--zip` | off | Bundle the generated report files into `nvcheckup-bundle-YYYYMMDD-HHMMSS.zip` |
 | `--json` | off | Generate `report.json` (structured machine-readable output) |
 | `--md` | off | Generate `report.md` (GitHub/Reddit-ready markdown) |
 | `--network` | off | Opt in to network probes: ICMP ping (10 echoes) and traceroute to `1.1.1.1`, in-process DNS lookup of `google.com`. Runs in any mode when set; never runs when unset. |
@@ -54,7 +54,7 @@ nvcheckup run [flags]
 | `--timeout` | `30` | Per-command timeout in seconds |
 | `--redact` | **on** | Redact usernames, hostnames, home paths, IPs, and emails from all output |
 | `--no-redact` | off | Disable PII redaction |
-| `--include-logs` | off | Include extended system logs (journalctl, dmesg) in bundle |
+| `--include-logs` | off | Linux only: add `journalctl` and `dmesg` snippets to the report data. Ignored on Windows. Adds no extra files to the zip bundle |
 
 ### `nvcheckup fix`
 
@@ -63,7 +63,7 @@ Lists and applies remediation actions. The only command that changes system stat
 ```
 nvcheckup fix                                # list actions for this platform
 nvcheckup fix --all                          # preview every action
-nvcheckup fix --id <id> --dry-run            # preview one action; nothing is executed
+nvcheckup fix --id <id> --dry-run            # preview one action; changes nothing
 nvcheckup fix --id <id> [--journal DIR]      # apply after typing "yes"
 ```
 
@@ -71,7 +71,7 @@ nvcheckup fix --id <id> [--journal DIR]      # apply after typing "yes"
 |------|---------|-------------|
 | `--id` | | Action id to preview or apply |
 | `--all` | off | Preview all available actions |
-| `--dry-run` | off | Print what would happen; execute nothing |
+| `--dry-run` | off | Print what would happen. Runs only the action's read-only capture commands (for example `reg query`, `powercfg /getactivescheme`, `modinfo`, a package listing) and changes nothing |
 | `--journal` | user config dir | Directory holding `nvcheckup-changes.json` |
 | `--out` | | Deprecated alias for `--journal` |
 
@@ -86,7 +86,7 @@ nvcheckup fix --id <id> [--journal DIR]      # apply after typing "yes"
 Behaviour:
 - If the action has `NeedsAdmin` and the process is not elevated, `fix` reports that and exits **before** prompting.
 - The preview shows the exact command or registry write. The user must type `yes`.
-- The previous value is captured before the change and stored, with the action id, timestamp, and result, in the journal. Default journal path: `<os.UserConfigDir()>/nvcheckup/nvcheckup-changes.json` (`%APPDATA%\nvcheckup\nvcheckup-changes.json` on Windows, `~/.config/nvcheckup/nvcheckup-changes.json` on Linux).
+- The previous value is captured before the change and stored, with the action id, timestamp, and result, in the journal. Default journal path: `<os.UserConfigDir()>/nvcheckup/nvcheckup-changes.json` (`%APPDATA%\nvcheckup\nvcheckup-changes.json` on Windows, `~/.config/nvcheckup/nvcheckup-changes.json` on Linux). On Linux, `sudo nvcheckup fix` journals under the invoking user's `~/.config/nvcheckup` when `SUDO_USER` is set, otherwise under `/root/.config/nvcheckup`. `--journal DIR` overrides the location.
 
 ### `nvcheckup undo`
 
@@ -123,28 +123,29 @@ Diffs two snapshots and reports what changed. Flags come before the positionals;
 nvcheckup compare [--out DIR] [--md] <before.json> <after.json>
 ```
 
-Fields compared: OS version, kernel, driver version, CUDA version, GPU count, GPU names, GPU VRAM, CUDA toolkit, cuDNN, PyTorch version, PyTorch CUDA version, PyTorch CUDA availability (marked critical if changed).
+Fields compared include OS version, kernel, driver version, CUDA version, GPU count, GPU names, GPU VRAM, CUDA toolkit, cuDNN, PyTorch version, PyTorch CUDA version, PyTorch CUDA availability (marked critical if changed).
 
 ### `nvcheckup doctor`
 
-Interactive guided mode. Asks 5 questions to determine the most relevant diagnostic scope, then runs a targeted, read-only check.
+Interactive guided mode. Asks six questions to determine the most relevant diagnostic scope, then runs a targeted, read-only check.
 
 ```
 nvcheckup doctor
 ```
 
 **Questions asked:**
-1. Primary use case (Gaming / AI / Streaming / General)
-2. Issue type (Crashes / Performance / GPU not detected / Other / Unsure)
+1. Primary use case (Gaming / AI / Creator / Streaming / General)
+2. Issue type (Crashes / Performance / GPU not detected / Encoding or streaming / Unsure)
 3. Recent changes (OS update / Driver update / New hardware / Software install / None)
 4. Include extended logs? (Yes / No)
-5. Output format (Text only / Full bundle with JSON + Markdown + Zip)
+5. Run network probes (ping/traceroute to `1.1.1.1` and a DNS lookup)? (Yes / No; they take 30-60 s and contact external hosts, so the default is No)
+6. Output format (Text only / Full bundle with JSON + Markdown + Zip)
 
-Answers determine the mode, log inclusion, and output format. The tool then runs the same pipeline as `nvcheckup run`.
+Answers determine the mode, log inclusion, whether network probes run, and the output format. The tool then runs the same pipeline as `nvcheckup run`.
 
 ### `nvcheckup self-test`
 
-Verifies the environment has the tools NVCheckup needs and that the collector queries it depends on succeed on this driver. No system modifications. Exit code 1 means warnings (for example no GPU present), which CI treats as acceptable.
+Verifies the environment has the tools NVCheckup needs and that the collector queries it depends on succeed on this driver. It never changes system settings; it creates and removes one temporary file in the current directory to verify write access. Exit code 1 means warnings (for example no GPU present), which CI treats as acceptable.
 
 ```
 nvcheckup self-test
@@ -181,7 +182,7 @@ Prints version string and disclaimer. Also accepts `--version` and `-v`.
 | `creator` | GPU, driver, thermal, PCIe, Windows gaming checks, CUDA environment | Creative application readiness |
 | `full` | Everything: all platform checks, AI/CUDA, WSL, VRAM analysis | When you don't know what's wrong |
 
-Network probes are not part of any mode. They run only with `--network`.
+Network probes are not part of any mode. They run only with `--network`, or when you answer yes to the network question in `doctor`.
 
 ---
 
@@ -373,46 +374,200 @@ Human-readable, forum-pasteable, 72-character-wide formatting. Sections:
 
 ### report.json (with `--json`)
 
-Complete structured output. Schema (version `"1"`):
-```
+Complete structured output. The top-level keys are `metadata`, `system`, `gpus`, `driver`,
+`windows` (Windows only), `linux` and `wsl` (Linux only), `ai`, `thermal`, `pcie`, `displays`,
+`network`, `findings`, `collector_errors`, `top_issues`, `next_steps`, and `summary_block`.
+`thermal`, `pcie`, `displays` and `network` are siblings of `gpus`, not nested inside it.
+Keys marked `omitempty` in `pkg/types` are absent when there is nothing to report; in
+particular `network` appears only when probes ran and `collector_errors` only when a
+collector failed. The example below is abridged from a real Windows `--mode full` run
+(schema version `"1"`, one representative element per array):
+
+```json
 {
-  "metadata": { tool_version, timestamp, mode, runtime_seconds, redaction_enabled, platform,
-                schema_version, network_probes },
-  "system": { os_name, os_version, os_build, kernel_version, architecture, boot_mode,
-               secure_boot, cpu_model, ram_total_mb, storage_free_mb, uptime, timezone },
-  "gpus": [{ index, name, vendor, pci_vendor_id, pci_device_id, pci_bus_id,
-              driver_version, wddm_version, vram_total_mb, vram_free_mb, vram_used_mb,
-              temperature_c, power_draw, is_nvidia,
-              thermal: { temperature_c, thermal_throttle, power_state, current_clock_mhz,
-                         max_clock_mhz, power_limit_w, power_draw_w, fan_speed_pct,
-                         fan_supported, slowdown_active, slowdown_reason, throttle_reasons,
-                         utilization_pct },
-              pcie: { current_speed, max_speed, current_width, max_width, downshifted,
-                      power_state, utilization_pct, idle_likely } }],
-  "driver": { version, cuda_version, nvidia_smi_path, nvidia_smi_output, source },
-  "windows": { hags_enabled, game_mode, power_plan, monitors, driver_reset_events,
-                nvlddmkm_errors, whea_errors, recent_kbs, nvidia_app_version,
-                gfe_version, overlay_software, dxdiag_summary },
-  "displays": [{ name, resolution, refresh_hz, connection, primary }],
-  "linux": { distro, distro_version, package_manager, nvidia_packages, loaded_modules,
-              dkms_status, dkms_errors, secure_boot_state, mok_status, session_type,
-              prime_status, dev_nvidia_nodes, libcuda_path, container_runtime,
-              nv_container_toolkit, xid_errors, journal_snippets, dmesg_snippets },
-  "wsl": { is_wsl, wsl_version, distro, kernel_version, dev_dxg_exists, nvidia_smi_ok },
-  "ai": { cuda_driver_version, cuda_toolkit_version, nvcc_path, cudnn_version,
-           python_versions, conda_present, pytorch_info, tensorflow_info, key_packages },
-  "network": { interface_name, interface_type, wifi_band, wifi_signal_dbm, latency_ms,
-                jitter_ms, packet_loss_pct, dns_time_ms, hops },
-  "findings": [{ id, severity, title, evidence, why_it_matters, next_steps, references,
-                  category, confidence, remediation }],
-  "collector_errors": [{ collector, error, fatal }],
-  "top_issues": [],
-  "next_steps": [],
-  "summary_block": ""
+  "metadata": {
+    "tool_version": "0.2.1",
+    "timestamp": "2026-09-01T20:41:40.512458-05:00",
+    "mode": "full",
+    "runtime_seconds": 59.1,
+    "redaction_enabled": true,
+    "platform": "windows",
+    "schema_version": "1",
+    "network_probes": false
+  },
+  "system": {
+    "os_name": "Microsoft Windows 11 Enterprise",
+    "os_version": "10.0.26200",
+    "os_build": "26200",
+    "architecture": "amd64",
+    "boot_mode": "UEFI",
+    "secure_boot": "Disabled",
+    "cpu_model": "AMD Ryzen Threadripper PRO 3975WX 32-Cores",
+    "ram_total_mb": 65382,
+    "storage_free_mb": 30104,
+    "uptime": "1d 9h 15m",
+    "timezone": "Local (CDT, UTC-05:00)",
+    "hostname": "<host>"
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 3090",
+      "vendor": "NVIDIA",
+      "pci_bus_id": "00000000:41:00.0",
+      "driver_version": "591.86",
+      "wddm_version": "4.09.00.0904",
+      "vram_total_mb": 24576,
+      "vram_free_mb": 21590,
+      "vram_used_mb": 2737,
+      "temperature_c": 42,
+      "power_draw": "31.55",
+      "is_nvidia": true
+    }
+  ],
+  "driver": {
+    "version": "591.86",
+    "cuda_version": "13.1",
+    "nvidia_smi_path": "nvidia-smi",
+    "nvidia_smi_output": "Tue Sep  1 20:41:59 2026 ..."
+  },
+  "windows": {
+    "hags_enabled": "Default (not configured)",
+    "game_mode": "Default (not configured)",
+    "power_plan": "Balanced",
+    "monitors": [
+      { "name": "DEL DELL U2720Q", "resolution": "3840x2160", "refresh_rate": "60Hz", "primary": false }
+    ],
+    "whea_errors": [
+      { "event_id": 17, "source": "System", "level": "Warning", "message": "A corrected hardware error has occurred. ...", "time": "2026-09-01T18:33:15.9783373Z" }
+    ],
+    "recent_kbs": [
+      { "kb_id": "KB5120708", "title": "Update", "installed_on": "2026-08-31T00:00:00Z" }
+    ],
+    "nvidia_app_version": "11.0.7.247",
+    "overlay_software": [ "Discord (may have overlay)" ]
+  },
+  "ai": {
+    "cuda_toolkit_version": "13.1",
+    "nvcc_path": "nvcc",
+    "python_versions": [
+      { "path": "<home>\\AppData\\Local\\Programs\\Python\\Python311\\python.exe", "version": "3.11.3" }
+    ],
+    "conda_present": false,
+    "pytorch_info": {
+      "version": "2.5.1+cu118",
+      "cuda_version": "11.8",
+      "cuda_available": true,
+      "device_name": "NVIDIA GeForce RTX 3090"
+    },
+    "key_packages": [
+      { "name": "torch", "version": "2.5.1+cu118" }
+    ]
+  },
+  "thermal": {
+    "temperature_c": 41,
+    "thermal_throttle": false,
+    "power_state": "P8",
+    "current_clock_mhz": 210,
+    "max_clock_mhz": 2100,
+    "power_limit_w": "350.00",
+    "power_draw_w": "31.11",
+    "fan_speed_pct": 0,
+    "fan_supported": true,
+    "slowdown_active": false,
+    "slowdown_reason": "0x0000000000000001",
+    "throttle_reasons": [ "gpu_idle" ],
+    "utilization_pct": 14
+  },
+  "pcie": {
+    "current_speed": "Gen1",
+    "max_speed": "Gen4",
+    "current_width": "x16",
+    "max_width": "x16",
+    "downshifted": false,
+    "power_state": "P8",
+    "utilization_pct": 31,
+    "idle_likely": true
+  },
+  "displays": [
+    {
+      "name": "DEL DELL U2720Q",
+      "resolution": "3840x2160",
+      "refresh_hz": 60,
+      "hdr_enabled": false,
+      "hdr_capable": false,
+      "vrr_enabled": false,
+      "color_depth": "",
+      "output_type": "DP",
+      "gpu_index": 0,
+      "primary": false,
+      "scaling_pct": 0
+    }
+  ],
+  "network": {
+    "interface_name": "Ethernet 7",
+    "interface_type": "ethernet",
+    "latency_ms": 11.6,
+    "jitter_ms": 0.5,
+    "packet_loss_pct": 0,
+    "dns_time_ms": 57.14,
+    "hops": [
+      { "number": 1, "address": "<lan-ip>", "latency_ms": 9, "loss": false }
+    ]
+  },
+  "findings": [
+    {
+      "id": "power-plan-suboptimal",
+      "severity": "INFO",
+      "title": "Power Plan Not Set to High Performance",
+      "evidence": "Active power plan: Balanced.",
+      "why_it_matters": "Balanced or Power Saver plans may throttle CPU/GPU performance. ...",
+      "next_steps": [
+        "Open Power Options and switch to 'High Performance' for testing.",
+        "This is a reversible change with no risk."
+      ],
+      "category": "performance",
+      "confidence": 40,
+      "remediation": {
+        "id": "set-high-performance",
+        "title": "Switch to High Performance power plan",
+        "risk": "low",
+        "description": "Sets the active Windows power plan to 'High performance' with powercfg. ...",
+        "dry_run_desc": "Would run: powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c (after capturing the current plan with powercfg /getactivescheme)",
+        "undo_desc": "Restore the previously active plan: powercfg /setactive <captured GUID>",
+        "platform": "windows",
+        "needs_reboot": false,
+        "needs_admin": true,
+        "category": "power",
+        "related_find": "Power plan is not set to High performance"
+      }
+    }
+  ],
+  "top_issues": [ "No significant issues detected." ],
+  "next_steps": [ "Identify the device named in the event and update its driver and firmware." ],
+  "summary_block": "NVCheckup v0.2.1 | 2026-09-01 20:41:40\nOS: Microsoft Windows 11 Enterprise 10.0.26200 | Arch: amd64\n..."
 }
 ```
 
-`nvidia_smi_output` contains the GPU table only; the `Processes:` section is removed before storage. `network` is present only when probes ran. `displays` is populated on Windows.
+Objects not shown above because they are absent on Windows:
+
+```
+"linux": { distro, distro_version, package_manager, nvidia_packages, loaded_modules, dkms_status,
+           dkms_errors, secure_boot_state, mok_status, session_type, prime_status, dev_nvidia_nodes,
+           libcuda_path, container_runtime, nv_container_toolkit, journal_snippets, dmesg_snippets,
+           xid_errors, llvmpipe_fallback, gl_renderer },
+"wsl":   { is_wsl, wsl_version, distro, kernel_version, dev_dxg_exists, nvidia_smi_ok },
+"collector_errors": [{ collector, error, fatal }]
+```
+
+The `network` object was taken from a separate `--network` run (its `metadata.network_probes` is
+`true`); `wifi_band` and `wifi_signal_dbm` appear only on Wi-Fi. `system.kernel_version` appears on
+Linux. `gpus[]` may also carry `pci_vendor_id`, `pci_device_id`, `pcie_link_speed` and
+`pcie_link_width` when the collector could read them; `ai` may also carry `cuda_driver_version`,
+`cudnn_version` and `tensorflow_info`. `findings[].references` is present only when a rule supplies
+links, and `findings[].remediation` only when a `fix` action exists for the finding.
+`nvidia_smi_output` contains the GPU table only; the `Processes:` section is removed before
+storage. `displays` is populated on Windows.
 
 ### report.md (with `--md`)
 
@@ -425,7 +580,7 @@ GitHub/Reddit-optimized markdown:
 
 ### bundle.zip (with `--zip`)
 
-Timestamped zip archive (`nvcheckup-bundle-YYYYMMDD-HHMMSS.zip`) containing all generated report files. If `--include-logs` is set, extended log snippets are included in the report files inside the bundle.
+Timestamped zip archive (`nvcheckup-bundle-YYYYMMDD-HHMMSS.zip`) containing the generated report files (`report.txt`, plus `report.json` and `report.md` when requested). Nothing else is added to the archive. `--include-logs` does not add files to the bundle; on Linux it adds `journalctl` and `dmesg` snippets to the report data itself, and on Windows it is ignored.
 
 ---
 
@@ -436,8 +591,8 @@ Timestamped zip archive (`nvcheckup-bundle-YYYYMMDD-HHMMSS.zip`) containing all 
 | Property | Status |
 |----------|--------|
 | Telemetry | None. Zero analytics, tracking, or phone-home. |
-| Network calls | None unless you pass `--network` to `run` or use `network-test`. Then: ICMP ping and traceroute to `1.1.1.1` and a DNS lookup of `google.com`, performed locally. No data is uploaded. |
-| System modification | `run`, `snapshot`, `doctor`, and `self-test` never modify anything. `fix` is opt-in, confirmed interactively, journaled, and undoable with `undo`. |
+| Network calls | None unless you pass `--network` to `run`, answer yes to the network question in `doctor`, or use `network-test`. Then: ICMP ping and traceroute to `1.1.1.1` and a DNS lookup of `google.com`, performed locally. No data is uploaded. |
+| System modification | `run`, `snapshot`, `compare`, and `doctor` never modify anything. `self-test` never changes system settings; it creates and removes one temporary file in the current directory to verify write access. `fix` is opt-in, confirmed interactively, journaled, and undoable with `undo`. |
 | Background services | None. No daemons, scheduled tasks, or auto-updates. |
 | PII redaction | ON by default for `run` and `snapshot`. Disable with `--no-redact`. |
 
@@ -451,7 +606,7 @@ Passwords, tokens, API keys, browser data, SSH keys, clipboard contents, process
 |---------|-------------|
 | Your home directory (`C:\Users\you\...`, `/home/you/...`) | `<home>\...` |
 | Username in other profile paths (`C:\Users\name\...`) | `C:\Users\<user>\...` |
-| Username standalone references | `<user>` |
+| Username standalone references | `<user>` (usernames shorter than 3 characters are not replaced as bare words; paths containing them still are) |
 | Machine hostname | `<host>` |
 | Public IPv4 addresses | `<public-ip-redacted>` |
 | Private/LAN IPv4 addresses | `<lan-ip>` |
@@ -562,8 +717,8 @@ GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/nvchec
 ```
 
 **CI/CD:** GitHub Actions workflows for:
-- `ci.yml` — Tests, build, and self-test on push/PR (Windows + Ubuntu matrix, Go 1.22 + stable); gofmt, `go vet`, cross-GOOS vet, and a non-blocking `govulncheck` in the lint job
-- `release.yml` — Verifies `CHANGELOG.md` mentions the tag, cross-compiles with the version injected from the tag, publishes SHA256 checksums and a GitHub Release. Windows binaries are unsigned; the release notes explain how to verify the checksum and pass SmartScreen.
+- `ci.yml` — Tests, build, and self-test of the built binary on push/PR (Windows + Ubuntu matrix, Go 1.22 + stable); gofmt, `go vet`, cross-GOOS vet, and a non-blocking `govulncheck` (run with the current stable Go) in the lint job
+- `release.yml` — Runs `go vet` and the test suite, verifies `CHANGELOG.md` mentions the tag, cross-compiles with the version injected from the tag, publishes SHA256 checksums and a GitHub Release. Windows binaries are unsigned; the release notes explain how to verify the checksum and pass SmartScreen.
 
 ---
 

@@ -626,21 +626,23 @@ body {
       <span class="dim">[3/7] Collecting GPU thermal and PCIe data...</span><br>
       <span class="dim">[4/7] Running platform-specific checks...</span><br>
       <span class="dim">[5/7] Checking AI/CUDA environment...</span><br>
-      <span class="dim">[6/7] Skipping network checks (use --network to opt in)...</span><br>
+      <span class="dim">[6/7] Skipping network probes (use --network to enable)...</span><br>
       <span class="dim">[7/7] Analyzing results...</span><br><br>
-      <span class="output">NVCheckup v0.2.1 | 2026-09-01 14:32:10 UTC</span><br>
-      <span class="output">OS: Windows 11 24H2 | Arch: amd64</span><br>
-      <span class="output">GPU: <span class="highlight">NVIDIA GeForce RTX 4070</span> | Driver: <span class="highlight">591.86</span> | VRAM: 12288 MB</span><br>
-      <span class="output">CUDA (driver): <span class="highlight">13.1</span></span><br>
-      <span class="output">Findings: <span class="crit">1 CRITICAL</span>, <span class="warn">2 WARNING</span>, 5 total</span><br><br>
+      <span class="dim">&nbsp;&nbsp;Written: report.txt</span><br>
+      <span class="dim">&nbsp;&nbsp;Bundle:&nbsp;&nbsp;nvcheckup-bundle-20260901-143210.zip</span><br><br>
+      <span class="output">NVCheckup v0.2.1 | 2026-09-01 14:32:10</span><br>
+      <span class="output">OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64</span><br>
+      <span class="output">GPU: <span class="highlight">NVIDIA GeForce RTX 4070</span> | Driver: <span class="highlight">591.86</span> | VRAM: 12282 MB</span><br>
+      <span class="output">CUDA (driver): <span class="highlight">13.1</span> | CUDA Toolkit: 12.8</span><br>
+      <span class="output">PyTorch: 2.8.0+cpu (CUDA NOT available)</span><br>
+      <span class="output">Temp: 86&deg;C | P-State: P0 | Util: 98%</span><br>
+      <span class="output">PCIe: Gen4 x16</span><br>
+      <span class="output">Findings: <span class="crit">1 CRITICAL</span>, <span class="warn">2 WARNING</span>, 5 total | 1 auto-fixable</span><br>
+      <span class="output">Top: Display Driver Resets Detected (Event ID 4101); PyTorch Installe...</span><br><br>
       <span class="output">Top Issues:</span><br>
-      <span class="output">&nbsp;&nbsp;1. <span class="crit">[CRIT]</span> Display Driver Resets Detected (Event ID 4101)</span><br>
-      <span class="output">&nbsp;&nbsp;2. <span class="warn">[WARN]</span> PyTorch Installed Without CUDA Support</span><br>
-      <span class="output">&nbsp;&nbsp;3. <span class="warn">[WARN]</span> GPU Thermal Throttling Active</span><br>
-      <span class="output">&nbsp;&nbsp;4. <span class="info-label">[INFO]</span> Overlay Software Detected</span><br>
-      <span class="output">&nbsp;&nbsp;5. <span class="info-label">[INFO]</span> Hybrid GPU Configuration</span><br><br>
-      <span class="dim">Written: report.txt, report.json, report.md</span><br>
-      <span class="dim">Bundle:  nvcheckup-bundle-20260901-143210.zip</span>
+      <span class="output">&nbsp;&nbsp;1. <span class="crit">[CRIT]</span> Display Driver Resets Detected (Event ID 4101) (92% confidence)</span><br>
+      <span class="output">&nbsp;&nbsp;2. <span class="warn">[WARN]</span> PyTorch Installed Without CUDA Support (95% confidence)</span><br>
+      <span class="output">&nbsp;&nbsp;3. <span class="warn">[WARN]</span> GPU Running Hot (80% confidence)</span>
     </div>
   </div>
 </section>
