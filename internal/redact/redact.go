@@ -9,6 +9,11 @@
 //	<public-ip-redacted>   any other IPv4 address
 //	<email-redacted>       an email address
 //	SSID: <redacted>       a WiFi network name
+//	<mac>                  a MAC address (aa:bb:cc:dd:ee:ff or AA-BB-CC-DD-EE-FF)
+//	<serial>               a DGX serial number (DGXOSInfo.SerialNumber)
+//
+// Version strings (580.159.03, 32.0.15.6094, firmware 2.155.11, kernels such
+// as 6.17.0-1026-nvidia) are never mistaken for IP addresses.
 package redact
 
 import (
@@ -155,7 +160,27 @@ func (r *Redactor) buildPatterns() {
 		re:          regexp.MustCompile(`(?i)\bE?SSID\s*[:=]\s*"?([^"\r\n]+)"?`),
 		replacement: "SSID: <redacted>",
 	})
+
+	// MAC addresses (ip link / dmesg colon form, ipconfig dash form). Six
+	// two-digit hex groups can never be a PCI bus id (00000000:41:00.0), a
+	// GPU UUID (8-4-4-4-12 groups) or a version string.
+	r.patterns = append(r.patterns, &replacementPattern{re: macRe, replacement: "<mac>"})
+
+	// DGX OS default hostnames. ASSUMPTION: the spec (rules cx7-*, avahi
+	// conflicts) writes them as "spark-xxxx"; the suffix is treated as 4-8
+	// hex digits. Package names such as dgx-spark-fieldiag or
+	// nvidia-spark-ota-check contain no hex-only suffix and are untouched.
+	r.patterns = append(r.patterns, &replacementPattern{re: sparkHostRe, replacement: "<host>"})
 }
+
+// macRe matches a MAC address in colon or dash form.
+var macRe = regexp.MustCompile(`\b[0-9A-Fa-f]{2}(?:(?::[0-9A-Fa-f]{2}){5}|(?:-[0-9A-Fa-f]{2}){5})\b`)
+
+// sparkHostRe matches the DGX OS default hostname form "spark-xxxx".
+var sparkHostRe = regexp.MustCompile(`\bspark-[0-9a-f]{4,8}\b`)
+
+// serialToken replaces DGXOSInfo.SerialNumber (spec section 4).
+const serialToken = "<serial>"
 
 // homeTerminatorPattern is appended to the home-directory pattern. Group 1
 // captures whatever legitimately ends the path: a separator, a quote or
@@ -325,7 +350,70 @@ func (r *Redactor) Summary() string {
   - LAN/loopback IP addresses -> <lan-ip>
   - Email addresses -> <email-redacted>
   - WiFi SSIDs -> SSID: <redacted>
+  - MAC addresses -> <mac>
+  - DGX serial numbers -> <serial>
 Use --no-redact to disable redaction (not recommended for public sharing).`
+}
+
+// redactPlatform scrubs the Spark / unified-memory structures: the DGX serial
+// number, fabric-port IPv4 addresses, NCCL/UCX environment values (which may
+// name hosts or addresses), container image references (registry hosts, user
+// namespaces) and any free text the Windows-on-Arm or DGX OS collectors
+// stored. Version and firmware strings pass through the IP filter's version
+// guard untouched.
+func redactPlatform(p *types.PlatformInfo, dgx *types.DGXOSInfo, cluster *types.ClusterInfo, eco *types.EcosystemInfo, red *Redactor) {
+	if p != nil {
+		p.PrevBootLastLine = red.Redact(p.PrevBootLastLine)
+		// Legacy nested copies, normally nil (Report.* is the canonical home).
+		if p.DGXOS != nil {
+			redactDGXOS(p.DGXOS, red)
+		}
+		if p.Cluster != nil {
+			redactCluster(p.Cluster, red)
+		}
+		if p.Ecosystem != nil {
+			redactEcosystem(p.Ecosystem, red)
+		}
+	}
+	if dgx != nil {
+		redactDGXOS(dgx, red)
+	}
+	if cluster != nil {
+		redactCluster(cluster, red)
+	}
+	if eco != nil {
+		redactEcosystem(eco, red)
+	}
+}
+
+func redactDGXOS(d *types.DGXOSInfo, red *Redactor) {
+	if d.SerialNumber != "" {
+		d.SerialNumber = serialToken
+	}
+	d.FwupdError = red.Redact(d.FwupdError)
+	d.AptSourceCorrupt = red.Redact(d.AptSourceCorrupt)
+}
+
+func redactCluster(c *types.ClusterInfo, red *Redactor) {
+	for i := range c.Ports {
+		for j := range c.Ports[i].IPv4 {
+			c.Ports[i].IPv4[j] = red.RedactIP(c.Ports[i].IPv4[j])
+		}
+	}
+	for k, v := range c.NCCLEnv {
+		c.NCCLEnv[k] = red.Redact(v)
+	}
+	c.NCCLPluginLib = red.RedactPath(c.NCCLPluginLib)
+}
+
+func redactEcosystem(e *types.EcosystemInfo, red *Redactor) {
+	for i := range e.Images {
+		e.Images[i].Ref = red.Redact(e.Images[i].Ref)
+	}
+	for i := range e.TorchWarnings {
+		e.TorchWarnings[i] = red.Redact(e.TorchWarnings[i])
+	}
+	e.TritonPtxasPath = red.RedactPath(e.TritonPtxasPath)
 }
 
 // ApplyToReport redacts every free-text and path field of a Report in place.
@@ -377,6 +465,8 @@ func ApplyToReport(r *types.Report, red *Redactor) {
 			r.Network.Hops[i].Address = red.RedactIP(r.Network.Hops[i].Address)
 		}
 	}
+
+	redactPlatform(&r.Platform, r.DGXOS, r.Cluster, r.Ecosystem, red)
 }
 
 // ApplyToSnapshot redacts the identifying fields of a Snapshot in place.
@@ -400,6 +490,7 @@ func ApplyToSnapshot(s *types.Snapshot, red *Redactor) {
 	if s.AI != nil {
 		redactAI(s.AI, red)
 	}
+	redactPlatform(s.Platform, s.DGXOS, nil, nil, red)
 }
 
 // redactWindows scrubs monitor names (which can embed serial-like ids) and

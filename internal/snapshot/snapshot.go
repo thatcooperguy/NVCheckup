@@ -69,6 +69,28 @@ func collect(timeout int, redactEnabled bool) types.Snapshot {
 	snap.GPUs = gpus
 	snap.Driver = driver
 
+	// Platform class and the unified-memory / on-package flags, derived the
+	// same way the run pipeline does (spec 3.1: phase-1 rows, then the
+	// GPU-dependent rows and flag rules over the inventory above).
+	platform, _ := common.DetectPlatform(timeout)
+	tmp := &types.Report{System: sysInfo, GPUs: gpus, Platform: platform}
+	tmp.Metadata.Platform = runtime.GOOS
+	common.ApplyPlatformFlags(tmp)
+	snap.GPUs = tmp.GPUs
+	snap.Platform = &tmp.Platform
+	if tmp.Platform.UnifiedMemory {
+		um, _ := common.CollectUnifiedMemory(timeout)
+		snap.UnifiedMemory = &um
+	}
+	if tmp.Platform.Class == common.ClassDGXSpark {
+		// /etc/dgx-release and /etc/fastos-release, read-only. The fwupdmgr
+		// firmware table (Platform.Firmware) is filled by linux.CollectDGXOS
+		// once the integrator wires it here as well.
+		if dgx, _ := common.CollectDGXRelease(); dgx != nil {
+			snap.DGXOS = dgx
+		}
+	}
+
 	aiInfo, _ := ai.CollectAIInfo(timeout)
 	snap.AI = &aiInfo
 
@@ -168,6 +190,41 @@ func Diff(a, b *types.Snapshot) []types.Difference {
 		add(p+"wddm_version", a.GPUs[i].WDDMVersion, b.GPUs[i].WDDMVersion, "INFO")
 		add(p+"pcie_link_speed", a.GPUs[i].PCIeLinkSpeed, b.GPUs[i].PCIeLinkSpeed, "INFO")
 		add(p+"pcie_link_width", a.GPUs[i].PCIeLinkWidth, b.GPUs[i].PCIeLinkWidth, "INFO")
+		add(p+"compute_cap", a.GPUs[i].ComputeCap, b.GPUs[i].ComputeCap, "INFO")
+		add(p+"memory_reporting", a.GPUs[i].MemoryReporting, b.GPUs[i].MemoryReporting, "WARN")
+	}
+
+	// Platform, DGX OS, unified memory and firmware (spark-work-packages.md
+	// WP1 item 13). Snapshots written before these fields existed carry nil
+	// pointers and are simply not compared.
+	if a.Platform != nil && b.Platform != nil {
+		add("platform.class", a.Platform.Class, b.Platform.Class, "WARN")
+		add("platform.gpu_soc", a.Platform.GPUSoC, b.Platform.GPUSoC, "INFO")
+		add("platform.unified_memory", btoa(a.Platform.UnifiedMemory), btoa(b.Platform.UnifiedMemory), "WARN")
+		add("platform.bios_version", a.Platform.BIOSVersion, b.Platform.BIOSVersion, "INFO")
+		add("platform.nvidia_kernel_flavour", btoa(a.Platform.NvidiaKernelFlavour), btoa(b.Platform.NvidiaKernelFlavour), "WARN")
+		fa, fb := firmwareVersions(a.Platform.Firmware), firmwareVersions(b.Platform.Firmware)
+		for name, va := range fa {
+			add("platform.firmware["+name+"].version", va, fb[name], "INFO")
+		}
+		for name, vb := range fb {
+			if _, seen := fa[name]; !seen {
+				add("platform.firmware["+name+"].version", "", vb, "INFO")
+			}
+		}
+	}
+	if a.DGXOS != nil && b.DGXOS != nil {
+		add("dgx_os.ota_version", a.DGXOS.OTAVersion, b.DGXOS.OTAVersion, "WARN")
+		add("dgx_os.ota_name", a.DGXOS.OTAName, b.DGXOS.OTAName, "INFO")
+		add("dgx_os.sw_build_version", a.DGXOS.SWBuildVersion, b.DGXOS.SWBuildVersion, "INFO")
+		add("dgx_os.fast_os_version", a.DGXOS.FastOSVersion, b.DGXOS.FastOSVersion, "INFO")
+		add("dgx_os.driver_pkg_version", a.DGXOS.DriverPkgVersion, b.DGXOS.DriverPkgVersion, "WARN")
+		add("dgx_os.firmware_pkg_version", a.DGXOS.FirmwarePkgVersion, b.DGXOS.FirmwarePkgVersion, "WARN")
+	}
+	if a.UnifiedMemory != nil && b.UnifiedMemory != nil {
+		add("unified_memory.mem_total_kb", itoa(a.UnifiedMemory.MemTotalKB), itoa(b.UnifiedMemory.MemTotalKB), "WARN")
+		add("unified_memory.swap_total_kb", itoa(a.UnifiedMemory.SwapTotalKB), itoa(b.UnifiedMemory.SwapTotalKB), "INFO")
+		add("unified_memory.swappiness", fmt.Sprintf("%d", a.UnifiedMemory.Swappiness), fmt.Sprintf("%d", b.UnifiedMemory.Swappiness), "INFO")
 	}
 
 	if a.AI != nil && b.AI != nil {
@@ -187,6 +244,18 @@ func Diff(a, b *types.Snapshot) []types.Difference {
 	}
 
 	return diffs
+}
+
+// firmwareVersions maps fwupdmgr component names to their versions; the name
+// is the stable key because GUIDs differ between FE and OEM boards.
+func firmwareVersions(fw []types.FirmwareComponent) map[string]string {
+	m := map[string]string{}
+	for _, f := range fw {
+		if f.Name != "" {
+			m[f.Name] = f.Version
+		}
+	}
+	return m
 }
 
 func loadSnapshot(path string) (*types.Snapshot, error) {
