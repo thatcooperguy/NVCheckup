@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +28,19 @@ var knownXidDescriptions = map[int]string{
 	119: "GSP firmware error",
 }
 
+var (
+	// xidCodeRe matches lines like:
+	//   [ 1234.567890] NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
+	//   Jan 15 10:30:45 hostname kernel: NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
+	xidCodeRe = regexp.MustCompile(`NVRM:\s*Xid\s*\([^)]*\):\s*(\d+)`)
+
+	// xidDmesgTsRe matches dmesg-style "[ 1234.567890]" (seconds since boot).
+	xidDmesgTsRe = regexp.MustCompile(`\[\s*([\d.]+)\]`)
+
+	// xidJournalTsRe matches journalctl-style "Jan 15 10:30:45" (local time, no year).
+	xidJournalTsRe = regexp.MustCompile(`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`)
+)
+
 // CollectXidErrors parses NVIDIA Xid errors from kernel logs using dmesg
 // and journalctl. Errors are grouped by Xid code with occurrence counts.
 func CollectXidErrors(timeout int) ([]types.XidError, []types.CollectorError) {
@@ -44,10 +58,7 @@ func CollectXidErrors(timeout int) ([]types.XidError, []types.CollectorError) {
 		return nil, errs
 	}
 
-	// Parse and group the Xid errors
-	xidErrors := parseAndGroupXidErrors(xidLines)
-
-	return xidErrors, errs
+	return parseAndGroupXidErrors(xidLines, readBootTime(), time.Now()), errs
 }
 
 // collectXidFromDmesg attempts to extract Xid error lines from dmesg output.
@@ -97,20 +108,37 @@ func collectXidFromJournalctl(timeout int, errs *[]types.CollectorError) []strin
 	return strings.Split(output, "\n")
 }
 
+// readBootTime returns the kernel boot time. /proc/stat "btime" is seconds
+// since the epoch and is the anchor that turns dmesg's seconds-since-boot
+// into wall-clock time; now minus /proc/uptime is the fallback. A zero time
+// means the anchor is unknown and dmesg timestamps are left unset.
+func readBootTime() time.Time {
+	if data, err := os.ReadFile("/proc/stat"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "btime" {
+				if secs, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return time.Unix(secs, 0)
+				}
+			}
+		}
+	}
+	if data, err := os.ReadFile("/proc/uptime"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 {
+			if up, err := strconv.ParseFloat(fields[0], 64); err == nil {
+				return time.Now().Add(-time.Duration(up * float64(time.Second)))
+			}
+		}
+	}
+	return time.Time{}
+}
+
 // parseAndGroupXidErrors parses raw kernel log lines containing Xid errors,
 // extracts the Xid code and timestamp, and groups by code with counts.
-func parseAndGroupXidErrors(lines []string) []types.XidError {
-	// Pattern matches lines like:
-	//   [ 1234.567890] NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
-	//   Jan 15 10:30:45 hostname kernel: NVRM: Xid (PCI:0000:01:00): 79, pid=1234, ...
-	xidCodeRe := regexp.MustCompile(`NVRM:\s*Xid\s*\([^)]*\):\s*(\d+)`)
-
-	// For dmesg-style timestamps: [ 1234.567890]
-	dmesgTsRe := regexp.MustCompile(`\[\s*([\d.]+)\]`)
-
-	// For journalctl-style timestamps: Jan 15 10:30:45
-	journalTsRe := regexp.MustCompile(`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})`)
-
+// bootTime anchors dmesg timestamps; now supplies the year for journalctl
+// timestamps. Both are parameters so the parser is deterministic in tests.
+func parseAndGroupXidErrors(lines []string, bootTime, now time.Time) []types.XidError {
 	// Group by Xid code: track count and last seen timestamp
 	type xidGroup struct {
 		code     int
@@ -137,8 +165,7 @@ func parseAndGroupXidErrors(lines []string) []types.XidError {
 			continue
 		}
 
-		// Try to parse timestamp
-		ts := parseXidTimestamp(line, dmesgTsRe, journalTsRe)
+		ts := parseXidTimestamp(line, bootTime, now)
 
 		if g, ok := groups[code]; ok {
 			g.count++
@@ -176,21 +203,19 @@ func parseAndGroupXidErrors(lines []string) []types.XidError {
 	return result
 }
 
-// parseXidTimestamp attempts to extract a timestamp from a kernel log line.
-// It tries dmesg-style (seconds since boot) and journalctl-style formats.
-func parseXidTimestamp(line string, dmesgTsRe, journalTsRe *regexp.Regexp) time.Time {
-	// Try journalctl-style timestamp first (more precise)
-	if m := journalTsRe.FindStringSubmatch(line); m != nil {
-		// Parse "Jan 15 10:30:45" — year is not included, use current year
-		now := time.Now()
+// parseXidTimestamp converts a kernel log timestamp to wall-clock time.
+//
+// dmesg prints "[ 1234.567890]", seconds since boot, so the wall time is
+// bootTime + offset. (The previous code computed now - offset, which is only
+// right for an event that happened exactly "offset" ago and is otherwise off
+// by the whole uptime.) journalctl prints a local time without a year; the
+// year is taken from now and rolled back by one if the result would be in
+// the future. A zero time is returned when no timestamp can be recovered.
+func parseXidTimestamp(line string, bootTime, now time.Time) time.Time {
+	if m := xidJournalTsRe.FindStringSubmatch(line); m != nil {
+		// "_2" accepts both "Jan  5" and "Jan 15".
 		tsStr := m[1] + " " + strconv.Itoa(now.Year())
-		t, err := time.Parse("Jan  2 15:04:05 2006", tsStr)
-		if err != nil {
-			// Try single-digit day format
-			t, err = time.Parse("Jan 2 15:04:05 2006", tsStr)
-		}
-		if err == nil {
-			// If the parsed time is in the future, it's from last year
+		if t, err := time.ParseInLocation("Jan _2 15:04:05 2006", tsStr, now.Location()); err == nil {
 			if t.After(now) {
 				t = t.AddDate(-1, 0, 0)
 			}
@@ -198,15 +223,10 @@ func parseXidTimestamp(line string, dmesgTsRe, journalTsRe *regexp.Regexp) time.
 		}
 	}
 
-	// Try dmesg-style timestamp: [ 1234.567890]
-	// This is seconds since boot; convert to approximate wall clock time
-	if m := dmesgTsRe.FindStringSubmatch(line); m != nil {
+	if m := xidDmesgTsRe.FindStringSubmatch(line); m != nil {
 		secsSinceBoot, err := strconv.ParseFloat(m[1], 64)
-		if err == nil {
-			bootDuration := time.Duration(secsSinceBoot * float64(time.Second))
-			// Approximate: current time minus uptime plus log offset
-			approxTime := time.Now().Add(-bootDuration)
-			return approxTime
+		if err == nil && !bootTime.IsZero() {
+			return bootTime.Add(time.Duration(secsSinceBoot * float64(time.Second)))
 		}
 	}
 
