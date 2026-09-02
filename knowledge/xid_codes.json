@@ -21,7 +21,7 @@
     "92":  {"severity": "WARN", "summary": "High single-bit ECC rate", "detail": "Elevated rate of correctable ECC errors. VRAM may be degrading."},
     "94":  {"severity": "WARN", "summary": "Contained ECC error", "detail": "ECC error was contained and corrected, but frequency should be monitored."},
     "95":  {"severity": "CRIT", "summary": "Uncontained ECC error", "detail": "Uncontained ECC error — data corruption possible. Monitor closely."},
-    "119": {"severity": "CRIT", "summary": "GSP firmware error", "detail": "GPU System Processor firmware encountered an error. Often requires driver reinstall or GPU reset. On DGX Spark (GB10) it pairs with SEC2/GSP init messages when driver and firmware packages are mismatched."},
+    "119": {"severity": "CRIT", "summary": "GSP firmware error", "detail": "GPU System Processor firmware encountered an error. Often requires driver reinstall or GPU reset."},
     "120": {"severity": "CRIT", "summary": "GSP task exception", "detail": "A GPU System Processor task raised an exception. Seen on DGX Spark (GB10) with the R580 GSP firmware; check driver/firmware package pairing and OTA state."}
   }
 }
