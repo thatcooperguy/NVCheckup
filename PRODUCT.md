@@ -367,7 +367,7 @@ Xbox Game Bar, Discord, MSI Afterburner, RivaTuner Statistics Server (RTSS), OBS
 | OTA health | `nvidia-spark-ota-check summary` / `torn-score` (10 s timeout) | `ota_name` (`OTA2607`), `ota_torn`, `ota_failed` |
 | Driver / firmware / module pairing | `dpkg-query` for `nvidia-driver-580-open`, `nvidia-firmware-580-*`, `linux-modules-nvidia-580-open-$(uname -r)` | A torn pair is `dgx-spark-ota-torn`; a foreign package set is `dgx-spark-foreign-driver-packages` (`nvidia-dkms-NNN-open` is excluded on purpose, pending field confirmation) |
 | Service state | `systemctl is-active` for `dgx-dashboard`, `dgx-dashboard-admin`, `fwupd`, `nvidia-persistenced`, `gb10-clock-cap` | |
-| Dashboard port | TCP connect to `127.0.0.1:11000` | Loopback only; nothing leaves the machine |
+| Dashboard port | `/proc/net/tcp` listening state for 11000 | Read-only; no socket is opened |
 | Firmware | `fwupdmgr get-devices` | `platform.firmware[]` with name, GUID, version (dotted or hex, e.g. `0x03000508` = 3.5.8, decode marked as an assumption) and pending version |
 | Container toolkit source | First line of `/etc/apt/sources.list.d/nvidia-container-toolkit.list` | |
 | Previous boot | `journalctl --list-boots`, tail of `journalctl -b -1` classified by clean-shutdown markers (`Journal stopped`, `systemd-shutdown`, `Shutting down.`, `Reached target Power-Off/Reboot/Halt`); unclean boots counted over N days | `prev_boot_clean`, `prev_boot_last_line` |
@@ -830,7 +830,7 @@ Passwords, tokens, API keys, browser data, SSH keys, clipboard contents, process
 | Private/LAN IPv4 addresses | `<lan-ip>` |
 | Email addresses | `<email-redacted>` |
 | Wi-Fi SSIDs | `SSID: <redacted>` |
-| DGX Spark serial numbers (`DGX_SERIAL_NUMBER`, DMI serials) | `<serial>` |
+| DGX Spark serial number (`DGX_SERIAL_NUMBER`; DMI serial files are not read) | `<serial>` |
 | ConnectX-7 fabric addresses, `spark-xxxx` default hostnames | `<lan-ip>`, `<host>` (the existing rules cover them) |
 
 Four-part version numbers such as `11.0.7.247` (NVIDIA App) or `32.0.101.6078` (a driver) are recognised by the word that introduces them and are not treated as IP addresses. The home-directory match ends at a path separator, so a sibling profile such as `C:\Users\alice2` is never mistaken for `C:\Users\alice`.
