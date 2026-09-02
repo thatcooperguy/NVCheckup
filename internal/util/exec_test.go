@@ -3,6 +3,7 @@ package util
 import (
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRunCommandSuccess(t *testing.T) {
@@ -27,17 +28,39 @@ func TestRunCommandSuccess(t *testing.T) {
 }
 
 func TestRunCommandTimeout(t *testing.T) {
+	// cmd.exe spawns ping.exe as a grandchild that keeps stdout open; without
+	// WaitDelay and process-tree kill this 1 s timeout took ~9 s to return.
+	start := time.Now()
 	var r CommandResult
 	if runtime.GOOS == "windows" {
 		r = RunCommand(1, "cmd", "/c", "ping -n 10 127.0.0.1")
 	} else {
-		r = RunCommand(1, "sleep", "10")
+		r = RunCommand(1, "sh", "-c", "sleep 10")
 	}
+	elapsed := time.Since(start)
 	if !r.TimedOut {
 		t.Error("expected timeout")
 	}
 	if r.ExitCode != -1 {
 		t.Errorf("expected exit code -1 on timeout, got %d", r.ExitCode)
+	}
+	if elapsed > 4*time.Second {
+		t.Errorf("timed-out command took %v to return, want < 4s", elapsed)
+	}
+}
+
+func TestRunCommandZeroTimeoutUsesDefault(t *testing.T) {
+	var r CommandResult
+	if runtime.GOOS == "windows" {
+		r = RunCommand(0, "cmd", "/c", "echo ok")
+	} else {
+		r = RunCommand(0, "echo", "ok")
+	}
+	if r.TimedOut || r.Err != nil {
+		t.Fatalf("zero timeout should fall back to default, got timedOut=%v err=%v", r.TimedOut, r.Err)
+	}
+	if r.Stdout != "ok" {
+		t.Errorf("expected 'ok', got %q", r.Stdout)
 	}
 }
 

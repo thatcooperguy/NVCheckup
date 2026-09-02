@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -14,8 +15,15 @@ import (
 // CheckResult holds a single self-test check result
 type CheckResult struct {
 	Name   string
-	Status string // "OK", "WARN", "FAIL"
+	Status string // "OK", "INFO", "WARN", "FAIL"
 	Detail string
+}
+
+// queryCheck pairs a collector name with the exact nvidia-smi field list it uses,
+// so self-test exercises the same query strings the collectors will run.
+type queryCheck struct {
+	name   string
+	fields string
 }
 
 // Run executes all self-test checks and returns an exit code.
@@ -32,14 +40,24 @@ func Run() int {
 	// Check 2: Architecture
 	results = append(results, checkArch())
 
-	// Check 3: nvidia-smi
-	results = append(results, checkNvidiaSmi())
+	// Check 3: nvidia-smi presence, then the collectors' actual query strings.
+	// A working "nvidia-smi -L" says nothing about whether the driver accepts
+	// every field the collectors ask for (an invalid field made thermal
+	// collection fail silently for a long time), so each list is run verbatim.
+	smi := checkNvidiaSmi()
+	results = append(results, smi)
+	if smi.Status == "OK" {
+		results = append(results, checkNvidiaSmiQueries()...)
+	}
 
 	// Check 4: Write permissions
 	results = append(results, checkWritePermissions())
 
 	// Check 5: Python (for AI mode)
 	results = append(results, checkPython())
+
+	// Check 6: Elevation (some collectors degrade without it)
+	results = append(results, checkElevation())
 
 	// Platform-specific checks
 	if runtime.GOOS == "windows" {
@@ -58,6 +76,8 @@ func Run() int {
 		case "OK":
 			icon = "OK  "
 			okCount++
+		case "INFO":
+			icon = "INFO"
 		case "WARN":
 			icon = "WARN"
 			warnCount++
@@ -133,6 +153,111 @@ func checkNvidiaSmi() CheckResult {
 		Status: "OK",
 		Detail: fmt.Sprintf("Found, %d GPU(s) detected", len(lines)),
 	}
+}
+
+// checkNvidiaSmiQueries runs every --query-gpu field list the collectors use
+// and reports the driver stderr when one is rejected.
+func checkNvidiaSmiQueries() []CheckResult {
+	checks := []queryCheck{
+		{"nvidia-smi gpu query", common.GPUQueryFields},
+		{"nvidia-smi thermal query", common.ThermalQueryFields},
+		{"nvidia-smi pcie query", common.PCIeQueryFields},
+	}
+	var results []CheckResult
+	for _, c := range checks {
+		results = append(results, runQueryCheck(c.name, c.fields))
+	}
+	results = append(results, checkClockEventQuery())
+	return results
+}
+
+// runQueryCheck executes one nvidia-smi --query-gpu list exactly as a collector would.
+func runQueryCheck(name, fields string) CheckResult {
+	r := util.RunCommand(10, "nvidia-smi", "--query-gpu="+fields, "--format=csv,noheader,nounits")
+	if r.Err != nil {
+		detail := strings.TrimSpace(r.Stderr)
+		if detail == "" {
+			detail = r.Err.Error()
+		}
+		return CheckResult{
+			Name:   name,
+			Status: "WARN",
+			Detail: fmt.Sprintf("Rejected (exit %d): %s", r.ExitCode, firstLine(detail)),
+		}
+	}
+	return CheckResult{
+		Name:   name,
+		Status: "OK",
+		Detail: fmt.Sprintf("%d field(s) accepted", strings.Count(fields, ",")+1),
+	}
+}
+
+// checkClockEventQuery verifies the clock event reasons field, accepting the
+// legacy spelling on older drivers (the thermal collector falls back the same way).
+func checkClockEventQuery() CheckResult {
+	const name = "nvidia-smi clock events"
+	r := util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ThermalEventQueryFields, "--format=csv,noheader")
+	if r.Err == nil {
+		return CheckResult{Name: name, Status: "OK", Detail: common.ThermalEventQueryFields + " accepted"}
+	}
+	modernErr := firstLine(strings.TrimSpace(r.Stderr))
+	r = util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ThermalEventQueryFieldsLegacy, "--format=csv,noheader")
+	if r.Err == nil {
+		return CheckResult{
+			Name:   name,
+			Status: "INFO",
+			Detail: fmt.Sprintf("Legacy field %s in use (%s rejected: %s)", common.ThermalEventQueryFieldsLegacy, common.ThermalEventQueryFields, modernErr),
+		}
+	}
+	detail := strings.TrimSpace(r.Stderr)
+	if detail == "" {
+		detail = r.Err.Error()
+	}
+	return CheckResult{
+		Name:   name,
+		Status: "WARN",
+		Detail: fmt.Sprintf("Both field names rejected (exit %d): %s", r.ExitCode, firstLine(detail)),
+	}
+}
+
+// checkElevation reports whether the process is elevated and which checks
+// degrade otherwise. Elevated is INFO (nothing to act on); not elevated is WARN
+// because several Windows collectors return partial data without it.
+func checkElevation() CheckResult {
+	const name = "Elevation"
+	if isElevated() {
+		return CheckResult{Name: name, Status: "INFO", Detail: "Running elevated; all checks available"}
+	}
+	var degraded string
+	if runtime.GOOS == "windows" {
+		degraded = "Windows Event Log (4101 driver resets, nvlddmkm, WHEA) and Confirm-SecureBootUEFI may be incomplete"
+	} else {
+		degraded = "dmesg/Xid history and some sysfs/DKMS state may be incomplete"
+	}
+	return CheckResult{
+		Name:   name,
+		Status: "WARN",
+		Detail: "Not elevated: " + degraded,
+	}
+}
+
+// isElevated reports whether the current process has administrative rights.
+// On Windows "net session" succeeds only from an elevated token; on Linux
+// root has effective uid 0.
+func isElevated() bool {
+	if runtime.GOOS == "windows" {
+		r := util.RunCommand(5, "net", "session")
+		return r.Err == nil && r.ExitCode == 0
+	}
+	return os.Geteuid() == 0
+}
+
+// firstLine returns the first line of s, for compact single-line details.
+func firstLine(s string) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func checkWritePermissions() CheckResult {
