@@ -78,6 +78,30 @@ func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeou
 		}
 	}
 
+	// CUDA_HOME (the CUDA 13 toolkit convention on DGX OS, spec WP1 item 8)
+	// is honoured before the /usr/local/cuda symlink on every OS.
+	if cudaHome := os.Getenv("CUDA_HOME"); cudaHome != "" {
+		nvccName := "nvcc"
+		if runtime.GOOS == "windows" {
+			nvccName = "nvcc.exe"
+		}
+		nvccPath := filepath.Join(cudaHome, "bin", nvccName)
+		if _, err := os.Stat(nvccPath); err == nil {
+			if info.NvccPath == "" {
+				info.NvccPath = nvccPath
+			}
+			if info.CUDAToolkitVersion == "" {
+				r := util.RunCommand(timeout, nvccPath, "--version")
+				if r.Err == nil {
+					info.CUDAToolkitVersion = parseNvccVersion(r.Stdout)
+				}
+			}
+		}
+		if info.CUDAToolkitVersion == "" {
+			info.CUDAToolkitVersion = cudaVersionFromPath(cudaHome)
+		}
+	}
+
 	// On Linux, follow /usr/local/cuda (through /etc/alternatives when present)
 	if runtime.GOOS == "linux" {
 		if target, err := filepath.EvalSymlinks(linuxCudaHome); err == nil {
@@ -316,10 +340,17 @@ func selectPython(candidates []string, probe pythonProbe) (python string, tried 
 // opposed to reporting an ImportError inside its own JSON) is recorded as a
 // CollectorError naming the interpreter, so empty fields are never silent.
 func runProbe(timeout int, python, collector, script string, errs *[]types.CollectorError) (string, bool) {
+	out, _, ok := runProbeFull(timeout, python, collector, script, errs)
+	return out, ok
+}
+
+// runProbeFull is runProbe that also returns the probe's stderr, which the
+// PyTorch probe needs for the capability warning (spec 3.2 "Ecosystem").
+func runProbeFull(timeout int, python, collector, script string, errs *[]types.CollectorError) (stdout, stderr string, ok bool) {
 	r := util.RunCommand(timeout, python, "-I", "-c", script)
 	out := strings.TrimSpace(r.Stdout)
 	if r.Err == nil && out != "" {
-		return out, true
+		return out, r.Stderr, true
 	}
 	msg := "probe did not run using interpreter " + python
 	if r.Err != nil {
@@ -329,7 +360,7 @@ func runProbe(timeout int, python, collector, script string, errs *[]types.Colle
 		msg += " (" + s + ")"
 	}
 	*errs = append(*errs, types.CollectorError{Collector: collector, Error: msg})
-	return "", false
+	return "", r.Stderr, false
 }
 
 func collectPyTorch(info *types.AIInfo, errs *[]types.CollectorError, timeout int, python string) {
@@ -341,13 +372,18 @@ try:
         "version": torch.__version__,
         "cuda_version": getattr(torch.version, 'cuda', None) or "",
         "cuda_available": torch.cuda.is_available(),
-        "device_name": ""
+        "device_name": "",
+        "arch_list": []
     }
     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
         try:
             result["device_name"] = torch.cuda.get_device_name(0)
         except Exception:
             pass
+    try:
+        result["arch_list"] = list(torch.cuda.get_arch_list())
+    except Exception:
+        pass
     print(json.dumps(result))
 except ImportError:
     print(json.dumps({"error": "not_installed"}))
@@ -355,11 +391,14 @@ except Exception as e:
     print(json.dumps({"error": str(e)}))
 `
 
-	stdout, ok := runProbe(timeout, python, "ai.pytorch", script, errs)
+	stdout, stderr, ok := runProbeFull(timeout, python, "ai.pytorch", script, errs)
 	if !ok {
 		return
 	}
 	ptInfo := &types.PyTorchInfo{}
+	// torch prints the sm_121 capability warning of spec 3.2 on stderr
+	// ("Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. ...").
+	ptInfo.Warnings = parseTorchWarnings(stderr)
 	if strings.Contains(stdout, `"error"`) {
 		if strings.Contains(stdout, "not_installed") {
 			// PyTorch not installed: a normal state, not an error.
@@ -371,6 +410,9 @@ except Exception as e:
 		ptInfo.CUDAVersion = extractJSONValue(stdout, "cuda_version")
 		ptInfo.CUDAAvailable = strings.Contains(stdout, `"cuda_available": true`)
 		ptInfo.DeviceName = extractJSONValue(stdout, "device_name")
+		// torch.cuda.get_arch_list(), e.g. ["sm_80", ..., "sm_120"]; rules
+		// sm121-kernel-missing / sm121-torch-capability-warning-benign.
+		ptInfo.ArchList = extractJSONStringList(stdout, "arch_list")
 	}
 	info.PyTorchInfo = ptInfo
 }
@@ -441,6 +483,22 @@ print(json.dumps(packages))
 			Version: m[2],
 		})
 	}
+}
+
+// extractJSONStringList returns the string items of a JSON array value
+// ("key": ["a", "b"]) or nil when the key is absent or the array is empty.
+func extractJSONStringList(jsonStr, key string) []string {
+	re := regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `":\s*\[([^\]]*)\]`)
+	m := re.FindStringSubmatch(jsonStr)
+	if m == nil {
+		return nil
+	}
+	itemRe := regexp.MustCompile(`"([^"]*)"`)
+	var items []string
+	for _, im := range itemRe.FindAllStringSubmatch(m[1], -1) {
+		items = append(items, im[1])
+	}
+	return items
 }
 
 func extractJSONValue(jsonStr, key string) string {
