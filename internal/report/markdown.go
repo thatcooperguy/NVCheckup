@@ -283,7 +283,7 @@ func GenerateMarkdown(report *types.Report) string {
 	// Advisory steps are bolded like in the details section (spec 5).
 	w("## Recommended Next Steps\n\n")
 	for i, step := range report.NextSteps {
-		w("%d. %s\n", i+1, markdownStep(step))
+		w("%d. %s\n", i+1, markdownStep(step)) // Advisory steps stay bold here too (spec 5)
 	}
 	w("\n")
 
@@ -300,6 +300,9 @@ func GenerateMarkdown(report *types.Report) string {
 	w("---\n\n")
 	for _, l := range footerLines(report.Metadata) {
 		w("*%s*  \n", l)
+	}
+	if hasAdvisorySteps(report) {
+		w("*%s*  \n", footerAdvisory)
 	}
 	w("*%s*\n", types.Disclaimer)
 

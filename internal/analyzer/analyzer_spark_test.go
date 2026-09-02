@@ -62,7 +62,7 @@ func withCluster(mutate func(c *types.ClusterInfo)) func(r *types.Report) {
 // wedgeSampleInfo is one thermal sample carrying the PD wedge signature of
 // spec 5 (util >= 90, SM < 1400 MHz, < 40 W, reasons Not Active).
 func wedgeSampleInfo(idx int) types.ThermalInfo {
-	return types.ThermalInfo{TemperatureC: 48, PowerState: "P0", CurrentClockMHz: 611, MaxClockMHz: 3003, PowerDrawW: "27.5", UtilizationPct: 99, GPUIndex: idx, EventCounters: map[string]int64{"sw_power_cap": 123456}}
+	return types.ThermalInfo{TemperatureC: 48, PowerState: "P0", CurrentClockMHz: 611, MaxClockMHz: 3003, PowerDrawW: "27.5", UtilizationPct: 99, GPUIndex: idx, EventCounters: map[string]int64{"sw_power_capping": 123456}}
 }
 
 // sparkCorpus lists, per rule, a report that triggers it; ruleCorpus appends
@@ -263,7 +263,8 @@ func TestGB10Fixture_ExactFindingSet(t *testing.T) {
 		}
 	}
 	det := findByID(r.Findings, "dgx-spark-detected")
-	for _, want := range []string{"NVIDIA NVIDIA_DGX_Spark (Founders Edition)", "GPU NVIDIA GB10 CC 12.1", "kernel 6.17.0-1031-nvidia", "DGX OS 7.5.0 / OTA OTA2607 (7.5.0)"} {
+	// swbuild = DGX_SWBUILD_VERSION (image 7.2.3), ota = DGX_OTA_VERSION (7.5.0) with the OTA name.
+	for _, want := range []string{"NVIDIA NVIDIA_DGX_Spark (Founders Edition)", "GPU NVIDIA GB10 CC 12.1", "kernel 6.17.0-1031-nvidia", "DGX OS 7.2.3 / OTA 7.5.0 (OTA2607)"} {
 		if !strings.Contains(det.Evidence, want) {
 			t.Errorf("dgx-spark-detected evidence missing %q: %s", want, det.Evidence)
 		}
@@ -341,9 +342,11 @@ func TestGB10GSPFail_CritWithoutNoGPU(t *testing.T) {
 	if x := findByID(r.Findings, "xid-errors"); x == nil || !strings.Contains(x.Evidence, "not OTA-paired") {
 		t.Errorf("xid-errors evidence should mention GSP pairing on GB10: %+v", x)
 	}
-	// Without the dmesg lines the rule still fires, at lower confidence.
+	// Without the kernel lines (neither GSPFailureLines nor dmesg snippets)
+	// the rule still fires, at lower confidence.
 	r = fixtures.GB10GSPFail()
 	r.Linux.DmesgSnippets = ""
+	r.Linux.GSPFailureLines = nil
 	r.Linux.XidErrors = nil
 	Analyze(r, types.ModeFull)
 	if f := findByID(r.Findings, "dgx-spark-gsp-init-failure"); f == nil || f.Confidence != 80 || !strings.Contains(f.Evidence, "--include-logs") {
@@ -912,14 +915,36 @@ func TestRTXSpark_NvidiaSmiStepsCollapse(t *testing.T) {
 	// rtx-spark without nvidia-smi.exe so the report lists it once.
 	r := rtxSpark(func(r *types.Report) { r.Driver = types.DriverInfo{} })
 	Analyze(r, types.ModeFull)
+	const rerun = "re-run NVCheckup for the fuller sample set"
+	// Both INFO findings must carry the identical sentence so that
+	// buildNextSteps' exact-string de-duplication collapses them.
+	var sentences []string
+	for _, f := range r.Findings {
+		if f.ID != "nvidia-smi-missing" && f.ID != "driver-not-detected" {
+			continue
+		}
+		if f.Severity != types.SeverityInfo {
+			t.Errorf("%s should be INFO on rtx-spark without nvidia-smi.exe, got %s", f.ID, f.Severity)
+		}
+		for _, s := range f.NextSteps {
+			if strings.Contains(s, rerun) {
+				sentences = append(sentences, strings.TrimSpace(s))
+			}
+		}
+	}
+	if len(sentences) != 2 || sentences[0] != sentences[1] {
+		t.Errorf("expected nvidia-smi-missing and driver-not-detected to share one re-run sentence, got %q", sentences)
+	}
+	// The summary list shows it at most once (INFO steps only appear there
+	// when no WARN/CRIT finding is actionable, so zero is also acceptable).
 	n := 0
 	for _, s := range r.NextSteps {
-		if strings.Contains(s, "re-run NVCheckup for the fuller sample set") {
+		if strings.Contains(s, rerun) {
 			n++
 		}
 	}
-	if n != 1 {
-		t.Errorf("expected the re-run step exactly once, got %d in %v", n, r.NextSteps)
+	if n > 1 {
+		t.Errorf("expected the re-run step at most once, got %d in %v", n, r.NextSteps)
 	}
 }
 
@@ -1207,8 +1232,12 @@ func TestWoARules(t *testing.T) {
 	if f := findByID(analyzeWoA(r), "woa-cuda-toolkit-not-native"); f != nil {
 		t.Errorf("13.4 is native: %+v", f)
 	}
-	// Developer preview via the WDDM suffix only.
-	r = rtxSpark(func(r *types.Report) { r.Driver = types.DriverInfo{}; r.GPUs[0].DriverVersion = "32.0.16.1600" })
+	// Developer preview via the WDDM suffix only (GPUInfo fallback, no WoA row).
+	r = rtxSpark(func(r *types.Report) {
+		r.Driver = types.DriverInfo{}
+		r.GPUs[0].DriverVersion = "32.0.16.1600"
+		r.Platform.WoA = nil
+	})
 	if f := findByID(analyzeWoA(r), "rtx-spark-driver-developer-preview"); f == nil || !strings.Contains(f.Evidence, "WDDM 32.0.16.1600") {
 		t.Errorf("WDDM suffix match: %+v", f)
 	}
@@ -1251,6 +1280,9 @@ func TestWSLLinuxDriverInstalled(t *testing.T) {
 
 // ── every finding carries an impact; advisory steps are ordered ───────
 
+// advisoryRe is the only ordering contract (spec 5): a step that changes
+// system state starts with "Advisory" (word boundary); the catalog's System
+// Recovery reimage steps carry "Advisory: (data loss)" themselves.
 var advisoryRe = regexp.MustCompile(`^Advisory\b`)
 
 func TestAnalyze_EveryFindingHasImpactAndOrderedAdvisories(t *testing.T) {
@@ -1265,7 +1297,7 @@ func TestAnalyze_EveryFindingHasImpactAndOrderedAdvisories(t *testing.T) {
 			}
 			sawAdvisory := false
 			for _, step := range f.NextSteps {
-				if stateChangingRe.MatchString(step) {
+				if advisoryRe.MatchString(step) {
 					sawAdvisory = true
 				} else if sawAdvisory {
 					t.Errorf("%s: read-only step %q follows an Advisory step", f.ID, step)
@@ -1304,7 +1336,7 @@ func TestRulesJSON_SparkSchema(t *testing.T) {
 			if strings.HasPrefix(strings.ToLower(step), "advisory") && !adv {
 				t.Errorf("%s: step %q looks advisory but does not match ^Advisory\\b", id, step)
 			}
-			if stateChangingRe.MatchString(step) {
+			if adv {
 				sawAdvisory = true
 			} else if sawAdvisory {
 				t.Errorf("%s: Advisory step precedes the read-only step %q", id, step)
@@ -1369,13 +1401,10 @@ func TestSparkRuleTable_MatchesRulesJSON(t *testing.T) {
 			t.Errorf("%s: in spark-rules.json but not in knowledge/rules.json", c.ID)
 			continue
 		}
-		// Step text is verbatim; the merge only reorders read-only steps
-		// ahead of Advisory ones, so compare as sorted sets.
-		js, cs := append([]string(nil), j.NextSteps...), append([]string(nil), c.NextSteps...)
-		sort.Strings(js)
-		sort.Strings(cs)
-		if j.Severity != c.Severity || j.Impact != c.Impact || strings.Join(j.Platforms, ",") != strings.Join(c.Platforms, ",") || strings.Join(js, "\n") != strings.Join(cs, "\n") {
-			t.Errorf("%s: knowledge/rules.json drifted from docs/roadmap/spark-rules.json", c.ID)
+		// Step text AND order are verbatim: the catalog itself lists the
+		// read-only steps first (partitioned in integration 2).
+		if j.Severity != c.Severity || j.Impact != c.Impact || strings.Join(j.Platforms, ",") != strings.Join(c.Platforms, ",") || strings.Join(j.NextSteps, "\n") != strings.Join(c.NextSteps, "\n") {
+			t.Errorf("%s: knowledge/rules.json drifted from docs/roadmap/spark-rules.json (severity, impact, platforms and ordered next_steps must match)", c.ID)
 		}
 	}
 	// Legacy impacts cover exactly the non-Spark rules.

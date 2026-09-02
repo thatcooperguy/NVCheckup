@@ -53,19 +53,25 @@ func TestGolden_GB10Text(t *testing.T) {
 		"Class:          DGX Spark (dgx-spark)",
 		"Vendor/Model:   NVIDIA NVIDIA_DGX_Spark (Founders Edition) [version A.7, BIOS 5.36_0ACUM023]",
 		"GPU SoC:        GB10 (compute capability 12.1)",
-		"DGX OS:         7.5.0 / OTA OTA2607 (7.5.0)",
+		"DGX OS:         image 7.2.3 / OTA 7.5.0 (OTA2607)",
+		"Previous boot:  clean shutdown (last line 'systemd-journald[512]: Journal stopped'); pstore empty; 0 log-less boot(s) in the last 14 days",
 		"Memory pool:    119.7 GiB total, 115.9 GiB available, 131.9 GiB allocatable",
 		"Cluster fabric: 2 ConnectX-7 port(s): enp1s0f0np0 4: ACTIVE 200000 Mb/s; enP2p1s0f0np0 4: ACTIVE 200000 Mb/s",
 		"== UNIFIED MEMORY",
 		"== DGX OS ==",
 		"== FIRMWARE (fwupdmgr get-devices) ==",
-		"Embedded Controller:        0x03000508",
+		"Release:            NVIDIA DGX Spark, image 7.2.3 (DGX_SWBUILD_VERSION, built 2025-09-10-13-50-03, commit 833b4a7)",
+		"OTA:                7.5.0 (DGX_OTA_VERSION) OTA2607, applied Wed Jul 15 09:06:56 AM PDT 2026",
+		"Dashboard:          dgx-dashboard active, dgx-dashboard-admin active, port 11000 open",
+		"Embedded Controller:           3.5.8",
+		"UEFI Device Firmware:          2.155.11",
 		"== CLUSTER FABRIC (ConnectX-7) ==",
 		"Memory:    unified pool (nvidia-smi reports [N/A]; see PLATFORM)",
 		"Compute:   CC 12.1",
 		"PCIe:          n/a (on-package, NVLink-C2C)",
 		"Thermal:       42°C, P8, fan N/A, 9.87 W / limit N/A",
-		"Platform: DGX Spark (Founders Edition) | DGX OS 7.5.0 / OTA2607",
+		"Platform: DGX Spark (Founders Edition) | DGX OS 7.2.3 / OTA 7.5.0",
+		"Redaction was applied to remove usernames, hostnames, home paths, IP addresses and serial numbers.",
 		"Unified memory: 119.7 GiB total, 115.9 GiB available",
 		"[INFO] #1:",
 	} {
@@ -73,7 +79,7 @@ func TestGolden_GB10Text(t *testing.T) {
 			t.Errorf("text report missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"VRAM:", "DOWNSHIFTED", "Gen1 x1", "(impact:"} {
+	for _, forbidden := range []string{"VRAM:", "DOWNSHIFTED", "Gen1 x1", "(impact:", footerAdvisory, "0x03000508"} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("text report must not contain %q on the healthy GB10 fixture", forbidden)
 		}
@@ -104,7 +110,11 @@ func TestGolden_RTXSparkText(t *testing.T) {
 		"Vendor/Model:   Microsoft Surface RTX Spark Dev Box",
 		"GPU SoC:        N1X (compute capability 12.1)",
 		"Windows on Arm: yes (native ARM64, NVCheckup emulated: no)",
+		`Adapter:        NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU) [PCI\VEN_10DE&DEV_2E03]`,
+		"WDDM driver:    nv_surface_woa.inf, 616.00 Developer Preview",
 		"Memory pool:    128.0 GiB total, 100.0 GiB available, 100.0 GiB allocatable",
+		"  2. ! Advisory: installing a different driver replaces the Developer Preview package",
+		footerAdvisory,
 		"[WARN] (impact: persistent) #1: RTX Spark Developer Preview Driver (rtx-spark-driver-developer-preview)",
 		"      • Check the RTX Spark Developer Preview thread (S24) and OEM/Windows Update for a production Arm64 driver (read-only).",
 		"      ! Advisory: installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).",
@@ -127,6 +137,8 @@ func TestGolden_RTXSparkMarkdown(t *testing.T) {
 		"<summary><b>[WARN] (impact: persistent) #1: RTX Spark Developer Preview Driver</b></summary>",
 		"- **Advisory:** installing a different driver replaces the Developer Preview package",
 		"| Windows on Arm | yes (native ARM64, NVCheckup emulated: no) |",
+		"| WDDM driver | nv_surface_woa.inf, 616.00 Developer Preview |",
+		"2. **Advisory:** installing a different driver replaces the Developer Preview package",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("markdown report missing %q", want)
@@ -145,7 +157,7 @@ func TestAdvisorySteps_RenderedDistinctAndAfterReadOnly(t *testing.T) {
 			"Advisory: (data loss) sudo snap remove docker deletes the snap's containers (revert: snap restore).",
 			"Read-only: docker info.",
 			"Advisory sudo apt install docker-ce (revert: apt remove docker-ce).",
-			"Last resort, only if nothing else works: the System Recovery image ERASES ALL DATA.",
+			"Advisory: (data loss) Last resort, only if nothing else works: the System Recovery image ERASES ALL DATA.",
 			"Second read-only check.",
 		},
 	}}
@@ -160,8 +172,11 @@ func TestAdvisorySteps_RenderedDistinctAndAfterReadOnly(t *testing.T) {
 	if !strings.Contains(text, "      ! Advisory sudo apt install docker-ce") {
 		t.Errorf("'Advisory' without a colon also qualifies (^Advisory word boundary):\n%s", text)
 	}
-	if idx(text, "! Advisory sudo apt") > idx(text, "• Last resort") || idx(text, "• Last resort") < 0 {
-		t.Errorf("the last-resort step stays after the Advisory steps and keeps the plain bullet:\n%s", text)
+	if idx(text, "! Advisory sudo apt") > idx(text, "! Advisory: (data loss) Last resort") || idx(text, "! Advisory: (data loss) Last resort") < 0 {
+		t.Errorf("the prefixed last-resort step is an Advisory step: '!' marker, original order among the Advisory steps:\n%s", text)
+	}
+	if !strings.Contains(text, footerAdvisory) {
+		t.Errorf("a report with Advisory steps carries the footer sentence:\n%s", text)
 	}
 	md := GenerateMarkdown(report)
 	if !strings.Contains(md, "| **CRIT** (impact: data-loss) | X |  | Read-only: docker info. |") {
@@ -231,9 +246,11 @@ func TestThermalSummary_LimitNAOnUnifiedMemoryOnly(t *testing.T) {
 }
 
 func TestOrderedSteps(t *testing.T) {
+	// "Last resort" without the Advisory prefix is a read-only step by
+	// contract (^Advisory\b is the only marker).
 	in := []string{"Advisory: b", "a", "Last resort: d", "c", "Advisory e"}
 	got := orderedSteps(in)
-	want := "a|c|Advisory: b|Last resort: d|Advisory e"
+	want := "a|Last resort: d|c|Advisory: b|Advisory e"
 	if strings.Join(got, "|") != want {
 		t.Errorf("orderedSteps = %v", got)
 	}

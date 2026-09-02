@@ -13,7 +13,7 @@
 
 NVCheckup v0.2.2 | 2026-09-02 10:00:00
 OS: Ubuntu 24.04 | Kernel: 6.17.0-1031-nvidia | Arch: arm64
-Platform: DGX Spark (Founders Edition) | DGX OS 7.5.0 / OTA2607
+Platform: DGX Spark (Founders Edition) | DGX OS 7.2.3 / OTA 7.5.0
 GPU: NVIDIA GB10 | Driver: 580.159.03
 Unified memory: 119.7 GiB total, 115.9 GiB available
 CUDA (driver): 13.0
@@ -41,8 +41,9 @@ Findings: 0 CRITICAL, 0 WARNING, 3 total
   Vendor/Model:   NVIDIA NVIDIA_DGX_Spark (Founders Edition) [version A.7, BIOS 5.36_0ACUM023]
   GPU SoC:        GB10 (compute capability 12.1)
   Unified memory: yes (nvidia-smi memory, fan, power limit and PCIe fields are [N/A] by design)
-  DGX OS:         7.5.0 / OTA OTA2607 (7.5.0)
+  DGX OS:         image 7.2.3 / OTA 7.5.0 (OTA2607)
   Memory pool:    119.7 GiB total, 115.9 GiB available, 131.9 GiB allocatable (MemAvailable + SwapFree; HugePages override, spec 3.3)
+  Previous boot:  clean shutdown (last line 'systemd-journald[512]: Journal stopped'); pstore empty; 0 log-less boot(s) in the last 14 days
   Cluster fabric: 2 ConnectX-7 port(s): enp1s0f0np0 4: ACTIVE 200000 Mb/s; enP2p1s0f0np0 4: ACTIVE 200000 Mb/s
 ────────────────────────────────────────────────────────────────────────
 
@@ -62,8 +63,11 @@ Findings: 0 CRITICAL, 0 WARNING, 3 total
 
 == DGX OS ==
 
-  Release:            NVIDIA DGX Spark 7.5.0
-  OTA:                OTA2607 7.5.0
+  Release:            NVIDIA DGX Spark, image 7.2.3 (DGX_SWBUILD_VERSION, built 2025-09-10-13-50-03, commit 833b4a7)
+  OTA:                7.5.0 (DGX_OTA_VERSION) OTA2607, applied Wed Jul 15 09:06:56 AM PDT 2026
+  DGX platform:       DGX Server for KVM
+  FastOS:             1.91.51
+  Serial:             <serial>
   OTA check:          torn=0, failed: N/A
   Driver package:     580.159.03-0ubuntu0.24.04.1
   Firmware package:   580.159.03-0ubuntu0.24.04.1
@@ -75,9 +79,9 @@ Findings: 0 CRITICAL, 0 WARNING, 3 total
 
 == FIRMWARE (fwupdmgr get-devices) ==
 
-  Embedded Controller:        0x03000508
-  System Firmware (UEFI/SoC): 2.155.11
-  USB-PD Controller:          0x00000516
+  Embedded Controller:           3.5.8
+  UEFI Device Firmware:          2.155.11
+  USB Power Delivery Controller: 0.5.22
 ────────────────────────────────────────────────────────────────────────
 
 == CLUSTER FABRIC (ConnectX-7) ==
@@ -145,7 +149,7 @@ Findings: 0 CRITICAL, 0 WARNING, 3 total
   Total: 0 CRITICAL, 0 WARNING, 3 INFO
 
   [INFO] #1: NVIDIA DGX Spark (GB10) Detected (dgx-spark-detected)
-    Evidence:     GB10 platform: NVIDIA NVIDIA_DGX_Spark (Founders Edition); GPU NVIDIA GB10 CC 12.1; kernel 6.17.0-1031-nvidia; DGX OS 7.5.0 / OTA OTA2607 (7.5.0).
+    Evidence:     GB10 platform: NVIDIA NVIDIA_DGX_Spark (Founders Edition); GPU NVIDIA GB10 CC 12.1; kernel 6.17.0-1031-nvidia; DGX OS 7.2.3 / OTA 7.5.0 (OTA2607).
     Why:          Enables unified-memory suppressions and DGX OS pairing rules; OEM units lag NVIDIA OTAs.
     Next Steps:
       • No action; memory comes from /proc/meminfo, nvidia-smi memory fields are expected to be [N/A].
@@ -178,7 +182,7 @@ Findings: 0 CRITICAL, 0 WARNING, 3 total
 == PRIVACY & DATA ==
 
   This report was generated locally. No diagnostic data was transmitted.
-  Redaction was applied to remove usernames, hostnames, home paths and IP addresses.
+  Redaction was applied to remove usernames, hostnames, home paths, IP addresses and serial numbers.
   The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation.
 
 ────────────────────────────────────────────────────────────────────────

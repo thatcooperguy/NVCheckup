@@ -21,14 +21,20 @@ const cx7HealthyMTU = 9000
 // ncclMinVersion: NCCL < 2.28 lacks sm_121 support (spec 5, nccl-env-misconfigured).
 const ncclMinVersion = "2.28"
 
-// portUp reports whether a ConnectX-7 twin is ACTIVE / LinkUp.
+// portUp reports whether a ConnectX-7 twin is ACTIVE / LinkUp. FabricPort.State
+// carries whichever source answered in linux/cx7.go: the sysfs text
+// ("4: ACTIVE"), the ibdev2netdev word ("Up") or the netdev operstate ("up");
+// PhysState is the sysfs text ("5: LinkUp").
 func portUp(p types.FabricPort) bool {
-	return strings.Contains(strings.ToUpper(p.State), "ACTIVE") || strings.Contains(p.PhysState, "LinkUp")
+	s := strings.ToUpper(strings.TrimSpace(p.State))
+	return strings.Contains(s, "ACTIVE") || s == "UP" || strings.HasSuffix(s, ": UP") || strings.Contains(p.PhysState, "LinkUp")
 }
 
-// portDown reports whether a twin is explicitly DOWN.
+// portDown reports whether a twin is explicitly DOWN ("1: DOWN", "Down",
+// operstate "down") or its physical link is Down / Polling.
 func portDown(p types.FabricPort) bool {
-	return strings.Contains(strings.ToUpper(p.State), "DOWN") || strings.Contains(p.PhysState, "Down") || strings.Contains(p.PhysState, "Polling")
+	s := strings.ToUpper(strings.TrimSpace(p.State))
+	return strings.Contains(s, "DOWN") || strings.Contains(p.PhysState, "Down") || strings.Contains(p.PhysState, "Polling")
 }
 
 // portName renders "enp1s0f0np0 (rocep1s0f0)".
@@ -58,10 +64,15 @@ func subnet24(ip string) string {
 	return strings.Join(parts[:3], ".")
 }
 
-// cagesOf groups ports by cage in ascending cage order.
+// cagesOf groups ports by cage in ascending cage order. Cage -1 means the
+// collector could not derive the QSFP cage (linux/cx7.go cageOf); such ports
+// are never paired as twins, so the cage rules skip them.
 func cagesOf(ports []types.FabricPort) (order []int, byCage map[int][]types.FabricPort) {
 	byCage = map[int][]types.FabricPort{}
 	for _, p := range ports {
+		if p.Cage < 0 {
+			continue
+		}
 		if _, ok := byCage[p.Cage]; !ok {
 			order = append(order, p.Cage)
 		}

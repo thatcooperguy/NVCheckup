@@ -13,15 +13,13 @@
 
 NVCheckup v0.2.2 | 2026-09-02 10:00:00
 OS: Ubuntu 24.04 | Kernel: 6.17.0-1031-nvidia | Arch: arm64
-Platform: DGX Spark (Founders Edition) | DGX OS 7.5.0 / OTA2607
+Platform: DGX Spark (Founders Edition) | DGX OS 7.2.3 / OTA 7.5.0
 GPU: NVIDIA GB10 | Driver: 580.159.03
 Unified memory: 119.7 GiB total, 115.9 GiB available
 CUDA (driver): 13.0
-PyTorch: 2.8.0+cu128 (CUDA available)
 Temp: 42°C | P-State: P8 | Util: 0%
 PCIe: n/a (on-package, NVLink-C2C)
-Findings: 0 CRITICAL, 3 WARNING, 8 total
-Top: CUDA 12 Wheel on a CUDA 13 Host; ConnectX-7 Port Up Without an I...
+Findings: 0 CRITICAL, 0 WARNING, 3 total
 
 ────────────────────────────────────────────────────────────────────────
 
@@ -43,8 +41,9 @@ Top: CUDA 12 Wheel on a CUDA 13 Host; ConnectX-7 Port Up Without an I...
   Vendor/Model:   NVIDIA NVIDIA_DGX_Spark (Founders Edition) [version A.7, BIOS 5.36_0ACUM023]
   GPU SoC:        GB10 (compute capability 12.1)
   Unified memory: yes (nvidia-smi memory, fan, power limit and PCIe fields are [N/A] by design)
-  DGX OS:         7.5.0 / OTA OTA2607 (7.5.0)
+  DGX OS:         image 7.2.3 / OTA 7.5.0 (OTA2607)
   Memory pool:    119.7 GiB total, 115.9 GiB available, 131.9 GiB allocatable (MemAvailable + SwapFree; HugePages override, spec 3.3)
+  Previous boot:  clean shutdown (last line 'systemd-journald[512]: Journal stopped'); pstore empty; 0 log-less boot(s) in the last 14 days
   Cluster fabric: 2 ConnectX-7 port(s): enp1s0f0np0 4: ACTIVE 200000 Mb/s; enP2p1s0f0np0 4: ACTIVE 200000 Mb/s
 ────────────────────────────────────────────────────────────────────────
 
@@ -64,8 +63,11 @@ Top: CUDA 12 Wheel on a CUDA 13 Host; ConnectX-7 Port Up Without an I...
 
 == DGX OS ==
 
-  Release:            NVIDIA DGX Spark 7.5.0
-  OTA:                OTA2607 7.5.0
+  Release:            NVIDIA DGX Spark, image 7.2.3 (DGX_SWBUILD_VERSION, built 2025-09-10-13-50-03, commit 833b4a7)
+  OTA:                7.5.0 (DGX_OTA_VERSION) OTA2607, applied Wed Jul 15 09:06:56 AM PDT 2026
+  DGX platform:       DGX Server for KVM
+  FastOS:             1.91.51
+  Serial:             <serial>
   OTA check:          torn=0, failed: N/A
   Driver package:     580.159.03-0ubuntu0.24.04.1
   Firmware package:   580.159.03-0ubuntu0.24.04.1
@@ -77,15 +79,15 @@ Top: CUDA 12 Wheel on a CUDA 13 Host; ConnectX-7 Port Up Without an I...
 
 == FIRMWARE (fwupdmgr get-devices) ==
 
-  Embedded Controller:        0x03000508
-  System Firmware (UEFI/SoC): 2.155.11
-  USB-PD Controller:          0x00000516
+  Embedded Controller:           3.5.8
+  UEFI Device Firmware:          2.155.11
+  USB Power Delivery Controller: 0.5.22
 ────────────────────────────────────────────────────────────────────────
 
 == CLUSTER FABRIC (ConnectX-7) ==
 
-  enp1s0f0np0 (rocep1s0f0):     cage 0, 4: ACTIVE, 200000 Mb/s, MTU 9000, IPv4 N/A
-  enP2p1s0f0np0 (roceP2p1s0f0): cage 0, 4: ACTIVE, 200000 Mb/s, MTU 9000, IPv4 N/A
+  enp1s0f0np0 (rocep1s0f0):     cage 0, 4: ACTIVE, 200000 Mb/s, MTU 9000, IPv4 192.168.100.1/24, persistent
+  enP2p1s0f0np0 (roceP2p1s0f0): cage 0, 4: ACTIVE, 200000 Mb/s, MTU 9000, IPv4 192.168.101.1/24, persistent
   cx7-hotplug-enabled:          yes
   netplan MTU:                  9000
   nvidia-peermem:               load attempted: no
@@ -142,97 +144,45 @@ Top: CUDA 12 Wheel on a CUDA 13 Host; ConnectX-7 Port Up Without an I...
     - nvidia-spark-ota-check 1.0
 ────────────────────────────────────────────────────────────────────────
 
-== AI / CUDA ENVIRONMENT ==
-
-  CUDA Toolkit:   N/A
-  nvcc Path:      N/A
-  cuDNN:          N/A
-  Conda:          false
-
-  PyTorch:
-    Version:        2.8.0+cu128
-    CUDA Version:   12.8
-    CUDA Available: true
-    Device:         NVIDIA GB10
-
-  Key Packages:
-    - torch                2.8.0+cu128
-    - numpy                2.3.2
-────────────────────────────────────────────────────────────────────────
-
 == FINDINGS ==
 
-  Total: 0 CRITICAL, 3 WARNING, 5 INFO
+  Total: 0 CRITICAL, 0 WARNING, 3 INFO
 
-  [WARN] (impact: reversible) #1: CUDA 12 Wheel on a CUDA 13 Host (arm64-cuda12-wheel-on-cuda13)
-    Evidence:     torch 2.8.0+cu128 is built for CUDA 12.8; host has CUDA 13.0 (libcudart.so.12 present). Tag-only finding: may lack sm_121 kernels; verify torch.cuda.is_available() and a matmul.
-    Why:          A cu12 wheel may import yet miss sm_121 kernels (sm121-kernel-missing) or fail to import when it expects a system libcudart.so.12; a frequent GB10 setup failure (S33 and S118 community setup guides).
-    Next Steps:
-      • pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 (reversible: reinstall the previous wheel); vLLM +cu130 aarch64 wheel or https://wheels.vllm.ai/nightly/cu130; SGLang lmsysorg/sglang:latest-cu130.
-      • Remove stray nvidia-*-cu12 pip packages from the venv (reversible: pip install them again).
-
-  [WARN] (impact: persistent) #2: ConnectX-7 Port Up Without an IPv4 Address (cx7-up-no-ip)
-    Evidence:     enp1s0f0np0 (rocep1s0f0) Up at 200000 Mb/s; IPv4 none; persistent config no.
-    Why:          NCCL and discover-sparks cannot use an unaddressed link; ip addr add is lost at reboot; with two cables all four twins need addresses.
-    Next Steps:
-      ! Advisory: write /etc/netplan/40-cx7.yaml (chmod 600) with dhcp4: no and a static address per twin, then sudo netplan apply (persistent network change; revert: sudo rm /etc/netplan/40-cx7.yaml && sudo netplan apply) (S18).
-
-  [WARN] (impact: persistent) #3: ConnectX-7 Port Up Without an IPv4 Address (cx7-up-no-ip)
-    Evidence:     enP2p1s0f0np0 (roceP2p1s0f0) Up at 200000 Mb/s; IPv4 none; persistent config no.
-    Why:          NCCL and discover-sparks cannot use an unaddressed link; ip addr add is lost at reboot; with two cables all four twins need addresses.
-    Next Steps:
-      ! Advisory: write /etc/netplan/40-cx7.yaml (chmod 600) with dhcp4: no and a static address per twin, then sudo netplan apply (persistent network change; revert: sudo rm /etc/netplan/40-cx7.yaml && sudo netplan apply) (S18).
-
-  [INFO] #4: NVIDIA DGX Spark (GB10) Detected (dgx-spark-detected)
-    Evidence:     GB10 platform: NVIDIA NVIDIA_DGX_Spark (Founders Edition); GPU NVIDIA GB10 CC 12.1; kernel 6.17.0-1031-nvidia; DGX OS 7.5.0 / OTA OTA2607 (7.5.0).
+  [INFO] #1: NVIDIA DGX Spark (GB10) Detected (dgx-spark-detected)
+    Evidence:     GB10 platform: NVIDIA NVIDIA_DGX_Spark (Founders Edition); GPU NVIDIA GB10 CC 12.1; kernel 6.17.0-1031-nvidia; DGX OS 7.2.3 / OTA 7.5.0 (OTA2607).
     Why:          Enables unified-memory suppressions and DGX OS pairing rules; OEM units lag NVIDIA OTAs.
     Next Steps:
       • No action; memory comes from /proc/meminfo, nvidia-smi memory fields are expected to be [N/A].
 
-  [INFO] #5: PyTorch CUDA is Working (pytorch-cuda-ok)
-    Evidence:     PyTorch 2.8.0+cu128 with CUDA 12.8. GPU: NVIDIA GB10.
-    Why:          GPU acceleration is available for PyTorch workloads.
-    Next Steps:
-      • No action needed.
-
-  [INFO] #6: Secure Boot Enabled — NVIDIA Module is Loading Successfully (secureboot-ok)
+  [INFO] #2: Secure Boot Enabled — NVIDIA Module is Loading Successfully (secureboot-ok)
     Evidence:     Secure Boot is enabled and the NVIDIA module is loaded. Module signing appears to be properly configured.
     Why:          This is the ideal configuration — security is maintained while NVIDIA drivers function correctly.
     Next Steps:
       • No action needed.
 
-  [INFO] #7: Unified Memory: nvidia-smi Memory Fields Are [N/A] by Design (unified-memory-nvsmi-expected)
+  [INFO] #3: Unified Memory: nvidia-smi Memory Fields Are [N/A] by Design (unified-memory-nvsmi-expected)
     Evidence:     nvidia-smi memory '[N/A]' on GPU 0 (NVIDIA GB10) is expected on unified-memory iGPUs. Pool: MemTotal 119.7 GiB measured from /proc/meminfo; the remainder of the 128 GiB LPDDR5X (marketed as 128 GB) is reserved for display/firmware (~8.3 GiB on 2025 units; the 2 GB / 4 GB display reserve is a BIOS toggle since July 2026, S4). MemAvailable 115.9 GiB, swap 0.0 GiB. Fan, power limit, memory clock and PCIe gen/width are also [N/A] or misreported ('GEN 1@ 1x', S7).
     Why:          Suppresses low-vram, fan, power-limit and PCIe false alarms; cudaMemGetInfo also under-reports.
     Next Steps:
       • Use /proc/meminfo MemAvailable (+SwapFree), free -h 'available' or the DGX Dashboard (http://localhost:11000).
 
-  [INFO] #8: PyTorch Capability 12.1 Warning Is Benign (sm121-torch-capability-warning-benign)
-    Evidence:     PyTorch 2.8.0+cu128 (CUDA 12.8) warns about capability 12.1; arch list sm_75,sm_80,sm_86,sm_90,sm_100,sm_120,compute_120. sm_120 SASS runs on sm_121.
-    Why:          Stops users rebuilding PyTorch for sm_121 or blaming the warning for unrelated failures.
-    Next Steps:
-      • No action; confirm torch.version.cuda starts with 13 and a matmul runs on cuda.
-
 ────────────────────────────────────────────────────────────────────────
 
 == TOP ISSUES ==
 
-  1. [WARN] CUDA 12 Wheel on a CUDA 13 Host (80% confidence)
-  2. [WARN] ConnectX-7 Port Up Without an IPv4 Address (75% confidence)
-  3. [WARN] ConnectX-7 Port Up Without an IPv4 Address (75% confidence)
+  1. No significant issues detected.
 
 == RECOMMENDED NEXT STEPS ==
 
-  1. pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 (reversible: reinstall the previous wheel); vLLM +cu130 aarch64 wheel or https://wheels.vllm.ai/nightly/cu130; SGLang lmsysorg/sglang:latest-cu130.
-  2. Advisory: write /etc/netplan/40-cx7.yaml (chmod 600) with dhcp4: no and a static address per twin, then sudo netplan apply (persistent network change; revert: sudo rm /etc/netplan/40-cx7.yaml && sudo netplan apply) (S18).
-  3. Remove stray nvidia-*-cu12 pip packages from the venv (reversible: pip install them again).
+  1. No action; memory comes from /proc/meminfo, nvidia-smi memory fields are expected to be [N/A].
+  2. Use /proc/meminfo MemAvailable (+SwapFree), free -h 'available' or the DGX Dashboard (http://localhost:11000).
 
 ────────────────────────────────────────────────────────────────────────
 
 == PRIVACY & DATA ==
 
   This report was generated locally. No diagnostic data was transmitted.
-  Redaction was applied to remove usernames, hostnames, home paths and IP addresses.
+  Redaction was applied to remove usernames, hostnames, home paths, IP addresses and serial numbers.
   The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation.
 
 ────────────────────────────────────────────────────────────────────────
@@ -241,28 +191,20 @@ Top: CUDA 12 Wheel on a CUDA 13 Host; ConnectX-7 Port Up Without an I...
 
 About this example
 ------------------
-This report is a SIMULATED capture, not a recording from hardware. It was produced by the shipped
-text renderer (internal/report/text.go) and analyzer from the GB10 fixture that pins the renderer's
-golden files (internal/analyzer/fixtures, internal/report/testdata/gb10_report.txt): the same
-machine that the "Linux field test (simulated GPU)" CI job replays through shims and NVC_SIM_ROOT
-from .github/fieldtest/scenarios/gb10.json (spec section 10). Two deliberate deviations from the
-healthy fixture were added so that the report shows WARN findings and an Advisory step: the two
-port-0 ConnectX-7 twins are cabled but unaddressed (cx7-up-no-ip, one finding per twin), and a
-CUDA 12.8 PyTorch wheel is installed (arm64-cuda12-wheel-on-cuda13, which also produces the benign
-capability-12.1 INFO). The version string is the fixture's; a real run prints the release it was
-built from.
-
-Sourced from public field reports cited in docs/roadmap/spark-support.md: MemTotal 125513944 kB
-(119.7 GiB), the 0000000F:01:00.0 bus id, the [N/A] memory / fan / power-limit fields and the
-GEN 1@ 1x misreport, driver 580.159.03 / CUDA 13.0 / compute capability 12.1, DGX OS 7.5.0 and
-OTA2607, the dotted EC 3.5.8 / SoC 2.155.11 / PD 0.5.22 firmware versions (S4) and the driver,
-firmware and kernel-module package names.
-
-Placeholders pending a real capture: the fwupdmgr device names and the hex encodings shown in the
-FIRMWARE block (0x03000508 and 0x00000516 are an arithmetic assumption that spark-rules.json marks
-unconfirmed against fwupdmgr output), the dgx-dashboard, nvidia-spark-ota-check and
-nvidia-container-toolkit package versions, idle clocks, the swap size and swap device, the ACPI
-thermal-zone temperature, the ConnectX-7 rate string, the systemd unit states, the DKMS line, the
-PyTorch arch list and the uptime. Nothing here has been verified on hardware yet. A real capture
-is tracked in https://github.com/thatcooperguy/NVCheckup/issues/3; scripts/spark-capture.sh
+This report is the text renderer's output for the simulated GB10 fixture
+(internal/analyzer/fixtures.GB10, spec docs/roadmap/spark-support.md section 10)
+run through the analyzer in full mode. It is byte-identical to the golden file
+internal/report/testdata/gb10_report.txt, which `go test ./internal/report -run
+Golden -update` regenerates; nothing in it is hand-written. The fixture mirrors
+the healthy DGX Spark scenario that drives the "Linux field test (simulated GPU)"
+CI job (.github/fieldtest/scenarios/gb10.json): MemTotal 125513944 kB, nvidia-smi
+memory [N/A], compute capability 12.1, the misreported GEN 1@1x link on the
+on-package GPU, DGX OS image 7.2.3 (DGX_SWBUILD_VERSION) with OTA 7.5.0
+(DGX_OTA_VERSION, OTA2607) and driver 580.159.03, and two ConnectX-7 twins of one
+cabled cage. Values the spec leaves open (dates, addresses, hostnames, the
+DGX_SWBUILD_* / commit / FastOS placeholders inherited from the draft scenario)
+are synthetic test data, and the fixture is healthy, so no WARN or Advisory step
+appears; see internal/report/testdata/rtx_spark_report.txt for one. Nothing here
+has been verified on hardware yet: a real capture is tracked in
+https://github.com/thatcooperguy/NVCheckup/issues/3 and scripts/spark-capture.sh
 produces one.
