@@ -2448,10 +2448,16 @@ func platformSummaryLine(report *types.Report) string {
 	case model != "":
 		line += " (" + model + ")"
 	}
-	if report.DGXOS != nil && report.DGXOS.SWBuildVersion != "" {
-		line += " | DGX OS " + report.DGXOS.SWBuildVersion
-		if report.DGXOS.OTAName != "" {
-			line += " / " + report.DGXOS.OTAName
+	// Same reading as dgx-spark-detected and the DGX OS block: DGX OS
+	// <DGX_SWBUILD_VERSION> / OTA <DGX_OTA_VERSION>; the OTA name stands in
+	// when the version is unknown. Stays under 72 columns for FE units.
+	if d := report.DGXOS; d != nil && (d.SWBuildVersion != "" || d.OTAVersion != "" || d.OTAName != "") {
+		line += " | DGX OS " + orNA(d.SWBuildVersion)
+		switch {
+		case d.OTAVersion != "":
+			line += " / OTA " + d.OTAVersion
+		case d.OTAName != "":
+			line += " / " + d.OTAName
 		}
 	}
 	return line

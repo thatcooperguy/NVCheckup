@@ -5,6 +5,12 @@ package analyzer
 // operating systems: wsl-linux-driver-installed (platforms: all) and
 // rtx-spark-linux-unsupported. All of them run in every mode except the WSL
 // rule, which rides with the WSL collector (ai and full).
+//
+// Producer: windows.CollectWoA fills PlatformInfo.IsWindowsOnArm,
+// ProcessEmulated, NativeMachine and, on an Arm host with the N1X adapter,
+// PlatformInfo.WoA (adapter name, PNP id, WDDM DriverVersion, INF,
+// DeveloperPreview, nvcc.exe PE machine). Driver.Source and
+// GPUInfo.DriverVersion stay as fallbacks for reports that predate it.
 
 import (
 	"fmt"
@@ -27,11 +33,22 @@ const (
 	woaFirstNativeCUDA = "13.4"
 	// woa-windows-build-too-old (spec 5, S74): 24H2 is build 26100.
 	woaMinBuild = 26100
+	// nvidiaReleaseMinMajor: NVIDIA driver release strings (as nvidia-smi
+	// prints them, e.g. 580.159.03 or 616.00) have a three-digit leading
+	// integer; a four-part WDDM DriverVersion such as 32.0.16.1600 does not
+	// and must never be read as "below 616.00".
+	nvidiaReleaseMinMajor = 100
 )
 
 // wslDriverPackageRe matches the Linux driver packages that must never be
 // installed inside WSL (spec 5, wsl-linux-driver-installed).
 var wslDriverPackageRe = regexp.MustCompile(`^(nvidia-driver-\d+|nvidia-dkms-\d+)`)
+
+// pnpDeviceRe extracts the PCI device id from a PNPDeviceID (DEV_2E03).
+var pnpDeviceRe = regexp.MustCompile(`DEV_([0-9A-Fa-f]{4})`)
+
+// coreCountRe extracts "6144-core" from the adapter name.
+var coreCountRe = regexp.MustCompile(`(\d+)-core`)
 
 // windowsBuild parses SystemInfo.OSBuild ("26100" or "10.0.26100") into the
 // build number, 0 when unknown.
@@ -84,19 +101,48 @@ func analyzeWoA(r *types.Report) []types.Finding {
 	if !isRTXSpark(r) || !isWindowsReport(r) {
 		return findings
 	}
+	woaInfo := r.Platform.WoA
 
 	// Rule row rtx-spark-driver-developer-preview (spec 5), WARN: the 616.00
-	// DP package, its WDDM suffix, or an older (extracted) build on Arm64.
+	// DP package, its INF / WDDM suffix (PlatformInfo.WoA, spec 8), or an
+	// older (extracted) build on Arm64.
 	driver := strings.TrimSpace(r.Driver.Version)
 	dp := driver == rtxSparkDPDriver || strings.HasPrefix(driver, rtxSparkDPDriver)
 	inf := "INF not collected"
+	if woaInfo != nil {
+		if woaInfo.DeveloperPreview {
+			dp = true
+		}
+		var facts []string
+		if woaInfo.InfFilename != "" {
+			facts = append(facts, woaInfo.InfFilename)
+			if strings.EqualFold(strings.TrimSpace(woaInfo.InfFilename), rtxSparkDPINF) {
+				dp = true
+			}
+		}
+		if woaInfo.DriverVersion != "" {
+			facts = append(facts, "WDDM "+woaInfo.DriverVersion)
+			if strings.HasSuffix(strings.TrimSpace(woaInfo.DriverVersion), rtxSparkDPWDDMSuffix) {
+				dp = true
+			}
+		}
+		if len(facts) > 0 {
+			inf = strings.Join(facts, ", ")
+		}
+		if driver == "" {
+			driver = woaInfo.DriverVersion
+		}
+	}
+	woaFacts := woaInfo != nil && (woaInfo.InfFilename != "" || woaInfo.DriverVersion != "")
 	for _, g := range r.GPUs {
 		if !g.IsNVIDIA {
 			continue
 		}
 		if strings.HasSuffix(strings.TrimSpace(g.DriverVersion), rtxSparkDPWDDMSuffix) {
 			dp = true
-			inf = "WDDM " + g.DriverVersion
+			if !woaFacts {
+				inf = "WDDM " + g.DriverVersion
+			}
 		}
 		if driver == "" {
 			driver = g.DriverVersion
@@ -104,10 +150,14 @@ func analyzeWoA(r *types.Report) []types.Finding {
 	}
 	if strings.Contains(strings.ToLower(r.Driver.Source), strings.ToLower(rtxSparkDPINF)) || strings.Contains(r.Driver.Source, rtxSparkDPPackageName) {
 		dp = true
-		inf = r.Driver.Source
+		if !woaFacts {
+			inf = r.Driver.Source
+		}
 	}
+	// "below 616.00 on Arm64": only NVIDIA release strings (NNN.NN[.NN])
+	// qualify; four-part WDDM strings are not release numbers.
 	old := false
-	if major := versionMajor(r.Driver.Version); major > 0 && major < versionMajor(rtxSparkDPDriver) {
+	if v := versionInts(r.Driver.Version); len(v) > 0 && len(v) <= 3 && v[0] >= nvidiaReleaseMinMajor && v[0] < versionMajor(rtxSparkDPDriver) {
 		old = true
 	}
 	if dp || old {
@@ -120,13 +170,65 @@ func analyzeWoA(r *types.Report) []types.Finding {
 		findings = append(findings, f)
 	}
 
-	// Rule row woa-cuda-toolkit-not-native (spec 5), WARN: toolkit <= 13.3
-	// (the nvcc PE machine type is not part of the collected types).
-	if r.AI != nil && r.AI.CUDAToolkitVersion != "" && versionLess(r.AI.CUDAToolkitVersion, woaFirstNativeCUDA) {
-		findings = append(findings, sparkFinding("woa-cuda-toolkit-not-native", fmt.Sprintf("CUDA %s at %s is x86_64 under Prism; the first native Windows Arm64 toolkit is 13.4 Developer Preview.",
-			r.AI.CUDAToolkitVersion, orNA(r.AI.NvccPath))))
+	// Rule row woa-cuda-toolkit-not-native (spec 5), WARN. The nvcc.exe PE
+	// machine (PlatformInfo.WoA.NvccMachine) decides when it was collected:
+	// AMD64 / I386 run under Prism, ARM64 is native whatever the version.
+	// Without it the version clause applies: toolkits <= 13.3 predate the
+	// native Arm64 build (13.4 Developer Preview).
+	toolkit, nvccPath, machine := "", "", ""
+	if r.AI != nil {
+		toolkit, nvccPath = r.AI.CUDAToolkitVersion, r.AI.NvccPath
+	}
+	if woaInfo != nil {
+		machine = strings.ToUpper(strings.TrimSpace(woaInfo.NvccMachine))
+		if nvccPath == "" {
+			nvccPath = woaInfo.NvccPath
+		}
+	}
+	var emulated bool
+	switch machine {
+	case "AMD64", "I386":
+		emulated = true
+	case "ARM64":
+		emulated = false
+	default:
+		emulated = toolkit != "" && versionLess(toolkit, woaFirstNativeCUDA)
+	}
+	if emulated && (toolkit != "" || nvccPath != "") {
+		why := "version <= 13.3"
+		if machine != "" {
+			why = "nvcc.exe PE machine " + machine
+		}
+		findings = append(findings, sparkFinding("woa-cuda-toolkit-not-native", fmt.Sprintf("CUDA %s at %s is x86_64 under Prism (%s); the first native Windows Arm64 toolkit is 13.4 Developer Preview.",
+			orNA(toolkit), orNA(nvccPath), why)))
 	}
 	return findings
+}
+
+// rtxSparkAdapterFacts returns the core count and PCI device id of the N1X
+// adapter from the nvidia-smi inventory or, when nvidia-smi.exe is absent
+// (spec 2.2), from the WMI adapter row in PlatformInfo.WoA.
+func rtxSparkAdapterFacts(r *types.Report) (cores, devid string) {
+	cores, devid = "n/a", "n/a"
+	if gpu := firstNVIDIAGPU(r); gpu != nil {
+		if m := coreCountRe.FindStringSubmatch(gpu.Name); m != nil {
+			cores = m[1]
+		}
+		devid = orNA(strings.ToUpper(strings.TrimPrefix(gpu.PCIDeviceID, "0x")))
+	}
+	if w := r.Platform.WoA; w != nil {
+		if cores == "n/a" {
+			if m := coreCountRe.FindStringSubmatch(w.AdapterName); m != nil {
+				cores = m[1]
+			}
+		}
+		if devid == "n/a" {
+			if m := pnpDeviceRe.FindStringSubmatch(w.PNPDeviceID); m != nil {
+				devid = strings.ToUpper(m[1])
+			}
+		}
+	}
+	return cores, devid
 }
 
 // analyzeWSLDriverPackages implements wsl-linux-driver-installed (spec 5,

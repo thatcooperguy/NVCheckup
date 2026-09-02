@@ -21,8 +21,11 @@ var FixtureTime = time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
 // GB10 mirrors the simulated healthy DGX Spark of spec section 10:
 // MemTotal 125513944 kB (119.7 GiB), nvidia-smi memory [N/A], compute
 // capability 12.1, the misreported GEN 1@ 1x PCIe link on an on-package GPU,
-// DGX OS 7.5.0 / OTA2607 with driver 580.159.03, the nvidia-dkms-580-open
-// placeholder package, and two ConnectX-7 twins of one cabled cage.
+// DGX OS image 7.2.3 with OTA 7.5.0 (OTA2607) and driver 580.159.03, the
+// nvidia-dkms-580-open placeholder package, and two ConnectX-7 twins of one
+// cabled cage. The DGX OS release fields, firmware rows and unit states
+// mirror the CI scenario .github/fieldtest/scenarios/gb10.json so the
+// rendered example report and the simulated run read the same.
 //
 // Expected findings in full mode (asserted by the analyzer tests):
 // dgx-spark-detected, unified-memory-nvsmi-expected, secureboot-ok. None of
@@ -106,7 +109,10 @@ func GB10() *types.Report {
 			PowerLimitSupported: false,
 			UtilizationPct:      0,
 			GPUIndex:            0,
-			EventCounters:       map[string]int64{"sw_power_cap": 0, "sw_thermal_slowdown": 0, "hw_thermal_slowdown": 0},
+			// Keys are common.snakeKey of the nvidia-smi -q -d PERFORMANCE
+			// "Clocks Event Reasons Counters" names (microseconds); the
+			// verbatim GB10 layout is a spec 12 open question.
+			EventCounters: map[string]int64{"sw_power_capping": 0, "sw_thermal_slowdown": 0, "hw_thermal_slowdown": 0, "hw_slowdown": 0},
 		},
 		PCIe: &types.PCIeInfo{
 			// spec 2.1 / 5.1: the link is misreported as GEN 1@ 1x. The
@@ -131,12 +137,15 @@ func GB10() *types.Report {
 			ComputeCap:          "12.1",
 			UnifiedMemory:       true,
 			NvidiaKernelFlavour: true,
-			// fwupdmgr rows: versions from the spec 2.1 FE table (Aug 2026); the
-			// device names are synthetic (verbatim names are an open question).
+			// fwupdmgr rows: versions from the spec 2.1 FE table (Aug 2026) in
+			// the dotted form linux.normalizeFirmwareVersion stores (the
+			// scenario's hex 0x03000508 / 0x02009b0b / 0x00000516 decoded);
+			// device names follow the CI scenario (verbatim names are a spec
+			// 12 open question).
 			Firmware: []types.FirmwareComponent{
-				{Name: "Embedded Controller", Version: "0x03000508"},
-				{Name: "System Firmware (UEFI/SoC)", Version: "2.155.11"},
-				{Name: "USB-PD Controller", Version: "0x00000516"},
+				{Name: "Embedded Controller", Version: "3.5.8"},
+				{Name: "UEFI Device Firmware", Version: "2.155.11"},
+				{Name: "USB Power Delivery Controller", Version: "0.5.22"},
 			},
 			ACPIThermalMC:    map[string]int{"thermal_zone0": 41000, "thermal_zone1": 43500},
 			PrevBootClean:    &prevBootClean,
@@ -156,12 +165,20 @@ func GB10() *types.Report {
 			Swappiness:     60,
 		},
 		DGXOS: &types.DGXOSInfo{
-			Name:                 "DGX Spark",        // spec 3.1 row 4
-			PrettyName:           "NVIDIA DGX Spark", // spec 3.1 row 4
-			SWBuildVersion:       "7.5.0",            // spec 2.1 FE table
+			Name:       "DGX Spark",        // spec 3.1 row 4
+			PrettyName: "NVIDIA DGX Spark", // spec 3.1 row 4
+			// DGX_SWBUILD_VERSION is the factory image, DGX_OTA_VERSION the
+			// applied OTA (spec 2.1 FE table: 7.5.0). Build date, commit,
+			// OTA date and the FastOS version are the CI scenario's
+			// draft-inherited placeholders (the spec gives only the key list).
+			SWBuildVersion:       "7.2.3",
+			SWBuildDate:          "2025-09-10-13-50-03",
+			CommitID:             "833b4a7",
 			OTAVersion:           "7.5.0",
+			OTADate:              "Wed Jul 15 09:06:56 AM PDT 2026",
 			Platform:             "DGX Server for KVM", // spec 3.1 row 4 quirk
 			SerialNumber:         "<serial>",
+			FastOSVersion:        "1.91.51",
 			OTAName:              "OTA2607", // spec 2.1: OTA2607 = July 2026 = 580.159.03
 			OTATorn:              &torn,
 			DriverPkgVersion:     "580.159.03-0ubuntu0.24.04.1",
@@ -172,6 +189,7 @@ func GB10() *types.Report {
 			FwupdActive:          true,
 			PersistencedActive:   true,
 			DashboardPortOpen:    true,
+			UnitsQueried:         true, // systemctl answered: the *Active booleans are measurements
 		},
 		Cluster: &types.ClusterInfo{
 			// spec 2.1 / 9: port 0 twins rocep1s0f0 / roceP2p1s0f0 on PCI
@@ -204,11 +222,15 @@ func GB10GSPFail() *types.Report {
 		Error:     `nvidia-smi query failed: "No devices were found" (the driver is loaded but no NVIDIA GPU is visible to it)`,
 		Fatal:     true,
 	}}
-	// spec 3.2 GSP failure strings, verbatim.
-	r.Linux.DmesgSnippets = "NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!\n" +
-		"NVRM: ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out.\n" +
-		"NVRM: RmInitAdapter: Cannot initialize GSP firmware RM\n" +
-		"NVRM: RmInitAdapter failed! (0x62:0x65:2028)\n"
+	// spec 3.2 GSP failure strings, verbatim, as linux.CollectNVRMMessages
+	// keeps them in LinuxInfo.GSPFailureLines without --include-logs (the
+	// CI gsp-fail scenario runs without it, so DmesgSnippets stays empty).
+	r.Linux.GSPFailureLines = []string{
+		"NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!",
+		"NVRM: ksec2PrepareBootCommands_GB20B: SEC2 secure boot partition timed out.",
+		"NVRM: RmInitAdapter: Cannot initialize GSP firmware RM",
+		"NVRM: RmInitAdapter failed! (0x62:0x65:2028)",
+	}
 	r.Linux.XidErrors = []types.XidError{{Code: 119, Message: "GSP firmware error", Count: 1}}
 	// A plain apt upgrade pulled a newer driver than the OTA-paired firmware
 	// (spec 5 dgx-spark-gsp-init-failure: 580.173.02 on OTA2607 = 580.159.03).
@@ -275,6 +297,16 @@ func RTXSpark() *types.Report {
 			UnifiedMemory:  true,
 			IsWindowsOnArm: true,
 			NativeMachine:  "ARM64",
+			// windows.CollectWoA adapter facts (spec 8): the PNP id is cut
+			// after the device id (SUBSYS/REV unconfirmed); the WDDM
+			// DriverVersion is left empty because only its 16.1600 tail is
+			// known (spec 3.1 row 2).
+			WoA: &types.WoAInfo{
+				AdapterName:      "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)",
+				PNPDeviceID:      `PCI\VEN_10DE&DEV_2E03`,
+				InfFilename:      "nv_surface_woa.inf", // spec 2.2
+				DeveloperPreview: true,
+			},
 		},
 		UnifiedMemory: &types.UnifiedMemoryInfo{
 			// Win32_OperatingSystem.TotalVisibleMemorySize / FreePhysicalMemory
