@@ -29,9 +29,19 @@ import (
 // redacted regardless of length.
 const minStandaloneUsernameLen = 3
 
-// ipv4Re matches dotted-quad IPv4 addresses. Replacement is done with a
-// function so that LAN and public addresses get different tokens.
+// ipv4Re matches dotted-quad IPv4 addresses. Matches are replaced one at a
+// time (see redactIPs) so that LAN and public addresses get different tokens
+// and so that four-part version numbers can be left alone.
 var ipv4Re = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b`)
+
+// versionPrefixRe recognises text that introduces a version number, such as
+// "NVIDIA App version 11.0.7.247" or "driver 32.0.101.6078". A dotted quad
+// that follows one of these words is a version string, not an IP address.
+var versionPrefixRe = regexp.MustCompile(`(?i)(\bv|\bver\.?|\bversion|\brelease|\bbuild|\bdriver)\s*$`)
+
+// versionContextLen is how many characters before an IPv4-looking match are
+// inspected for a version-introducing word.
+const versionContextLen = 12
 
 // Redactor holds patterns for redaction.
 type Redactor struct {
@@ -90,7 +100,7 @@ func NewWithIdentity(enabled bool, username, hostname, homeDir string) *Redactor
 //  4. username inside other paths, then as a standalone word;
 //  5. WiFi SSIDs.
 //
-// IPv4 addresses are handled separately in Redact via ReplaceAllStringFunc.
+// IPv4 addresses are handled separately in Redact via redactIPs.
 func (r *Redactor) buildPatterns() {
 	// Windows file systems and account names are case-insensitive.
 	flags := ""
@@ -104,11 +114,16 @@ func (r *Redactor) buildPatterns() {
 	})
 
 	if r.homeDir != "" {
-		// Accept either slash style so "C:/Users/x" from Python output also matches.
-		r.homeRe = regexp.MustCompile(`(?i)` + eitherSlashPattern(r.homeDir))
+		// Accept either slash style so "C:/Users/x" from Python output also
+		// matches. The match must end at a path separator, at the end of the
+		// text, or at a character that cannot continue a path segment, so
+		// that C:\Users\alice does not swallow the prefix of C:\Users\alice2.
+		// Go regexps have no lookahead, so the terminator is captured and
+		// re-emitted by the replacement.
+		r.homeRe = regexp.MustCompile(`(?i)` + eitherSlashPattern(r.homeDir) + homeTerminatorPattern)
 		r.patterns = append(r.patterns, &replacementPattern{
 			re:          r.homeRe,
-			replacement: "<home>",
+			replacement: homeReplacement,
 		})
 	}
 
@@ -142,6 +157,17 @@ func (r *Redactor) buildPatterns() {
 	})
 }
 
+// homeTerminatorPattern is appended to the home-directory pattern. Group 1
+// captures whatever legitimately ends the path: a separator, a quote or
+// bracket, whitespace or a list delimiter. Alternatively the text may simply
+// end. Letters, digits, dots and dashes are deliberately absent so a sibling
+// profile such as C:\Users\alice2 or /home/alice.old is not treated as the
+// home directory.
+const homeTerminatorPattern = `([\\/\s"'` + "`" + `()\[\]<>,;:|]|$)`
+
+// homeReplacement re-emits the captured terminator after the token.
+const homeReplacement = "<home>${1}"
+
 // eitherSlashPattern quotes a path for use in a regexp, letting each path
 // separator match either "\" or "/".
 func eitherSlashPattern(p string) string {
@@ -170,7 +196,51 @@ func (r *Redactor) Redact(s string) string {
 	for _, p := range r.patterns {
 		result = p.re.ReplaceAllString(result, p.replacement)
 	}
-	return ipv4Re.ReplaceAllStringFunc(result, r.RedactIP)
+	return r.redactIPs(result)
+}
+
+// redactIPs replaces every IPv4 address in s with RedactIP's token, skipping
+// dotted quads that are really version numbers. A match is treated as a
+// version when it is introduced by a word such as "version", "driver" or
+// "build" (see versionPrefixRe), when it is glued to a leading "v" as in
+// "v11.0.7.247", or when it is followed by a further ".<digit>" (a
+// five-part version).
+func (r *Redactor) redactIPs(s string) string {
+	matches := ipv4Re.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	last := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		if looksLikeVersion(s, start, end) {
+			continue
+		}
+		sb.WriteString(s[last:start])
+		sb.WriteString(r.RedactIP(s[start:end]))
+		last = end
+	}
+	sb.WriteString(s[last:])
+	return sb.String()
+}
+
+// looksLikeVersion reports whether the dotted quad at s[start:end] should be
+// read as a version string rather than an IP address.
+func looksLikeVersion(s string, start, end int) bool {
+	if start > 0 && (s[start-1] == 'v' || s[start-1] == 'V') {
+		return true
+	}
+	if end+1 < len(s) && s[end] == '.' && s[end+1] >= '0' && s[end+1] <= '9' {
+		return true
+	}
+	from := start - versionContextLen
+	if from < 0 {
+		from = 0
+	}
+	before := strings.TrimRight(s[from:start], " \t")
+	return versionPrefixRe.MatchString(before)
 }
 
 // RedactIP replaces a single IP address, labelling private/loopback ranges as
@@ -225,7 +295,7 @@ func (r *Redactor) RedactPath(path string) string {
 	}
 	result := path
 	if r.homeRe != nil {
-		result = r.homeRe.ReplaceAllLiteralString(result, "<home>")
+		result = r.homeRe.ReplaceAllString(result, homeReplacement)
 	}
 	if r.username != "" {
 		result = strings.ReplaceAll(result, `\`+r.username+`\`, `\<user>\`)

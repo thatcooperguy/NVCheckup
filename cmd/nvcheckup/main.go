@@ -3,13 +3,10 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -225,7 +222,10 @@ func defaultJournalDir() string {
 }
 
 // resolveJournalDir applies precedence --journal > --out (deprecated alias) >
-// default, and makes sure the directory exists with owner-only permissions.
+// default. It only computes the path: listing fixes, previewing with
+// --dry-run and listing journal entries are read-only and must not leave an
+// empty directory behind. ensureJournalDir creates it right before a change
+// is applied or undone.
 func resolveJournalDir(journalFlag, outFlag string) string {
 	dir := journalFlag
 	if dir == "" && outFlag != "" {
@@ -235,34 +235,30 @@ func resolveJournalDir(journalFlag, outFlag string) string {
 	if dir == "" {
 		dir = defaultJournalDir()
 	}
+	return dir
+}
+
+// ensureJournalDir creates the journal directory with owner-only permissions.
+// It is called immediately before engine.Apply or engine.Undo, never for
+// list or dry-run invocations.
+func ensureJournalDir(dir string) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot create journal directory %s: %v\n", dir, err)
 		os.Exit(types.ExitError)
 	}
-	return dir
 }
 
 // isElevationError recognises the engine's "needs Administrator/root" failure
-// so the CLI can give a one-line hint instead of a raw error.
+// and the raw "Access is denied" text that reg.exe and powercfg print when run
+// from a non-elevated terminal, so the CLI can give a one-line hint instead of
+// a raw error.
 func isElevationError(msg string) bool {
 	l := strings.ToLower(msg)
-	return strings.Contains(l, "elevat") || strings.Contains(l, "administrator") || strings.Contains(l, "root")
-}
-
-// isElevated reports whether the process already has admin/root rights. On
-// Windows, opening the raw disk device is denied to non-elevated processes;
-// any other error (device missing on a VM) is treated as "unknown" and we let
-// the engine make the final call.
-func isElevated() bool {
-	if runtime.GOOS != "windows" {
-		return os.Geteuid() == 0
-	}
-	f, err := os.Open(`\\.\PHYSICALDRIVE0`)
-	if err != nil {
-		return !errors.Is(err, fs.ErrPermission)
-	}
-	f.Close()
-	return true
+	return strings.Contains(l, "elevat") ||
+		strings.Contains(l, "administrator") ||
+		strings.Contains(l, "root") ||
+		strings.Contains(l, "access is denied") ||
+		strings.Contains(l, "access denied")
 }
 
 func printElevationHint(msg string) {
@@ -339,7 +335,7 @@ func fixCmd(args []string) {
 
 	// Check elevation BEFORE asking, so the user is not prompted for a fix
 	// that is guaranteed to fail.
-	if target.NeedsAdmin && !isElevated() {
+	if target.NeedsAdmin && !remediate.IsElevated() {
 		printElevationHint(fmt.Sprintf("action %q requires elevated (Administrator/root) privileges", target.ID))
 		os.Exit(types.ExitError)
 	}
@@ -353,6 +349,7 @@ func fixCmd(args []string) {
 		return
 	}
 
+	ensureJournalDir(dir)
 	result, err := engine.Apply(*target)
 	if err != nil {
 		if isElevationError(err.Error()) {
@@ -449,6 +446,7 @@ func undoCmd(args []string) {
 		return
 	}
 
+	ensureJournalDir(dir)
 	if err := engine.Undo(*target); err != nil {
 		if isElevationError(err.Error()) {
 			printElevationHint(err.Error())

@@ -11,20 +11,23 @@
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.2.1 | 2026-09-01 14:32:10 UTC
-OS: Windows 11 24H2 (Build 26100) | Arch: amd64
-GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12288 MB
+NVCheckup v0.2.1 | 2026-09-01 14:32:10
+OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64
+GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12282 MB
 CUDA (driver): 13.1
-Findings: 1 CRITICAL, 1 WARNING, 7 total
+Temp: 42°C | P-State: P8 | Util: 0%
+PCIe: Gen1 x16 (idle, max Gen4)
+Findings: 1 CRITICAL, 1 WARNING, 6 total | 2 auto-fixable
+Top: Display Driver Resets Detected (Event ID 4101); nvlddmkm Driver ...
 
 ────────────────────────────────────────────────────────────────────────
 
 == SYSTEM INFO ==
 
-  OS:           Windows 11 Pro 24H2 (Build 26100)
+  OS:           Microsoft Windows 11 Pro 10.0.26100 (Build 26100)
   Architecture: amd64
   CPU:          AMD Ryzen 9 7950X 16-Core Processor
-  RAM:          32768 MB
+  RAM:          31912 MB
   Storage Free: 245760 MB
   Uptime:       3d 5h 20m
   Boot Mode:    UEFI
@@ -37,52 +40,40 @@ Findings: 1 CRITICAL, 1 WARNING, 7 total
     Vendor:    NVIDIA
     Driver:    591.86
     PCI Bus:   00000000:01:00.0
-    VRAM:      12288 MB total, 2048 MB used, 10240 MB free
+    VRAM:      12282 MB total, 1536 MB used, 10746 MB free
     Temp:      42°C
-    WDDM:      3.2
-    Thermal:   P8, 210 / 2475 MHz, 18 W of 200 W, fan 0% (idle), no slowdown active
-    PCIe:      Gen1 x16 now (max Gen4 x16), 0% utilization — idle power-saving
-
-  [GPU 1] Intel UHD Graphics 770
-    Vendor:    Intel
-    Driver:    32.0.101.6078
+    WDDM:      4.09.00.0904
 
   NVIDIA Driver: 591.86
   CUDA (driver): 13.1
+  PCIe:          Gen1 x16 (idle, max Gen4)
+  Thermal:       42°C, P8, fan 0%, 18.45 / 200.00 W
 ────────────────────────────────────────────────────────────────────────
 
 == WINDOWS DETAILS ==
 
   HAGS:           Enabled
-  Game Mode:      Enabled
+  Game Mode:      Default (not configured)
   Power Plan:     Balanced
 
   Monitors:
-    - Display: 2560x1440 @ 165Hz
-
-  NVIDIA App:     v11.0.4.0
+    - DEL DELL S2721DGF: 2560x1440 @ 165Hz
 
   Overlay Software Detected:
-    - Xbox Game Bar (v7.325.7021.0)
     - Discord (may have overlay)
-    - RivaTuner Statistics Server (RTSS)
+    - Xbox Game Bar (v7.326.8061.0)
 
   Event Log Summary (last 30 days):
     Driver Resets (4101):  7 event(s)
     nvlddmkm Errors:       3 event(s)
-    WHEA Errors:           2 event(s) (2 corrected, 0 uncorrected)
-
-  Recent Windows Updates (last 60 days):
-    - KB5063878: Security Update (2026-08-12)
-    - KB5062553: Update (2026-07-08)
+    WHEA Errors:           0 event(s)
 ────────────────────────────────────────────────────────────────────────
 
 == FINDINGS ==
 
-  Total: 1 CRITICAL, 1 WARNING, 5 INFO
+  Total: 1 CRITICAL, 1 WARNING, 4 INFO
 
-  [CRIT] #1: Display Driver Resets Detected (Event ID 4101)
-    ID:           driver-resets-4101
+  [CRIT] #1: Display Driver Resets Detected (Event ID 4101) (driver-resets-4101)
     Evidence:     7 driver reset event(s) in the last 30 days. Most recent: 2026-08-30 22:15.
     Why:          Event ID 4101 indicates the display driver stopped responding and was recovered by Windows. Frequent occurrences cause black screens, freezes, and application crashes.
     Next Steps:
@@ -90,74 +81,67 @@ Findings: 1 CRITICAL, 1 WARNING, 7 total
       • Check GPU temperatures — overheating can trigger driver resets.
       • If overclocked, revert GPU clocks to stock settings.
       • Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.
-      • If a recent Windows Update coincides with the issues, consider testing a rollback (understand the security implications first).
+      • If recent Windows Update coincides with issues, consider testing a rollback (understand security implications first).
 
-  [WARN] #2: nvlddmkm Driver Errors Detected
-    ID:           nvlddmkm-errors
-    Evidence:     3 nvlddmkm error event(s) in the last 30 days.
-    Why:          nvlddmkm is the NVIDIA kernel-mode display driver. Errors from it usually accompany driver resets and point at driver, overclock, or power delivery problems.
+  [WARN] #2: nvlddmkm Driver Errors Detected (nvlddmkm-errors)
+    Evidence:     3 nvlddmkm error(s) in the last 30 days.
+    Why:          nvlddmkm is the NVIDIA Windows kernel-mode driver. Errors here often correlate with crashes, BSODs, or display instability.
     Next Steps:
-      • Perform a clean driver install.
-      • Check PSU capacity and GPU power connectors.
+      • Perform a clean driver reinstall using the NVIDIA installer's 'Clean Install' option.
+      • If persistent, consider using DDU (Display Driver Uninstaller) in Safe Mode before reinstalling.
+      • Check for BIOS/UEFI updates for your motherboard.
+      • Test GPU in another PCIe slot if available.
 
-  [INFO] #3: Hardware-Accelerated GPU Scheduling (HAGS) is Enabled
-    ID:           hags-enabled
+  [INFO] #3: Overlay/Recording Software Detected (overlay-software)
+    Evidence:     Detected: Discord (may have overlay), Xbox Game Bar (v7.326.8061.0).
+    Why:          Multiple active overlays can compete for resources and cause frame pacing issues, stutter, or input lag. This is informational — these tools are commonly used and are not inherently problematic.
+    Next Steps:
+      • If experiencing stutter, try disabling overlays one at a time to isolate the cause.
+      • Ensure only one overlay/recording tool is active during gaming.
+
+  [INFO] #4: Hardware-Accelerated GPU Scheduling (HAGS) is Enabled (hags-enabled)
     Evidence:     HAGS is currently enabled.
     Why:          HAGS can improve performance in some scenarios but has been reported to cause stuttering or instability in certain games or driver versions.
     Next Steps:
       • If experiencing stutter or instability, try disabling HAGS in Settings > System > Display > Graphics > Change default graphics settings.
-      • Or: nvcheckup fix --id disable-hags (asks for confirmation; reversible with nvcheckup undo).
+      • This is a reversible change.
+    Fix:          nvcheckup fix --id disable-hags
 
-  [INFO] #4: Power Plan Not Set to High Performance
-    ID:           power-plan-suboptimal
+  [INFO] #5: PCIe Link Power-Saving at Idle (expected) (pcie-idle-power-saving)
+    Evidence:     Current: Gen1 x16. Maximum: Gen4 x16. P-state: P8. GPU utilization: 0%.
+    Why:          Modern GPUs drop the PCIe link to Gen1 when idle to save power and raise it again under load. This reading was taken at idle, so it does not indicate a problem.
+    Next Steps:
+      • Re-run under GPU load to verify the link reaches Gen4.
+
+  [INFO] #6: Power Plan Not Set to High Performance (power-plan-suboptimal)
     Evidence:     Active power plan: Balanced.
     Why:          Balanced or Power Saver plans may throttle CPU/GPU performance. For gaming or CUDA workloads, High Performance is generally recommended.
     Next Steps:
       • Open Power Options and switch to 'High Performance' for testing.
-      • Or: nvcheckup fix --id set-high-performance (asks for confirmation; reversible with nvcheckup undo).
-
-  [INFO] #5: PCIe Link Power-Saving at Idle (expected)
-    ID:           pcie-downshift
-    Evidence:     Link is Gen1 x16 at 0% utilization (max Gen4 x16). Power state P8.
-    Why:          NVIDIA GPUs drop the PCIe link to Gen1 when idle to save power. This is normal and the link returns to full speed under load. A downshift is only a concern if it persists while the GPU is busy.
-    Next Steps:
-      • No action needed. Re-run under load if you suspect a real link problem.
-
-  [INFO] #6: Corrected Hardware Errors Logged (WHEA)
-    ID:           whea-errors
-    Evidence:     2 corrected WHEA event(s) in the last 30 days, reported by PCI Express Root Port (PCI\VEN_1022&DEV_14DB). 0 uncorrected.
-    Why:          Corrected errors were fixed by the hardware and did not affect the system. Logging them is by design. Only uncorrected errors indicate a fault.
-    Next Steps:
-      • No action needed unless the count grows quickly or uncorrected errors appear.
-
-  [INFO] #7: Overlay/Recording Software Detected
-    ID:           overlay-software
-    Evidence:     Detected: Xbox Game Bar, Discord (may have overlay), RivaTuner Statistics Server (RTSS).
-    Why:          Multiple active overlays can compete for resources and cause frame pacing issues. This is informational.
-    Next Steps:
-      • If experiencing stutter, try disabling overlays one at a time to isolate the cause.
+      • This is a reversible change with no risk.
+    Fix:          nvcheckup fix --id set-high-performance
 
 ────────────────────────────────────────────────────────────────────────
 
 == TOP ISSUES ==
 
-  1. [CRIT] Display Driver Resets Detected (Event ID 4101)
-  2. [WARN] nvlddmkm Driver Errors Detected
+  1. [CRIT] Display Driver Resets Detected (Event ID 4101) (92% confidence)
+  2. [WARN] nvlddmkm Driver Errors Detected (85% confidence)
 
 == RECOMMENDED NEXT STEPS ==
 
   1. Update to the latest NVIDIA driver (clean install recommended).
-  2. Check GPU temperatures — overheating can trigger driver resets.
-  3. If overclocked, revert GPU clocks to stock settings.
-  4. Test with Hardware-Accelerated GPU Scheduling (HAGS) toggled off.
-  5. Check PSU capacity and GPU power connectors.
+  2. Perform a clean driver reinstall using the NVIDIA installer's 'Clean Install' option.
+  3. Check GPU temperatures — overheating can trigger driver resets.
+  4. If persistent, consider using DDU (Display Driver Uninstaller) in Safe Mode before reinstalling.
+  5. If overclocked, revert GPU clocks to stock settings.
 
 ────────────────────────────────────────────────────────────────────────
 
 == PRIVACY & DATA ==
 
   This report was generated locally. No diagnostic data was transmitted.
-  Redaction was applied to remove usernames, hostnames, and IP addresses.
+  Redaction was applied to remove usernames, hostnames, home paths and IP addresses.
   The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation.
 
 ────────────────────────────────────────────────────────────────────────

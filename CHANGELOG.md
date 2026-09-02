@@ -29,7 +29,27 @@ the documentation was checked against what the binary actually does.
 - `Get-WinEvent` returning zero matching events was treated as a collector failure.
   Zero events is now an empty result, not an error.
 - HAGS and Game Mode registry values that are absent were shown as
-  "Unknown (Unknown)". They now read "Not set".
+  "Unknown (Unknown)". They now read "Default (not configured)", and the
+  analyzer no longer treats an absent HAGS key as "enabled".
+- Four-part version numbers were redacted as IP addresses: "NVIDIA App version
+  11.0.7.247 is installed." came out as "NVIDIA App version <public-ip-redacted>
+  is installed." Redaction now leaves a dotted quad alone when it follows
+  "version", "ver", "release", "build", "driver" or a glued "v", or when it has a
+  fifth component. Real addresses (`ping 8.8.8.8`, `gateway 192.168.1.1`,
+  traceroute hops) are still replaced.
+- The home-directory redaction matched the prefix of sibling profiles, turning
+  `C:\Users\alice2\...` into `<home>2\...` for user `alice`. The match must now end
+  at a path separator, a delimiter, or the end of the text.
+- `self-test`'s Elevation row is informational. Running without admin/root is
+  reported as INFO together with the checks that degrade, not as a warning.
+- The DNS measurement reports the worst of three lookups instead of a single
+  sample, so a cached hit cannot mask a slow resolver.
+- `fix` and `undo` no longer create the journal directory for list and `--dry-run`
+  invocations. It is created, with owner-only permissions, only when a change is
+  actually applied or undone. List and dry-run output still print `Journal: <path>`.
+- The elevation hint shown by `fix` also recognises the raw "Access is denied"
+  text printed by `reg.exe` and `powercfg`, and `fix` uses the same elevation
+  check as the remediation engine instead of a separate probe.
 - The active power plan is read with `powercfg /getactivescheme`; the WMI
   `Win32_PowerPlan` class is unavailable on many systems.
 - CUDA toolkit/driver mismatch direction: a toolkit *newer* than the driver

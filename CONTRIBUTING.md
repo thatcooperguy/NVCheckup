@@ -26,6 +26,10 @@ it must never surprise the user, and it must be testable without a GPU.
   GOOS=windows go vet ./... && GOOS=windows go build ./cmd/nvcheckup
   ```
 
+- One test runs the real collectors end to end
+  (`internal/snapshot.TestCreate_RedactedSnapshotHasNoIdentity`, about 30 s).
+  It is skipped unless you set `NVCHECKUP_LIVE_TESTS=1`; run it on a machine
+  with an NVIDIA GPU before a release. `go test -short ./...` skips it as well.
 - `go test -race` needs a C toolchain. On Windows that usually means it does not
   work out of the box; run it on Linux or under WSL instead. CI runs the race
   detector on Ubuntu only.

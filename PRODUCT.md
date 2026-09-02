@@ -160,6 +160,7 @@ nvcheckup self-test
 | nvidia-smi accepts the thermal/PCIe query fields the collectors use | x | | |
 | Write permissions to current directory | x | | |
 | Python available (python3/python/py) | x | | |
+| Elevation (informational: lists the checks that degrade without admin/root) | x | | |
 | PowerShell available | | x | |
 | lspci available (for GPU enumeration) | | | x |
 | modinfo available (for module checks) | | | x |
@@ -233,8 +234,8 @@ NVCheckup collects roughly 60 data points through five collector packages (`comm
 
 | Data Point | Source | Notes |
 |------------|--------|-------|
-| HAGS state | Registry `HwSchMode` | 2=Enabled, 1=Disabled, absent="Not set" |
-| Game Mode state | Registry `AutoGameModeEnabled` | absent="Not set" |
+| HAGS state | Registry `HwSchMode` | 2=Enabled, 1=Disabled, absent="Default (not configured)" |
+| Game Mode state | Registry `AutoGameModeEnabled` | absent="Default (not configured)" |
 | Active power plan | `powercfg /getactivescheme` | WMI `Win32_PowerPlan` is unavailable on many systems |
 | Monitor resolution/refresh | WMI `Win32_VideoController` | Per-adapter |
 | Event ID 4101 (driver resets) | `Get-WinEvent` System log | Last 30 days, up to 50 events; zero matches is an empty result, not an error |
@@ -307,7 +308,7 @@ Xbox Game Bar, Discord, MSI Afterburner, RivaTuner Statistics Server (RTSS), OBS
 | Interface name and type, Wi-Fi band and signal | `netsh wlan show interfaces` / `iw` / `nmcli` | Type derived from the interface, not from the word "disconnected" |
 | Latency, jitter, packet loss | `ping 1.1.1.1` (10 echoes) | |
 | Traceroute hops | `tracert` / `traceroute 1.1.1.1` | |
-| DNS resolution time | In-process `net.Resolver` lookup of `google.com` | Measures the lookup only, not process start-up |
+| DNS resolution time | In-process `net.Resolver` lookup of `google.com`, three attempts | Measures the lookup only, not process start-up; the slowest of the three is reported |
 
 ---
 
@@ -448,13 +449,16 @@ Passwords, tokens, API keys, browser data, SSH keys, clipboard contents, process
 
 | Pattern | Replacement |
 |---------|-------------|
-| Username in file paths (`C:\Users\name\...`) | `C:\Users\<user>\...` |
+| Your home directory (`C:\Users\you\...`, `/home/you/...`) | `<home>\...` |
+| Username in other profile paths (`C:\Users\name\...`) | `C:\Users\<user>\...` |
 | Username standalone references | `<user>` |
 | Machine hostname | `<host>` |
-| Home directory full path | `<home>` |
 | Public IPv4 addresses | `<public-ip-redacted>` |
 | Private/LAN IPv4 addresses | `<lan-ip>` |
 | Email addresses | `<email-redacted>` |
+| Wi-Fi SSIDs | `SSID: <redacted>` |
+
+Four-part version numbers such as `11.0.7.247` (NVIDIA App) or `32.0.101.6078` (a driver) are recognised by the word that introduces them and are not treated as IP addresses. The home-directory match ends at a path separator, so a sibling profile such as `C:\Users\alice2` is never mistaken for `C:\Users\alice`.
 
 Redaction is applied to: hostname, summary block, GPU bus IDs, nvidia-smi output, nvidia-smi path, all finding evidence strings, all collector error messages, Linux libcuda path, Linux journal/dmesg snippets, AI nvcc path, all Python environment paths, and network hop addresses.
 
