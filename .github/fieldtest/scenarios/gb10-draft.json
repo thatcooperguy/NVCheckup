@@ -1,5 +1,5 @@
 {
-  "description": "DGX Spark Founders Edition (GB10) on DGX OS 7.5.0 / OTA2607, idle. One NVIDIA GB10 at 0000000F:01:00.0 with memory.total/free/used, fan.speed and power.limit = [N/A] (expected), PCIe misreported as Gen1 x1 (GPU is on-package over NVLink-C2C), compute_cap 12.1, 128 GB LPDDR5X visible as 119.7 GiB. Healthy: expect dgx-spark-detected + unified-memory-nvsmi-expected; forbidden: low-vram, pcie-*, fan-not-spinning, gpu-power-cap, gpu-clock-slowdown, no-nvidia-gpu, driver-not-detected, nvidia-smi-missing, jetson-detected, dgx-spark-gsp-init-failure, dgx-spark-ota-torn, dgx-spark-foreign-driver-packages, cx7-not-enumerated. Idle clocks, event-reason mask, uuid and swap size are plausible placeholders pending a real capture; other values are verbatim from field reports.",
+  "description": "DGX Spark Founders Edition (GB10) on DGX OS 7.5.0 / OTA2607, idle. One NVIDIA GB10 at 0000000F:01:00.0 with memory.total/free/used, fan.speed and power.limit = [N/A] (expected), PCIe misreported as Gen1 x1 (GPU is on-package over NVLink-C2C; spec 3.1 flag rules A/B must set pcie.on_package and gpus[0].on_package true whichever detection row matched, so pcie-width-reduced cannot fire), compute_cap 12.1, 128 GB LPDDR5X visible as 119.7 GiB. Healthy: expect dgx-spark-detected + unified-memory-nvsmi-expected; assert platform.unified_memory == true, pcie.on_package == true, gpus[0].memory_reporting == not-supported, every finding has an impact value; forbidden: low-vram, pcie-*, fan-not-spinning, gpu-power-cap, gpu-clock-slowdown, no-nvidia-gpu, driver-not-detected, nvidia-smi-missing, jetson-detected, dgx-spark-gsp-init-failure, dgx-spark-ota-torn, dgx-spark-foreign-driver-packages (the dpkg list deliberately includes nvidia-dkms-580-open, a placeholder for the nvidia-driver-580-open metapackage dependency pending field confirmation, to prove the exclusion), unified-memory-swap-in-use (swap unused), gb10-logless-hard-poweroff, cx7-not-enumerated. Idle clocks, event-reason mask, uuid, swap size and the dkms line are plausible placeholders pending a real capture; other values are verbatim from field reports.",
   "driver": "580.159.03",
   "cuda": "13.0",
   "gpus": [
@@ -84,6 +84,7 @@
   ],
   "dpkg_lines": [
     "ii  nvidia-driver-580-open  580.159.03-0ubuntu0.24.04.1  arm64  NVIDIA driver (open kernel) metapackage",
+    "ii  nvidia-dkms-580-open  580.159.03-0ubuntu0.24.04.1  arm64  NVIDIA DKMS package (open kernel)",
     "ii  nvidia-firmware-580-580.159.03  580.159.03-0ubuntu0.24.04.1  arm64  Firmware files used by the kernel module",
     "ii  linux-modules-nvidia-580-open-6.17.0-1026-nvidia  6.17.0-1026.26+3  arm64  Linux kernel nvidia modules",
     "ii  nvidia-persistenced  580.159.03-0ubuntu0.24.04.1  arm64  daemon to maintain GPU application state",

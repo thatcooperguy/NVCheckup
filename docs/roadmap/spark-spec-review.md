@@ -106,3 +106,7 @@
 - rtx-spark-detected: source admin.pci-ids.ucw.cz/read/PC/10de/2e03 is not in section 13.
 - Spec 2.1 Diagnostics: thermal codes MODS-020000610139 / 082-000-1-020000600139 (cited S15/S16 collectively; fine if S16 contains them, otherwise mark).
 - Spec 7.3 Nemotron-3-Super '88 layers (8 attention)' and KV '~8 KiB attention + Mamba state' (S81 blog is the only source).
+
+## Re-check of v2 (2026-09-02) and v2.1 fixes
+
+The re-check found no remaining high issue; the five v1 highs, the arithmetic and all 127 source ids were confirmed. Two medium and six low items were fixed in v2.1: the platform-detection placement was split into `DetectPlatform` (phase 1, files only) and `ApplyPlatformFlags` (after GPU/PCIe collection); the advisory marker is defined as the word `Advisory` at the start of a step and the eight `Advisory (...)` variants were normalised to `Advisory: (...)`; `unified-memory-oom-events` and `dgx-spark-cublas-batch-bug` are `irreversible` (their step is a non-rollbackable OTA); four package/sysctl steps gained the Advisory prefix and the cuDNN step a revert; the 2e12 lspci capture is attributed to S23/S12; the RTX Spark developer-preview trigger matches only the trailing `16.1600`; the firmware version decoding is stated as major(8).minor(16).patch(8) pending an fwupdmgr capture.
