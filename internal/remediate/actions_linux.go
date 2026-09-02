@@ -113,7 +113,7 @@ func (e *Engine) actionBlacklistNouveau() (output, undoInfo string, err error) {
 		// did not happen). Keep the file, still rebuild below.
 		undoInfo = existing
 	default:
-		if verr := validateNouveauContent(existing); verr != nil {
+		if verr := checkNouveauRestorable(existing); verr != nil {
 			return "", "", fmt.Errorf("refusing to overwrite %s: it already exists with content nvcheckup could not safely restore on undo (%v). Edit it manually", nouveauBlacklistPath, verr)
 		}
 		undoInfo = existing
@@ -237,13 +237,22 @@ func (e *Engine) inspectBlacklistNouveau() (inspection, error) {
 	}
 
 	insp := inspection{UndoInfo: absentSentinel}
-	if absent {
+	restorable := true
+	switch {
+	case absent:
 		insp.Current = fmt.Sprintf("%s does not exist; %s", nouveauBlacklistPath, evidence)
 		insp.UndoCommands = []string{"rm " + nouveauBlacklistPath}
-	} else {
+	case existing == nouveauBlacklistContent || checkNouveauRestorable(existing) == nil:
 		insp.UndoInfo = existing
 		insp.Current = fmt.Sprintf("%s exists (%d bytes); %s", nouveauBlacklistPath, len(existing), evidence)
 		insp.UndoCommands = []string{"restore previous content of " + nouveauBlacklistPath}
+	default:
+		// Apply will refuse rather than overwrite something it cannot put
+		// back, so there is nothing to record and no undo to describe.
+		restorable = false
+		insp.UndoInfo = ""
+		insp.Current = fmt.Sprintf("%s exists (%d bytes) but its existing content is not restorable; apply will be refused. %s",
+			nouveauBlacklistPath, len(existing), evidence)
 	}
 
 	insp.ApplyCommands = []string{
@@ -253,7 +262,9 @@ func (e *Engine) inspectBlacklistNouveau() (inspection, error) {
 	if tool, found := detectInitramfsTool(lookPath); found {
 		rebuild := cmdString(tool.Name, tool.Args...)
 		insp.ApplyCommands = append(insp.ApplyCommands, rebuild)
-		insp.UndoCommands = append(insp.UndoCommands, rebuild)
+		if restorable {
+			insp.UndoCommands = append(insp.UndoCommands, rebuild)
+		}
 	} else {
 		insp.ApplyCommands = append(insp.ApplyCommands, "(no initramfs tool found; manual rebuild needed)")
 	}
@@ -281,35 +292,8 @@ func (e *Engine) inspectUpdateLdconfig() (inspection, error) {
 	}, nil
 }
 
-// getAvailableActions returns the list of remediation actions available on Linux.
-// Risk labels and descriptions must stay in sync with knowledge/remediations.json.
+// getAvailableActions returns the remediation actions available on Linux:
+// the catalog entries (see catalog.go) whose Platform is "linux".
 func getAvailableActions() []types.RemediationAction {
-	return []types.RemediationAction{
-		{
-			ID:          "blacklist-nouveau",
-			Title:       "Blacklist nouveau driver",
-			Description: "Writes " + nouveauBlacklistPath + " so the open-source nouveau driver stops loading, then rebuilds the initramfs. Refused unless an NVIDIA driver is installed, because blacklisting nouveau without a replacement can leave the system without a working display.",
-			DryRunDesc:  "Would write " + nouveauBlacklistPath + " ('blacklist nouveau', 'options nouveau modeset=0') and run update-initramfs -u, dracut -f, or mkinitcpio -P.",
-			UndoDesc:    "Remove the file (or restore its previous content) and rebuild the initramfs again. Reboot required.",
-			Risk:        types.RiskMedium,
-			NeedsAdmin:  true,
-			NeedsReboot: true,
-			Platform:    "linux",
-			Category:    "driver",
-			RelatedFind: "nouveau driver is loaded",
-		},
-		{
-			ID:          "update-ldconfig",
-			Title:       "Refresh shared library cache (ldconfig)",
-			Description: "Runs ldconfig to refresh the dynamic linker cache so libcuda.so and libnvidia-ml.so can be found after a driver install.",
-			DryRunDesc:  "Would run: ldconfig",
-			UndoDesc:    "Nothing to restore; ldconfig only rebuilds the cache from existing library paths.",
-			Risk:        types.RiskLow,
-			NeedsAdmin:  true,
-			NeedsReboot: false,
-			Platform:    "linux",
-			Category:    "driver",
-			RelatedFind: "libcuda.so not found in library path",
-		},
-	}
+	return catalogForPlatform("linux")
 }

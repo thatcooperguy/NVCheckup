@@ -310,8 +310,10 @@ func (e *Engine) Undo(entry types.ChangeJournalEntry) error {
 
 	// Update the journal with the undo status: find the matching entry by
 	// action ID and timestamp.
+	matched := false
 	for i := range entries {
 		if entries[i].ActionID == entry.ActionID && entries[i].AppliedAt.Equal(entry.AppliedAt) {
+			matched = true
 			entries[i].UndoneAt = time.Now()
 			entries[i].UndoSuccess = (undoErr == nil)
 			if undoErr != nil {
@@ -321,6 +323,19 @@ func (e *Engine) Undo(entry types.ChangeJournalEntry) error {
 			}
 			break
 		}
+	}
+
+	if !matched {
+		// The caller handed us an entry the journal does not contain (edited,
+		// rotated, or from another machine). Rewriting the file would only
+		// re-serialize what is already there, so leave it alone and make the
+		// mismatch visible together with what the undo actually did.
+		outcome := "the undo commands ran successfully"
+		if undoErr != nil {
+			outcome = "the undo commands failed: " + undoErr.Error()
+		}
+		return errors.Join(undoErr, fmt.Errorf("%s, but no journal entry matched action %q applied at %s; the journal was left unchanged and does not record this undo",
+			outcome, entry.ActionID, entry.AppliedAt.Format(time.RFC3339)))
 	}
 
 	if writeErr := journal.Write(entries); writeErr != nil {

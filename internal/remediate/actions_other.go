@@ -8,8 +8,8 @@ import (
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// getAvailableActions returns nil on unsupported platforms. Remediation actions
-// are only available on Windows and Linux.
+// getAvailableActions returns nil on unsupported platforms. Every catalog
+// entry (see catalog.go) targets Windows or Linux.
 func getAvailableActions() []types.RemediationAction {
 	return nil
 }

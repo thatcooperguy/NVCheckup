@@ -405,3 +405,98 @@ func TestCmdString(t *testing.T) {
 		t.Errorf("cmdString = %q, want %q", got, want)
 	}
 }
+
+// mockSafeAction returns a platform action whose undo runs only through the
+// executor (no direct file writes), or skips when there is none.
+func mockSafeAction(t *testing.T) types.RemediationAction {
+	t.Helper()
+	for _, a := range getAvailableActions() {
+		if a.ID != "blacklist-nouveau" {
+			return a
+		}
+	}
+	t.Skip("no executor-only action on this platform")
+	return types.RemediationAction{}
+}
+
+func TestUndo_NoMatchingJournalEntry_LeavesJournalAlone(t *testing.T) {
+	setElevation(t, true)
+	def := mockSafeAction(t)
+	dir := t.TempDir()
+	mock := &MockExecutor{}
+	e := NewEngine(mock, dir, false)
+
+	// An entry the (empty) journal never recorded.
+	entry := types.ChangeJournalEntry{ActionID: def.ID, AppliedAt: time.Now(), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	err := e.Undo(entry)
+	if err == nil {
+		t.Fatal("Undo of an entry the journal does not contain must return an error")
+	}
+	if !strings.Contains(err.Error(), "no journal entry matched") {
+		t.Errorf("error should explain the mismatch, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ran successfully") {
+		t.Errorf("error should include the undo outcome, got %v", err)
+	}
+	if len(mock.commands) == 0 {
+		t.Error("the undo itself should still have run through the executor")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, journalFilename)); !os.IsNotExist(statErr) {
+		t.Errorf("journal must not be created/rewritten when nothing matched (stat err = %v)", statErr)
+	}
+}
+
+func TestUndo_NoMatchingJournalEntry_ReportsUndoFailureToo(t *testing.T) {
+	setElevation(t, true)
+	def := mockSafeAction(t)
+	dir := t.TempDir()
+	// Plant an unrelated, valid entry so the journal exists and can be checked for changes.
+	other := types.ChangeJournalEntry{ActionID: def.ID, Title: def.Title, AppliedAt: time.Now().Add(-time.Hour), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	if err := NewJournal(dir).Append(other); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, journalFilename))
+
+	mock := &MockExecutor{err: errors.New("exit status 1"), output: "boom"}
+	e := NewEngine(mock, dir, false)
+	entry := types.ChangeJournalEntry{ActionID: def.ID, AppliedAt: time.Now(), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	err := e.Undo(entry)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "no journal entry matched") || !strings.Contains(err.Error(), "failed") {
+		t.Errorf("error should carry both the undo failure and the mismatch, got %v", err)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, journalFilename))
+	if string(before) != string(after) {
+		t.Error("journal must be left byte-for-byte unchanged when nothing matched")
+	}
+}
+
+func TestUndo_MatchingEntryIsMarkedUndone(t *testing.T) {
+	setElevation(t, true)
+	def := mockSafeAction(t)
+	dir := t.TempDir()
+	entry := types.ChangeJournalEntry{ActionID: def.ID, Title: def.Title, AppliedAt: time.Now().Add(-time.Minute), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	if err := NewJournal(dir).Append(entry); err != nil {
+		t.Fatal(err)
+	}
+	// Read it back so AppliedAt has exactly the precision the journal stores.
+	entries, err := NewJournal(dir).Read()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("journal read: %v (%d entries)", err, len(entries))
+	}
+
+	mock := &MockExecutor{}
+	e := NewEngine(mock, dir, false)
+	if err := e.Undo(entries[0]); err != nil {
+		t.Fatalf("Undo failed: %v", err)
+	}
+	entries, err = NewJournal(dir).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].UndoneAt.IsZero() || !entries[0].UndoSuccess || entries[0].UndoOutput != "successfully undone" {
+		t.Errorf("journal entry should be marked undone, got %+v", entries[0])
+	}
+}

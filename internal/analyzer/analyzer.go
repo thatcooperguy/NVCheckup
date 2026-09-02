@@ -1,8 +1,11 @@
 // Package analyzer produces actionable diagnostic findings from collected data.
 //
-// Every finding carries a stable kebab-case ID (see knowledge/rules.json) so
-// that reports can be diffed across runs and so 'nvcheckup fix --id' can refer
-// to the rule that produced a remediation.
+// Every finding carries a stable kebab-case Finding.ID so that reports can be
+// diffed across runs and matched to the rule entries in knowledge/rules.json.
+// Remediation is addressed separately: a finding that has a fix carries the
+// RemediationAction from the remediate catalog, and it is that action's
+// RemediationAction.ID (for example "disable-hags") that 'nvcheckup fix --id'
+// and 'nvcheckup undo' refer to, never the Finding.ID.
 package analyzer
 
 import (
@@ -11,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/remediate"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -24,7 +28,9 @@ import (
 //	Displays      : gaming, streaming, full
 //	AI / CUDA     : ai, creator, full
 //	WSL           : ai, full
-//	Linux info    : every mode (Xid / llvmpipe only in gaming, ai, full)
+//	Linux info    : every mode (modules, libcuda, DKMS and Secure Boot are
+//	                analyzed in every mode; Xid / llvmpipe / Wayland only in
+//	                gaming, ai, full)
 //	Network       : only when --network was passed (report.Network is nil otherwise)
 func Analyze(report *types.Report, mode types.RunMode) {
 	var findings []types.Finding
@@ -45,6 +51,7 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzeOverlays(report)...)
 		findings = append(findings, analyzeDisplay(report)...)
 		findings = append(findings, analyzeLinuxModules(report)...)
+		findings = append(findings, analyzeSecureBoot(report)...)
 		findings = append(findings, analyzeLinuxAdvanced(report)...)
 	case types.ModeStreaming:
 		findings = append(findings, analyzeWindowsGaming(report)...)
@@ -52,6 +59,8 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzeOverlays(report)...)
 		findings = append(findings, analyzeStreaming(report)...)
 		findings = append(findings, analyzeDisplay(report)...)
+		findings = append(findings, analyzeLinuxModules(report)...)
+		findings = append(findings, analyzeSecureBoot(report)...)
 	case types.ModeAI:
 		findings = append(findings, analyzeLinuxModules(report)...)
 		findings = append(findings, analyzeSecureBoot(report)...)
@@ -61,8 +70,11 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzeWSL(report)...)
 		findings = append(findings, analyzeLinuxAdvanced(report)...)
 	case types.ModeCreator:
-		// Creator collects Windows info and AI info but not displays or WSL.
+		// Creator collects Windows info, Linux info and AI info but not
+		// displays or WSL.
 		findings = append(findings, analyzeWindowsGaming(report)...)
+		findings = append(findings, analyzeLinuxModules(report)...)
+		findings = append(findings, analyzeSecureBoot(report)...)
 		findings = append(findings, analyzeCUDA(report)...)
 		findings = append(findings, analyzePyTorch(report)...)
 		findings = append(findings, analyzeTensorFlow(report)...)
@@ -91,6 +103,19 @@ func Analyze(report *types.Report, mode types.RunMode) {
 }
 
 // ── GPU Presence ──────────────────────────────────────────────────────
+
+// remediationFor returns the remediate catalog definition of an action so
+// the finding carries exactly the title, risk and descriptions the engine
+// uses (knowledge/remediations.json is the canonical text for both). It
+// returns nil for an unknown ID; TestFindingRemediation_EqualsCatalogEntry
+// keeps the IDs used here honest.
+func remediationFor(id string) *types.RemediationAction {
+	a, ok := remediate.ActionByID(id)
+	if !ok {
+		return nil
+	}
+	return &a
+}
 
 func analyzeGPUPresence(report *types.Report) []types.Finding {
 	var findings []types.Finding
@@ -277,11 +302,26 @@ func parsePState(s string) (int, bool) {
 	return n, true
 }
 
+// reasonsMentionThermal reports whether any decoded throttle reason names a
+// thermal slowdown ("sw_thermal_slowdown", "hw_thermal_slowdown", ...).
+func reasonsMentionThermal(reasons []string) bool {
+	for _, r := range reasons {
+		if strings.Contains(strings.ToLower(r), "thermal") {
+			return true
+		}
+	}
+	return false
+}
+
 // thermalState resolves the collector's flags against the raw bitmask. When
 // the mask is available it wins, because older collectors set SlowdownActive
 // for gpu_idle and ThermalThrottle for any temperature >= 85C.
+//
+// Without a usable mask, the collector's ThermalThrottle flag is only trusted
+// when a decoded reason actually says "thermal"; otherwise the flag may just
+// be that temperature heuristic, and the temperature thresholds in
+// analyzeThermal decide on their own.
 func thermalState(t *types.ThermalInfo) (thermal, slowdown bool, reasons []string) {
-	thermal = t.ThermalThrottle
 	slowdown = t.SlowdownActive
 	reasons = t.ThrottleReasons
 
@@ -291,7 +331,10 @@ func thermalState(t *types.ThermalInfo) (thermal, slowdown bool, reasons []strin
 		if len(reasons) == 0 {
 			reasons = decodeThrottleMask(mask & throttleSlowdownBits)
 		}
+		return thermal, slowdown, reasons
 	}
+
+	thermal = t.ThermalThrottle && reasonsMentionThermal(reasons)
 	return thermal, slowdown, reasons
 }
 
@@ -1123,19 +1166,9 @@ func analyzeWindowsPerfSettings(report *types.Report) []types.Finding {
 				"Open Power Options and switch to 'High Performance' for testing.",
 				"This is a reversible change with no risk.",
 			},
-			Category:   "performance",
-			Confidence: 40,
-			Remediation: &types.RemediationAction{
-				ID:          "set-high-performance",
-				Title:       "Switch Power Plan to High Performance",
-				Risk:        types.RiskLow,
-				Description: "Changes the Windows power plan to High Performance using powercfg.",
-				DryRunDesc:  "Would run: powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
-				UndoDesc:    "Restore the previous power plan.",
-				Platform:    "windows",
-				NeedsReboot: false,
-				NeedsAdmin:  true,
-			},
+			Category:    "performance",
+			Confidence:  40,
+			Remediation: remediationFor("set-high-performance"),
 		})
 	}
 
@@ -1152,19 +1185,9 @@ func analyzeWindowsPerfSettings(report *types.Report) []types.Finding {
 				"If experiencing stutter or instability, try disabling HAGS in Settings > System > Display > Graphics > Change default graphics settings.",
 				"This is a reversible change.",
 			},
-			Category:   "performance",
-			Confidence: 45,
-			Remediation: &types.RemediationAction{
-				ID:          "disable-hags",
-				Title:       "Disable Hardware-Accelerated GPU Scheduling",
-				Risk:        types.RiskLow,
-				Description: "Sets the HAGS registry key to Disabled.",
-				DryRunDesc:  "Would set registry HwSchMode to 1 (Disabled).",
-				UndoDesc:    "Restore HwSchMode to 2 (Enabled). Requires reboot.",
-				Platform:    "windows",
-				NeedsReboot: true,
-				NeedsAdmin:  true,
-			},
+			Category:    "performance",
+			Confidence:  45,
+			Remediation: remediationFor("disable-hags"),
 		})
 	}
 
@@ -1288,19 +1311,9 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"Fedora: sudo dnf install akmod-nvidia",
 				"Arch: sudo pacman -S nvidia",
 			},
-			Category:   "driver",
-			Confidence: 95,
-			Remediation: &types.RemediationAction{
-				ID:          "blacklist-nouveau",
-				Title:       "Blacklist Nouveau Driver",
-				Risk:        types.RiskMedium,
-				Description: "Creates /etc/modprobe.d/blacklist-nouveau.conf to prevent nouveau from loading.",
-				DryRunDesc:  "Would create /etc/modprobe.d/blacklist-nouveau.conf with blacklist entries.",
-				UndoDesc:    "Remove /etc/modprobe.d/blacklist-nouveau.conf and rebuild initramfs.",
-				Platform:    "linux",
-				NeedsReboot: true,
-				NeedsAdmin:  true,
-			},
+			Category:    "driver",
+			Confidence:  95,
+			Remediation: remediationFor("blacklist-nouveau"),
 		})
 	}
 
@@ -1356,19 +1369,9 @@ func analyzeLinuxModules(report *types.Report) []types.Finding {
 				"Run 'sudo ldconfig' to update the library cache.",
 				"Check LD_LIBRARY_PATH if using a non-standard installation.",
 			},
-			Category:   "cuda",
-			Confidence: 85,
-			Remediation: &types.RemediationAction{
-				ID:          "update-ldconfig",
-				Title:       "Refresh Library Cache (ldconfig)",
-				Risk:        types.RiskLow,
-				Description: "Runs ldconfig to refresh the shared library cache.",
-				DryRunDesc:  "Would run: sudo ldconfig",
-				UndoDesc:    "No undo needed — ldconfig only refreshes the cache.",
-				Platform:    "linux",
-				NeedsReboot: false,
-				NeedsAdmin:  true,
-			},
+			Category:    "cuda",
+			Confidence:  85,
+			Remediation: remediationFor("update-ldconfig"),
 		})
 	}
 
@@ -1483,14 +1486,42 @@ func cudaNewerThan(a, b string) bool {
 	return an > bn
 }
 
-// torchWheelTag turns a driver CUDA version like "12.4" into the PyTorch
-// wheel index suffix "cu124". Returns "" when the version is unparseable.
+// torchWheelTags lists the CUDA index tags PyTorch actually publishes wheels
+// for (https://download.pytorch.org/whl/<tag>), oldest first. The list is a
+// snapshot; torchWheelHintSuffix points the user at the live list.
+var torchWheelTags = []struct {
+	major, minor int
+	tag          string
+}{
+	{11, 8, "cu118"},
+	{12, 1, "cu121"},
+	{12, 4, "cu124"},
+	{12, 6, "cu126"},
+	{12, 8, "cu128"},
+	{13, 0, "cu130"},
+}
+
+// torchWheelHintSuffix is appended to the pip hint because torchWheelTags is
+// a snapshot and PyTorch adds and retires tags over time.
+const torchWheelHintSuffix = " or the nearest tag listed at https://pytorch.org/get-started/locally/"
+
+// torchWheelTag maps a driver CUDA version like "12.5" onto the newest
+// published PyTorch wheel tag that is <= that version ("cu124"). Building the
+// tag mechanically ("cu125") would point at an index that does not exist.
+// Returns "" when the version is unparseable or older than every published
+// tag.
 func torchWheelTag(driverCUDA string) string {
 	major, minor, ok := parseMajorMinor(driverCUDA)
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("cu%d%d", major, minor)
+	best := ""
+	for _, t := range torchWheelTags {
+		if t.major < major || (t.major == major && t.minor <= minor) {
+			best = t.tag
+		}
+	}
+	return best
 }
 
 // cudaMajorNewerThan reports whether CUDA version a has a strictly newer
@@ -1580,7 +1611,7 @@ func analyzeCUDA(report *types.Report) []types.Finding {
 		pt := report.AI.PyTorchInfo
 		hint := "Reinstall a PyTorch wheel built for CUDA " + report.Driver.CUDAVersion + " or older from https://pytorch.org/get-started/locally/"
 		if tag := torchWheelTag(report.Driver.CUDAVersion); tag != "" {
-			hint = "Reinstall: pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/" + tag
+			hint = "Reinstall: pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/" + tag + torchWheelHintSuffix
 		}
 		findings = append(findings, types.Finding{
 			ID:       "pytorch-cuda-newer-than-driver",
