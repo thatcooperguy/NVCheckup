@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [Unreleased]
-
 ### Removed
 - The experimental Rust companion (`rust/`). It implemented 7 of the analyzer's rules, was never built in CI or shipped, and had already diverged from the Go analyzer. The knowledge pack under `knowledge/` stays as a reference for contributors and external tooling. The tree is in git history at tag `v0.2.1` if anyone wants to revive it.
+
+### Fixed
+- Network: all ping probes lost while DNS resolution works is now reported as INFO `icmp-filtered` (a firewall, VPN or cloud network dropping ICMP) instead of a packet-loss WARN. Found by the first Linux field-test run: GitHub's runners block outbound ICMP.
 
 ### Added
 - `linux-fieldtest.yml` workflow: runs the real binary end to end on Ubuntu 22.04/24.04 x86_64 and Ubuntu 24.04 ARM64 GitHub runners (no GPU) and asserts exit codes, report shape, expected findings, redaction and inert fix/undo behaviour.

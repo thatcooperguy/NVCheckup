@@ -441,6 +441,15 @@
       "description": "Network jitter exceeds 15ms — may cause lag and stutter in online applications. Only evaluated when --network was passed."
     },
     {
+      "id": "icmp-filtered",
+      "title": "Ping Blocked but Network Reachable",
+      "category": "network",
+      "severity": "INFO",
+      "base_confidence": 70,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Every ping probe was lost while DNS resolution succeeded, so ICMP is filtered by a firewall, VPN or cloud network rather than the link losing packets. Only evaluated when --network was passed."
+    },
+    {
       "id": "packet-loss",
       "title": "Packet Loss Detected",
       "category": "network",

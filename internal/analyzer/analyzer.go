@@ -815,8 +815,26 @@ func analyzeNetwork(report *types.Report) []types.Finding {
 		})
 	}
 
-	// Packet loss
-	if n.PacketLossPct > 0 {
+	// Every probe lost while DNS resolution worked: the path is up and ICMP is
+	// being dropped by a firewall, VPN or cloud network (GitHub's runners, most
+	// corporate VPNs). That is not packet loss and must not read as a fault.
+	if pinged && n.PacketLossPct >= 100 && n.DNSTimeMs > 0 {
+		hasIssue = true
+		findings = append(findings, types.Finding{
+			ID:           "icmp-filtered",
+			Severity:     types.SeverityInfo,
+			Title:        "Ping Blocked but Network Reachable",
+			Evidence:     fmt.Sprintf("All ping probes to 1.1.1.1 were lost, yet DNS resolution succeeded in %.1f ms. Interface: %s (%s).", n.DNSTimeMs, n.InterfaceName, n.InterfaceType),
+			WhyItMatters: "ICMP echo is filtered somewhere on the path (firewall, VPN, or cloud network policy), so latency, jitter and loss could not be measured. The network itself is reachable.",
+			NextSteps: []string{
+				"If you need the latency and loss numbers, re-run from a network that permits ping, or off the VPN.",
+				"No action is needed for gaming or streaming unless you also see lag; ICMP filtering by itself is harmless.",
+			},
+			Category:   "network",
+			Confidence: 70,
+		})
+	} else if n.PacketLossPct > 0 {
+		// Packet loss
 		hasIssue = true
 		sev := types.SeverityWarn
 		confidence := 90

@@ -639,10 +639,36 @@ func TestAnalyzeNetwork_HopsWithoutPingIsNotHealthy(t *testing.T) {
 	}
 
 	// Loss with zero latency is still ping evidence (every probe was lost).
+	// With DNS also failing, that really is packet loss.
 	lossOnly := &types.Report{Network: &types.NetworkInfo{PacketLossPct: 100, Hops: []types.HopInfo{{Number: 1}}}}
 	got := analyzeNetwork(lossOnly)
 	if findByID(got, "packet-loss") == nil || findByID(got, "network-ping-unavailable") != nil {
 		t.Errorf("100%% loss is ping evidence, got %v", ids(got))
+	}
+}
+
+// Every probe lost while DNS worked is ICMP filtering (GitHub runners, most
+// corporate VPNs), not packet loss. This was observed live on ubuntu-24.04 and
+// ubuntu-24.04-arm runners, where the analyzer used to raise a WARN.
+func TestAnalyzeNetwork_AllLostWithWorkingDNSIsICMPFiltered(t *testing.T) {
+	filtered := &types.Report{Network: &types.NetworkInfo{InterfaceName: "eth0", InterfaceType: "ethernet", PacketLossPct: 100, DNSTimeMs: 22.33}}
+	got := analyzeNetwork(filtered)
+	f := findByID(got, "icmp-filtered")
+	if f == nil {
+		t.Fatalf("expected icmp-filtered, got %v", ids(got))
+	}
+	if f.Severity != types.SeverityInfo {
+		t.Errorf("icmp-filtered must be INFO, got %s", f.Severity)
+	}
+	if findByID(got, "packet-loss") != nil || findByID(got, "network-healthy") != nil {
+		t.Errorf("filtered ICMP must not be reported as packet loss or as healthy, got %v", ids(got))
+	}
+
+	// Partial loss with working DNS is still real packet loss.
+	partial := &types.Report{Network: &types.NetworkInfo{InterfaceName: "eth0", InterfaceType: "ethernet", LatencyMs: 12, PacketLossPct: 30, DNSTimeMs: 20}}
+	got = analyzeNetwork(partial)
+	if findByID(got, "packet-loss") == nil || findByID(got, "icmp-filtered") != nil {
+		t.Errorf("30%% loss is packet loss, got %v", ids(got))
 	}
 }
 

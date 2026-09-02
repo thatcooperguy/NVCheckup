@@ -126,6 +126,8 @@ func ruleCorpus() []struct {
 		// network healthy; traceroute without ping
 		full(&types.Report{GPUs: nv, Driver: drv, Network: &types.NetworkInfo{LatencyMs: 10}}),
 		full(&types.Report{GPUs: nv, Driver: drv, Network: &types.NetworkInfo{Hops: []types.HopInfo{{Number: 1, LatencyMs: 2}}}}),
+		// every ping lost while DNS works: ICMP filtered (GitHub runners, VPNs)
+		full(&types.Report{GPUs: nv, Driver: drv, Network: &types.NetworkInfo{InterfaceName: "eth0", InterfaceType: "ethernet", PacketLossPct: 100, DNSTimeMs: 22}}),
 		// GeForce Experience rather than NVIDIA App
 		full(&types.Report{GPUs: nv, Driver: drv, Windows: &types.WindowsInfo{GFEVersion: "3.28"}}),
 	)
