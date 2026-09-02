@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -104,7 +105,9 @@ func collectCUDAToolkit(info *types.AIInfo, errs *[]types.CollectorError, timeou
 
 	// On Linux, follow /usr/local/cuda (through /etc/alternatives when present)
 	if runtime.GOOS == "linux" {
-		if target, err := filepath.EvalSymlinks(linuxCudaHome); err == nil {
+		// Through NVC_SIM_ROOT (spec section 10); the resolved target is
+		// already a real path and is used as such below.
+		if target, err := filepath.EvalSymlinks(common.SimPath(linuxCudaHome)); err == nil {
 			nvccPath := filepath.Join(target, "bin", "nvcc")
 			if _, err := os.Stat(nvccPath); err == nil {
 				if info.NvccPath == "" {
@@ -209,9 +212,15 @@ func cudnnHeaderCandidates() []string {
 		dirs = append(dirs, globPaths(filepath.Join(programFiles, "NVIDIA", "CUDNN", "v*", "include"))...)
 		dirs = append(dirs, globPaths(filepath.Join(programFiles, "NVIDIA", "CUDNN", "v*", "include", "*"))...)
 	} else {
-		dirs = append(dirs, "/usr/include", "/usr/local/cuda/include")
-		dirs = append(dirs, globPaths("/usr/local/cuda-*/include")...)
-		dirs = append(dirs, "/usr/include/x86_64-linux-gnu", "/usr/include/aarch64-linux-gnu")
+		// Mapped through NVC_SIM_ROOT once, here; every candidate below is
+		// therefore a real (already mapped) path and is read as is.
+		for _, d := range []string{"/usr/include", "/usr/local/cuda/include"} {
+			dirs = append(dirs, common.SimPath(d))
+		}
+		dirs = append(dirs, globPaths(common.SimPath("/usr/local/cuda-*/include"))...)
+		for _, d := range []string{"/usr/include/x86_64-linux-gnu", "/usr/include/aarch64-linux-gnu"} {
+			dirs = append(dirs, common.SimPath(d))
+		}
 	}
 
 	var files []string

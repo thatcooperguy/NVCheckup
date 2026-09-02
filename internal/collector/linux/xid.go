@@ -3,12 +3,12 @@
 package linux
 
 import (
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -159,7 +159,7 @@ func firstLineOf(s string) string {
 // into wall-clock time; now minus /proc/uptime is the fallback. A zero time
 // means the anchor is unknown and dmesg timestamps are left unset.
 func readBootTime() time.Time {
-	if data, err := os.ReadFile("/proc/stat"); err == nil {
+	if data, err := common.ReadSimFile("/proc/stat"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) == 2 && fields[0] == "btime" {
@@ -169,7 +169,7 @@ func readBootTime() time.Time {
 			}
 		}
 	}
-	if data, err := os.ReadFile("/proc/uptime"); err == nil {
+	if data, err := common.ReadSimFile("/proc/uptime"); err == nil {
 		fields := strings.Fields(string(data))
 		if len(fields) > 0 {
 			if up, err := strconv.ParseFloat(fields[0], 64); err == nil {

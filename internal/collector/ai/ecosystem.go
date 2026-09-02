@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	linuxCollector "github.com/thatcooperguy/nvcheckup/internal/collector/linux"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
@@ -47,16 +48,6 @@ var libcudartGlobs = []string{
 	"/usr/lib/aarch64-linux-gnu/libcudart.so.*",
 	"/usr/lib/x86_64-linux-gnu/libcudart.so.*",
 	"/usr/lib64/libcudart.so.*",
-}
-
-// simPath prefixes an absolute path with NVC_SIM_ROOT when set (spec section
-// 10). Local copy; the integrator may swap in the common helper.
-func simPath(p string) string {
-	root := os.Getenv("NVC_SIM_ROOT")
-	if root == "" {
-		return p
-	}
-	return strings.TrimRight(root, "/") + p
 }
 
 // CollectEcosystem gathers the AI software-ecosystem facts of EcosystemInfo.
@@ -338,7 +329,7 @@ func mergeLibcudart(existing []string, paths []string) []string {
 func collectLibcudart(info *types.EcosystemInfo) {
 	var paths []string
 	for _, g := range libcudartGlobs {
-		m, _ := filepath.Glob(simPath(g))
+		m, _ := filepath.Glob(common.SimPath(g))
 		paths = append(paths, m...)
 	}
 	info.LibcudartVersions = mergeLibcudart(info.LibcudartVersions, paths)
@@ -398,7 +389,7 @@ func pairImageArchitectures(refs []string, inspectOut string) []types.ContainerI
 }
 
 func collectDocker(info *types.EcosystemInfo, errs *[]types.CollectorError, timeout int) {
-	if data, err := os.ReadFile(simPath(dockerDaemonJSON)); err == nil {
+	if data, err := os.ReadFile(common.SimPath(dockerDaemonJSON)); err == nil {
 		runtimes, cdi, perr := parseDockerDaemonJSON(string(data))
 		if perr != nil {
 			*errs = append(*errs, types.CollectorError{Collector: "ai.ecosystem.docker", Error: "daemon.json does not parse: " + perr.Error()})
@@ -407,11 +398,11 @@ func collectDocker(info *types.EcosystemInfo, errs *[]types.CollectorError, time
 		info.DockerCDI = cdi
 	}
 	for _, f := range cdiSpecFiles {
-		if _, err := os.Stat(simPath(f)); err == nil {
+		if _, err := os.Stat(common.SimPath(f)); err == nil {
 			info.CDISpecPresent = true
 		}
 	}
-	if _, err := os.Stat(simPath(snapDockerDir)); err == nil {
+	if _, err := os.Stat(common.SimPath(snapDockerDir)); err == nil {
 		info.SnapDocker = true
 	} else if util.CommandExists("snap") {
 		r := util.RunCommand(timeout, "snap", "list", "docker")

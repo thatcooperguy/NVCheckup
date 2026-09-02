@@ -4,9 +4,9 @@ package linux
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -37,9 +37,10 @@ func CollectLinuxInfo(timeout int, includeLogs bool) (types.LinuxInfo, []types.C
 }
 
 func collectDistroInfo(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
-	r := util.RunCommand(timeout, "cat", "/etc/os-release")
-	if r.Err == nil {
-		for _, line := range strings.Split(r.Stdout, "\n") {
+	// Read through the NVC_SIM_ROOT mapping (spec section 10) rather than
+	// spawning cat, which would bypass the fixture tree.
+	if data, err := common.ReadSimFile("/etc/os-release"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
 			k, v := util.ParseKeyValue(line, "=")
 			v = strings.Trim(v, "\"")
 			switch k {
@@ -150,8 +151,11 @@ func collectKernelModules(info *types.LinuxInfo, errs *[]types.CollectorError, t
 	}
 }
 
+// collectDevNodes lists /dev/nvidia* through the NVC_SIM_ROOT mapping; the
+// recorded names are the logical device paths (common.SimGlob strips the
+// fixture root again), so the report reads the same on hardware and in CI.
 func collectDevNodes(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
-	matches, err := filepath.Glob("/dev/nvidia*")
+	matches, err := common.SimGlob("/dev/nvidia*")
 	if err == nil {
 		info.DevNvidiaNodes = matches
 	}
@@ -186,20 +190,29 @@ func collectLibCuda(info *types.LinuxInfo, errs *[]types.CollectorError, timeout
 		}
 	}
 
-	// Also check common locations
+	// Also check common locations (through NVC_SIM_ROOT; the logical path is
+	// what the report records). libcuda.so.1 is the soname the driver
+	// package actually installs; the unversioned link needs the -dev package.
 	if info.LibCudaPath == "" {
-		for _, path := range []string{
-			"/usr/lib/x86_64-linux-gnu/libcuda.so",
-			"/usr/lib64/libcuda.so",
-			"/usr/lib/aarch64-linux-gnu/libcuda.so",
-			"/usr/local/cuda/lib64/libcuda.so",
-		} {
-			if _, err := os.Stat(path); err == nil {
+		for _, path := range libcudaCandidates {
+			if common.SimFileExists(path) {
 				info.LibCudaPath = path
 				break
 			}
 		}
 	}
+}
+
+// libcudaCandidates are the well-known libcuda locations tried when the
+// dynamic linker cache has no entry (aarch64 first: DGX Spark / Jetson).
+var libcudaCandidates = []string{
+	"/usr/lib/aarch64-linux-gnu/libcuda.so.1",
+	"/usr/lib/aarch64-linux-gnu/libcuda.so",
+	"/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+	"/usr/lib/x86_64-linux-gnu/libcuda.so",
+	"/usr/lib64/libcuda.so.1",
+	"/usr/lib64/libcuda.so",
+	"/usr/local/cuda/lib64/libcuda.so",
 }
 
 // parseLdconfigLibcuda returns the path of the first libcuda.so entry in
@@ -239,8 +252,8 @@ func collectDKMS(info *types.LinuxInfo, errs *[]types.CollectorError, timeout in
 }
 
 func collectSecureBoot(info *types.LinuxInfo, errs *[]types.CollectorError, timeout int) {
-	// Check if UEFI
-	if _, err := os.Stat("/sys/firmware/efi"); err != nil {
+	// Check if UEFI (through NVC_SIM_ROOT, like common.CollectSystemInfo)
+	if !common.SimFileExists("/sys/firmware/efi") {
 		info.SecureBootState = "N/A (Legacy BIOS)"
 		return
 	}

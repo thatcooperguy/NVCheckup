@@ -1,11 +1,10 @@
 package wsl
 
 import (
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -43,14 +42,14 @@ func DetectWSL(timeout int) (types.WSLInfo, []types.CollectorError) {
 		return info, errs
 	}
 
-	// On Linux, check if we're inside WSL
-	// Check /proc/version for Microsoft/WSL indicators
-	r := util.RunCommand(timeout, "cat", "/proc/version")
-	if r.Err == nil {
-		version := strings.ToLower(r.Stdout)
+	// On Linux, check if we're inside WSL: /proc/version carries the
+	// Microsoft/WSL kernel tag. Read through the NVC_SIM_ROOT mapping (spec
+	// section 10) so the simulated scenarios control the answer.
+	if data, err := common.ReadSimFile("/proc/version"); err == nil {
+		version := strings.ToLower(string(data))
 		if strings.Contains(version, "microsoft") || strings.Contains(version, "wsl") {
 			info.IsWSL = true
-			info.KernelVersion = strings.TrimSpace(r.Stdout)
+			info.KernelVersion = strings.TrimSpace(string(data))
 		}
 	}
 
@@ -65,31 +64,43 @@ func DetectWSL(timeout int) (types.WSLInfo, []types.CollectorError) {
 	// enabled, WSLInterop-late.
 	info.WSLVersion = wslVersionFromProcVersion(info.KernelVersion)
 	if info.WSLVersion == "" {
-		if matches, _ := filepath.Glob(wslInteropGlob); len(matches) > 0 {
+		if matches, _ := common.SimGlob(wslInteropGlob); len(matches) > 0 {
 			info.WSLVersion = "2"
 		} else {
 			info.WSLVersion = "1"
 		}
 	}
 
-	// Distro info
-	r = util.RunCommand(timeout, "sh", "-c", `grep ^NAME /etc/os-release | cut -d= -f2 | tr -d '"'`)
-	if r.Err == nil {
-		info.Distro = strings.TrimSpace(r.Stdout)
+	// Distro info: NAME= from /etc/os-release, parsed in Go (no shell).
+	if data, err := common.ReadSimFile("/etc/os-release"); err == nil {
+		info.Distro = osReleaseName(string(data))
 	}
 
 	// Check /dev/dxg (WSL2 GPU paravirtualization device)
-	if _, err := os.Stat("/dev/dxg"); err == nil {
+	if common.SimFileExists("/dev/dxg") {
 		info.DevDxgExists = true
 	}
 
 	// Check nvidia-smi inside WSL
 	if util.CommandExists("nvidia-smi") {
-		r = util.RunCommand(timeout, "nvidia-smi", "-L")
+		r := util.RunCommand(timeout, "nvidia-smi", "-L")
 		if r.Err == nil {
 			info.NvidiaSmiOK = true
 		}
 	}
 
 	return info, errs
+}
+
+// osReleaseName returns the unquoted NAME= value of an os-release file, or ""
+// (the former grep/cut/tr pipeline; PRETTY_NAME and VERSION_CODENAME lines
+// are not NAME and are skipped).
+func osReleaseName(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "NAME=") {
+			return strings.Trim(strings.TrimPrefix(line, "NAME="), `"`)
+		}
+	}
+	return ""
 }

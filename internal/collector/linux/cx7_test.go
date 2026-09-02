@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 )
 
 func TestCageOf(t *testing.T) {
@@ -158,7 +160,7 @@ func TestParseUfwEnabledAndAvahi(t *testing.T) {
 
 func TestDiscoverFabricPortsFromSimRoot(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(simRootEnv, root)
+	t.Setenv(common.SimRootEnv, root)
 
 	// Twin 0 of cage 0 (domain 0000), Up with RDMA device (spec 2.1 names).
 	writeFixture(t, root, "sys/class/net/enp1s0f0np0/operstate", "up\n")
@@ -217,7 +219,7 @@ func TestDiscoverFabricPortsFromSimRoot(t *testing.T) {
 // address, or cx7-twin-link-mismatch would see a phantom third port.
 func TestDiscoverFabricPortsWithoutDeviceNet(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(simRootEnv, root)
+	t.Setenv(common.SimRootEnv, root)
 	t.Setenv("PATH", "")
 
 	writeFixture(t, root, "sys/class/net/enp1s0f0np0/operstate", "up\n")

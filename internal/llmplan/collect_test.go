@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -59,7 +60,7 @@ func TestSimRoot_ReadMeminfoAndPorts(t *testing.T) {
 	}
 	t.Setenv("NVC_SIM_ROOT", root)
 
-	if got := simPath("/proc/meminfo"); got != filepath.Join(root, "proc", "meminfo") {
+	if got := common.SimPath("/proc/meminfo"); got != filepath.Join(root, "proc", "meminfo") {
 		t.Errorf("simPath = %s", got)
 	}
 	p, err := readMeminfo()
@@ -106,7 +107,7 @@ func itoa(i int) string {
 
 func TestSimRoot_Unset_LeavesPaths(t *testing.T) {
 	t.Setenv("NVC_SIM_ROOT", "")
-	if simPath("/proc/meminfo") != "/proc/meminfo" {
+	if common.SimPath("/proc/meminfo") != "/proc/meminfo" {
 		t.Error("simPath must be the identity without NVC_SIM_ROOT")
 	}
 }

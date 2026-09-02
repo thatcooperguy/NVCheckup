@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -267,7 +268,7 @@ func clockCapUnitState(timeout int) string {
 	if state == "active" {
 		return clockCapUnit
 	}
-	if !simFileExists(clockCapUnitFile) && !unitLoaded(timeout, clockCapUnit) {
+	if !common.SimFileExists(clockCapUnitFile) && !unitLoaded(timeout, clockCapUnit) {
 		return ""
 	}
 	if state == "" {
@@ -431,7 +432,7 @@ func collectBootHistory(p *types.PlatformInfo, timeout int, now time.Time) {
 // dirEmpty reports whether a directory (through simPath) has no entries; nil
 // when it cannot be read.
 func dirEmpty(dir string) *bool {
-	entries, err := os.ReadDir(simPath(dir))
+	entries, err := os.ReadDir(common.SimPath(dir))
 	if err != nil {
 		return nil
 	}
@@ -442,7 +443,7 @@ func dirEmpty(dir string) *bool {
 // readACPIThermalZones returns thermal_zoneN -> millidegrees for every
 // acpitz zone under /sys/class/thermal (through simPath).
 func readACPIThermalZones() map[string]int {
-	matches, _ := filepath.Glob(filepath.Join(simPath(thermalDir), "thermal_zone*"))
+	matches, _ := filepath.Glob(filepath.Join(common.SimPath(thermalDir), "thermal_zone*"))
 	zones := map[string]int{}
 	for _, zone := range matches {
 		typ, err := os.ReadFile(filepath.Join(zone, "type"))

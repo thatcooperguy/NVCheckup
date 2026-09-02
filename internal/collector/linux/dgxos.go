@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
 	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
@@ -472,7 +473,7 @@ func nvidiaModulesOnDisk(kernel string) bool {
 	if kernel == "" {
 		return false
 	}
-	base := simPath("/lib/modules/" + kernel)
+	base := common.SimPath("/lib/modules/" + kernel)
 	for _, pattern := range []string{
 		filepath.Join(base, "updates", "dkms", "nvidia.ko*"),
 		filepath.Join(base, "kernel", "nvidia-*", "nvidia.ko*"),
@@ -578,7 +579,7 @@ func ListeningTCPPorts() []int {
 	seen := map[int]bool{}
 	var ports []int
 	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		data, err := os.ReadFile(simPath(f))
+		data, err := os.ReadFile(common.SimPath(f))
 		if err != nil {
 			continue
 		}
@@ -686,7 +687,7 @@ func aptSourceFirstLineOK(content string) (ok bool, first string) {
 // checkAptSource returns "<file>: <first line>" when the source's first line
 // does not parse, or "" when the file is absent or fine.
 func checkAptSource(path string) string {
-	data, err := os.ReadFile(simPath(path))
+	data, err := os.ReadFile(common.SimPath(path))
 	if err != nil {
 		return ""
 	}
