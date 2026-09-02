@@ -14,10 +14,21 @@ func TestFormatTimezone(t *testing.T) {
 	if got := formatTimezone(ist); got != "IST (UTC+05:30)" {
 		t.Errorf("formatTimezone(IST) = %q", got)
 	}
-	// A named location whose abbreviation differs is shown with both.
-	local := time.Date(2026, 9, 1, 12, 0, 0, 0, time.FixedZone("Local", 3600))
-	if got := formatTimezone(local); got != "Local (UTC+01:00)" {
-		t.Errorf("formatTimezone(Local) = %q", got)
+	// A named location whose abbreviation differs from its name is shown with
+	// both. FixedZone cannot express this (its name and abbreviation are the
+	// same string), so a real IANA zone is loaded; skip when the platform has
+	// no tzdata rather than silently testing the single-name branch.
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Skipf("America/Chicago unavailable (no tzdata): %v", err)
+	}
+	cdtNamed := time.Date(2026, 9, 1, 12, 0, 0, 0, chicago)
+	if got := formatTimezone(cdtNamed); got != "America/Chicago (CDT, UTC-05:00)" {
+		t.Errorf("formatTimezone(America/Chicago in September) = %q", got)
+	}
+	cstNamed := time.Date(2026, 1, 15, 12, 0, 0, 0, chicago)
+	if got := formatTimezone(cstNamed); got != "America/Chicago (CST, UTC-06:00)" {
+		t.Errorf("formatTimezone(America/Chicago in January) = %q", got)
 	}
 	if got := formatTimezone(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); got != "UTC (UTC+00:00)" {
 		t.Errorf("formatTimezone(UTC) = %q", got)

@@ -5,12 +5,15 @@ package windows
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
-// Captured from Get-WinEvent on a machine with a corrected PCIe NIC error.
-const wheaSampleLine = `2026-09-01T18:33:15.9783373Z|17|Warning|A corrected hardware error has occurred. |  | Component: PCI Express Endpoint | Error Source: Generic |  | Primary Bus:Device:Function: 0x1:0x0:0x0 | Secondary Bus:Device:Function: 0x0:0x0:0x0 | Primary Device Name:PCI\VEN_1D6A&DEV_07B1&SUBSYS_104617AA&REV_02 | Secondary Device Name:PCI\VEN_1022&DEV`
+// Captured from Get-WinEvent on a machine with a corrected PCIe NIC error
+// (time|id|numeric level|display name|message; blank message lines show up
+// as doubled " |  | " separators).
+const wheaSampleLine = `2026-09-01T18:33:15.9783373Z|17|3|Warning|A corrected hardware error has occurred. |  | Component: PCI Express Endpoint | Error Source: Generic |  | Primary Bus:Device:Function: 0x1:0x0:0x0 | Secondary Bus:Device:Function: 0x0:0x0:0x0 | Primary Device Name:PCI\VEN_1D6A&DEV_07B1&SUBSYS_104617AA&REV_02 | Secondary Device Name:PCI\VEN_1022&DEV`
 
 func TestParseEventLinesISO(t *testing.T) {
 	events := parseEventLines(wheaSampleLine + "\n\n")
@@ -34,6 +37,60 @@ func TestParseEventLinesISO(t *testing.T) {
 	for _, needle := range []string{"Component: PCI Express Endpoint", `Primary Device Name:PCI\VEN_1D6A&DEV_07B1`} {
 		if !containsSubstring([]string{e.Message}, needle) {
 			t.Errorf("Message missing %q: %q", needle, e.Message)
+		}
+	}
+	if containsSubstring([]string{e.Message}, " |  | ") {
+		t.Errorf("Message still carries doubled separators: %q", e.Message)
+	}
+	const wantPrefix = "A corrected hardware error has occurred. | Component: PCI Express Endpoint | Error Source: Generic | Primary Bus:Device:Function: 0x1:0x0:0x0"
+	if !strings.HasPrefix(e.Message, wantPrefix) {
+		t.Errorf("Message = %q, want prefix %q", e.Message, wantPrefix)
+	}
+}
+
+func TestParseEventLinesLocalizedLevel(t *testing.T) {
+	// de-DE Windows: numeric level 3 with display name "Warnung" must come out
+	// as the canonical "Warning" the analyzer matches on.
+	events := parseEventLines("2026-09-01T18:33:15.9783373Z|17|3|Warnung|Ein korrigierter Hardwarefehler ist aufgetreten. |  | Komponente: PCI Express-Endpunkt |  | \n")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	e := events[0]
+	if e.Level != "Warning" {
+		t.Errorf("Level = %q, want Warning (from numeric level 3)", e.Level)
+	}
+	if want := "Ein korrigierter Hardwarefehler ist aufgetreten. | Komponente: PCI Express-Endpunkt"; e.Message != want {
+		t.Errorf("Message = %q, want %q", e.Message, want)
+	}
+
+	// Every numeric level maps to English regardless of the display name.
+	levels := map[string]string{"1": "Critical", "2": "Error", "3": "Warning", "4": "Information", "5": "Verbose"}
+	for num, want := range levels {
+		if got := eventLevelName(num, "Localized"); got != want {
+			t.Errorf("eventLevelName(%q) = %q, want %q", num, got, want)
+		}
+	}
+	// Missing or unknown numeric level falls back to the display name.
+	if got := eventLevelName("", "Warnung"); got != "Warnung" {
+		t.Errorf("empty numeric level should fall back to display name, got %q", got)
+	}
+	if got := eventLevelName("0", "LogAlways"); got != "LogAlways" {
+		t.Errorf("unknown numeric level should fall back to display name, got %q", got)
+	}
+}
+
+func TestCleanEventMessage(t *testing.T) {
+	cases := map[string]string{
+		"A. |  | B |  |  | C": "A. | B | C",
+		"A | B | ":            "A | B",
+		"A | B |":             "A | B",
+		" | A":                "A",
+		"Primary Bus:Device:Function: 0x1:0x0:0x0": "Primary Bus:Device:Function: 0x1:0x0:0x0",
+		"": "",
+	}
+	for in, want := range cases {
+		if got := cleanEventMessage(in); got != want {
+			t.Errorf("cleanEventMessage(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -97,6 +154,9 @@ func TestEventQueryScriptFiltersZeroEventsByFQID(t *testing.T) {
 	// healthy non-English machine is reported as 0 events rather than as
 	// "could not read the System log".
 	script := eventQueryScript("Id=4101", 50)
+	if !containsSubstring([]string{script}, "|$($_.Level)|$($_.LevelDisplayName)|") {
+		t.Errorf("script must emit the numeric Level ahead of the localized display name:\n%s", script)
+	}
 	if !containsSubstring([]string{script}, "$_.FullyQualifiedErrorId -notmatch '^"+noMatchingEventsFQID+"'") {
 		t.Errorf("script does not filter on FullyQualifiedErrorId %q:\n%s", noMatchingEventsFQID, script)
 	}
@@ -314,5 +374,31 @@ func TestBuildMonitorsSkipsEmptyResolution(t *testing.T) {
 	monitors := buildMonitors(nil, idents, []wmiVideoController{{Name: "NVIDIA GeForce RTX 3090", AdapterCompatibility: "NVIDIA"}})
 	if len(monitors) != 0 {
 		t.Errorf("expected no monitors without a resolution, got %+v", monitors)
+	}
+}
+
+func TestPickAdapterReturnsChosenOrdinal(t *testing.T) {
+	intel := wmiVideoController{Name: "Intel(R) UHD Graphics 770", AdapterCompatibility: "Intel Corporation", CurrentRefreshRate: 60}
+	nvidia := wmiVideoController{Name: "NVIDIA GeForce RTX 3090", AdapterCompatibility: "NVIDIA", CurrentRefreshRate: 144}
+	idle := wmiVideoController{Name: "Microsoft Basic Display Adapter", AdapterCompatibility: "Microsoft"}
+
+	if ctl, idx := pickAdapter([]wmiVideoController{intel, nvidia}); idx != 1 || ctl.Name != nvidia.Name {
+		t.Errorf("NVIDIA at position 1: got idx=%d ctl=%q", idx, ctl.Name)
+	}
+	if ctl, idx := pickAdapter([]wmiVideoController{idle, intel}); idx != 1 || ctl.Name != intel.Name {
+		t.Errorf("first adapter with a mode set at position 1: got idx=%d ctl=%q", idx, ctl.Name)
+	}
+	if ctl, idx := pickAdapter([]wmiVideoController{idle}); idx != 0 || ctl.Name != idle.Name {
+		t.Errorf("single headless adapter: got idx=%d ctl=%q", idx, ctl.Name)
+	}
+	if _, idx := pickAdapter(nil); idx != 0 {
+		t.Errorf("no adapters: got idx=%d", idx)
+	}
+
+	// The chosen ordinal must flow through to every display's GPUIndex.
+	screens := []screenInfo{{DeviceName: `\\.\DISPLAY1`, Primary: true, Width: 2560, Height: 1440, RefreshHz: 144}}
+	displays := buildDisplays(screens, nil, []wmiVideoController{intel, nvidia})
+	if len(displays) != 1 || displays[0].GPUIndex != 1 {
+		t.Errorf("display GPUIndex should be the chosen adapter ordinal 1: %+v", displays)
 	}
 }

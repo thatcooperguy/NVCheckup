@@ -468,8 +468,10 @@ func parsePingLossFound(output string) (float64, bool) {
 // dnsLookupHost is the name resolved for the DNS timing probe.
 const dnsLookupHost = "google.com"
 
-// dnsLookupAttempts is how many lookups are timed; the median is reported so a
-// single cold-cache miss does not dominate.
+// dnsLookupAttempts is how many lookups are timed. The WORST of the samples is
+// reported: the first lookup is usually the only uncached one (on Windows the
+// second and third hit the OS resolver cache and come back in ~0.5 ms), so a
+// median would collapse to the cache hit and hide a slow resolver entirely.
 const dnsLookupAttempts = 3
 
 // ipLookup is the part of net.Resolver used by measureDNS, so tests can stub it.
@@ -477,9 +479,11 @@ type ipLookup interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
-// collectDNSTime measures DNS resolution time in-process. It used to time an
-// nslookup child process, but nslookup also performs a reverse (PTR) lookup of
-// the resolver itself, so it measured 4.4 s where the real lookup took 58 ms.
+// collectDNSTime measures DNS resolution time in-process and reports the
+// worst of dnsLookupAttempts lookups (the first is usually uncached). It used
+// to time an nslookup child process, but nslookup also performs a reverse
+// (PTR) lookup of the resolver itself, so it measured 4.4 s where the real
+// lookup took 58 ms.
 func collectDNSTime(info *types.NetworkInfo, errs *[]types.CollectorError, timeout int) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -492,11 +496,23 @@ func collectDNSTime(info *types.NetworkInfo, errs *[]types.CollectorError, timeo
 		})
 		return
 	}
-	info.DNSTimeMs = roundMs(medianFloat(samples))
+	info.DNSTimeMs = roundMs(maxFloat(samples))
+}
+
+// maxFloat returns the largest value in v (0 for empty input).
+func maxFloat(v []float64) float64 {
+	var m float64
+	for i, x := range v {
+		if i == 0 || x > m {
+			m = x
+		}
+	}
+	return m
 }
 
 // measureDNS times attempts lookups of host and returns the successful samples
-// in milliseconds plus the last error seen (nil if every attempt succeeded).
+// in milliseconds (in call order, so the first is the uncached one) plus the
+// last error seen (nil if every attempt succeeded).
 func measureDNS(ctx context.Context, r ipLookup, host string, attempts int) ([]float64, error) {
 	var samples []float64
 	var lastErr error

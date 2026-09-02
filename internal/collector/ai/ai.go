@@ -24,7 +24,7 @@ func CollectAIInfo(timeout int) (types.AIInfo, []types.CollectorError) {
 
 	// One interpreter is chosen once and shared by every framework probe so
 	// the report never mixes results from different Pythons.
-	python := findPython(timeout)
+	python := findPython(timeout, &errs)
 	if python == "" {
 		return info, errs
 	}
@@ -218,25 +218,65 @@ func collectPythonEnvs(info *types.AIInfo, errs *[]types.CollectorError, timeout
 	}
 }
 
+// pythonCandidates lists the interpreter names tried, in order of preference.
+func pythonCandidates() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"python", "python3", "py"}
+	}
+	return []string{"python3", "python"}
+}
+
+// pythonProbe reports whether cmd exists on PATH and, if so, whether it runs
+// Python 3 in isolated mode.
+type pythonProbe func(cmd string) (exists, works bool)
+
 // findPython returns the first interpreter that actually runs Python 3 in
 // isolated mode. util.CommandExists alone is not enough: on Windows the
 // Microsoft Store "python3" alias is a stub that only prints an install hint,
-// and Python 2 does not accept -I, which every probe relies on.
-func findPython(timeout int) string {
-	candidates := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		candidates = []string{"python", "python3", "py"}
-	}
-	for _, cmd := range candidates {
+// and Python 2 does not accept -I, which every probe relies on. When at least
+// one candidate exists on PATH but none of them works, a CollectorError is
+// recorded so the empty PyTorch/TensorFlow sections are explained instead of
+// silently blank.
+func findPython(timeout int, errs *[]types.CollectorError) string {
+	probe := func(cmd string) (bool, bool) {
 		if !util.CommandExists(cmd) {
-			continue
+			return false, false
 		}
 		r := util.RunCommand(timeout, cmd, "-I", "-c", "import sys; print(sys.version_info[0])")
-		if r.Err == nil && strings.TrimSpace(r.Stdout) == "3" {
-			return cmd
-		}
+		return true, r.Err == nil && strings.TrimSpace(r.Stdout) == "3"
 	}
-	return ""
+	python, tried := selectPython(pythonCandidates(), probe)
+	if python == "" && len(tried) > 0 {
+		*errs = append(*errs, noWorkingPythonError(tried))
+	}
+	return python
+}
+
+// noWorkingPythonError describes candidates that exist on PATH but do not run
+// Python 3 (Microsoft Store stubs, Python 2), so the report explains why the
+// framework sections are empty.
+func noWorkingPythonError(tried []string) types.CollectorError {
+	return types.CollectorError{
+		Collector: "ai.python",
+		Error:     "no working Python 3 interpreter (tried: " + strings.Join(tried, ", ") + "); PyTorch/TensorFlow checks skipped",
+	}
+}
+
+// selectPython returns the first candidate that probe reports as working,
+// together with the candidates that existed on PATH but failed the probe
+// (Microsoft Store stubs, Python 2). It is pure so it can be unit-tested.
+func selectPython(candidates []string, probe pythonProbe) (python string, tried []string) {
+	for _, cmd := range candidates {
+		exists, works := probe(cmd)
+		if !exists {
+			continue
+		}
+		if works {
+			return cmd, tried
+		}
+		tried = append(tried, cmd)
+	}
+	return "", tried
 }
 
 // runProbe executes a Python snippet in isolated mode (-I). Isolated mode
