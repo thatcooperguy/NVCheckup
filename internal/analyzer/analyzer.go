@@ -41,6 +41,10 @@ func Analyze(report *types.Report, mode types.RunMode) {
 	findings = append(findings, analyzeJetson(report)...)
 	findings = append(findings, analyzeThermal(report)...)
 	findings = append(findings, analyzePCIe(report)...)
+	// Platform, unified-memory, DGX OS and Windows-on-Arm rules run in every
+	// mode (docs/roadmap/spark-support.md section 5 "Modes").
+	findings = append(findings, analyzePlatform(report)...)
+	findings = append(findings, analyzeWoA(report)...)
 	// Network probes are opt-in (--network) and independent of mode; the
 	// analyzer simply does nothing when no probe data is present.
 	findings = append(findings, analyzeNetwork(report)...)
@@ -69,7 +73,10 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzePyTorch(report)...)
 		findings = append(findings, analyzeTensorFlow(report)...)
 		findings = append(findings, analyzeWSL(report)...)
+		findings = append(findings, analyzeWSLDriverPackages(report)...)
 		findings = append(findings, analyzeLinuxAdvanced(report)...)
+		findings = append(findings, analyzeEcosystem(report)...)
+		findings = append(findings, analyzeCluster(report)...)
 	case types.ModeCreator:
 		// Creator collects Windows info, Linux info and AI info but not
 		// displays or WSL.
@@ -79,6 +86,7 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzeCUDA(report)...)
 		findings = append(findings, analyzePyTorch(report)...)
 		findings = append(findings, analyzeTensorFlow(report)...)
+		findings = append(findings, analyzeEcosystem(report)...)
 	case types.ModeFull:
 		findings = append(findings, analyzeWindowsGaming(report)...)
 		findings = append(findings, analyzeWindowsPerfSettings(report)...)
@@ -90,11 +98,16 @@ func Analyze(report *types.Report, mode types.RunMode) {
 		findings = append(findings, analyzePyTorch(report)...)
 		findings = append(findings, analyzeTensorFlow(report)...)
 		findings = append(findings, analyzeWSL(report)...)
+		findings = append(findings, analyzeWSLDriverPackages(report)...)
 		findings = append(findings, analyzeVRAM(report)...)
 		findings = append(findings, analyzeDisplay(report)...)
 		findings = append(findings, analyzeLinuxAdvanced(report)...)
+		findings = append(findings, analyzeEcosystem(report)...)
+		findings = append(findings, analyzeCluster(report)...)
 	}
 
+	findings = applySparkSuppressions(findings)
+	fillImpact(findings)
 	sortFindings(findings)
 
 	report.Findings = findings
@@ -130,7 +143,10 @@ func analyzeGPUPresence(report *types.Report) []types.Finding {
 
 	// A Jetson's GPU is integrated (not on PCIe) and nvidia-smi does not
 	// exist there, so an empty inventory is expected; analyzeJetson explains.
-	if nvidiaCount == 0 && !report.System.IsJetson {
+	// On GB10 hardware whose nvidia-smi says "No devices were found" the
+	// cause is the GSP pairing failure, reported by dgx-spark-gsp-init-failure
+	// instead (spec 5.1).
+	if nvidiaCount == 0 && !report.System.IsJetson && !gspInitFailure(report) {
 		findings = append(findings, types.Finding{
 			ID:           "no-nvidia-gpu",
 			Severity:     types.SeverityCrit,
@@ -192,7 +208,9 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 		return findings
 	}
 
-	if report.Driver.Version == "" {
+	// driver-not-detected is not emitted when dgx-spark-gsp-init-failure
+	// explains the missing driver version (spec 5.1).
+	if report.Driver.Version == "" && !gspInitFailure(report) {
 		findings = append(findings, types.Finding{
 			ID:           "driver-not-detected",
 			Severity:     types.SeverityCrit,
@@ -210,7 +228,7 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 	}
 
 	if report.Driver.NvidiaSmiPath == "" {
-		findings = append(findings, types.Finding{
+		f := types.Finding{
 			ID:           "nvidia-smi-missing",
 			Severity:     types.SeverityWarn,
 			Title:        "nvidia-smi Not Found in PATH",
@@ -223,7 +241,18 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 			},
 			Category:   "driver",
 			Confidence: 90,
-		})
+		}
+		// Spec 5.1 / 8: whether the 616.00 Arm64 package ships nvidia-smi.exe
+		// is unconfirmed, so on RTX Spark this is INFO wording, not a WARN.
+		if isRTXSpark(report) {
+			f.Severity = types.SeverityInfo
+			f.Title = "nvidia-smi Not Found (may be absent on RTX Spark)"
+			f.Evidence = "The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver package ships nvidia-smi.exe is unconfirmed (spec 2.2), so this is informational."
+			f.WhyItMatters = "Without nvidia-smi the GPU, thermal and PCIe samples come from WMI only; memory is the unified pool (Win32_OperatingSystem.TotalVisibleMemorySize), not AdapterRAM."
+			f.NextSteps = []string{"No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set."}
+			f.Confidence = 60
+		}
+		findings = append(findings, f)
 	}
 
 	return findings
@@ -241,11 +270,13 @@ func analyzeJetson(report *types.Report) []types.Finding {
 		release = "L4T release unknown"
 	}
 	findings = append(findings, types.Finding{
-		ID:           "jetson-detected",
-		Severity:     types.SeverityInfo,
-		Title:        "NVIDIA Jetson Detected",
-		Evidence:     fmt.Sprintf("NVIDIA Jetson detected (%s). nvidia-smi is not available on Tegra, so GPU, thermal and PCIe diagnostics are limited on this platform.", release),
-		WhyItMatters: "Jetson boards integrate the GPU with the CPU and ship their driver as part of JetPack / L4T, so the nvidia-smi based checks that NVCheckup uses on desktops and servers do not apply. The missing-driver and missing-nvidia-smi findings are suppressed here because they would be false alarms.",
+		ID:       "jetson-detected",
+		Severity: types.SeverityInfo,
+		Title:    "NVIDIA Jetson Detected",
+		// Spec 5.1 / 2.3: Jetson Thor (CC 11.0, OpenRM) ships nvidia-smi, so
+		// the wording no longer claims it is absent on every Tegra board.
+		Evidence:     fmt.Sprintf("NVIDIA Jetson detected (%s). Older L4T releases have no nvidia-smi (Jetson Thor / JetPack 7 ships it), so GPU, thermal and PCIe diagnostics may be limited on this platform.", release),
+		WhyItMatters: "Jetson boards integrate the GPU with the CPU (unified memory) and ship their driver as part of JetPack / L4T, so the nvidia-smi based checks that NVCheckup uses on desktops and servers do not fully apply. The missing-driver and missing-nvidia-smi findings are suppressed here because they would be false alarms on boards without nvidia-smi.",
 		NextSteps: []string{
 			"Run 'sudo tegrastats' to watch GPU load, temperature and power on Jetson.",
 			"Run 'jetson_release -v' (from the jetson-stats package) to confirm the JetPack / L4T version and the CUDA, cuDNN and TensorRT builds installed.",
@@ -457,13 +488,26 @@ func analyzeThermal(report *types.Report) []types.Finding {
 	multi := multiGPU(report, len(entries))
 	var all []types.Finding
 	for _, t := range entries {
-		all = append(all, tagGPUFindings(thermalFindings(t), report, t.GPUIndex, multi)...)
+		all = append(all, tagGPUFindings(thermalFindings(t, isUnifiedMem(report)), report, t.GPUIndex, multi)...)
 	}
 	return mergePerGPUFindings(all)
 }
 
-// thermalFindings evaluates one GPU's thermal sample.
-func thermalFindings(t *types.ThermalInfo) []types.Finding {
+// powerLimitText renders the power limit for evidence. On unified-memory
+// parts nvidia-smi reports every power limit as N/A (spec 2.1), so the
+// gpu-power-cap / gpu-clock-slowdown evidence says so instead of "unknown"
+// (spec 5.1).
+func powerLimitText(t *types.ThermalInfo, unified bool) string {
+	if unified && (!t.PowerLimitSupported || strings.TrimSpace(t.PowerLimitW) == "") {
+		return "N/A (unified memory)"
+	}
+	return valueOrUnknown(t.PowerLimitW)
+}
+
+// thermalFindings evaluates one GPU's thermal sample. unified marks a
+// unified-memory platform (GB10 / N1X), which only changes evidence wording:
+// clocks, pstate and utilization are real there, so the rules are kept (5.1).
+func thermalFindings(t *types.ThermalInfo, unified bool) []types.Finding {
 	var findings []types.Finding
 
 	thermal, slowdown, reasons := thermalState(t)
@@ -471,6 +515,7 @@ func thermalFindings(t *types.ThermalInfo) []types.Finding {
 	if reasonText == "" {
 		reasonText = "not reported"
 	}
+	limitText := powerLimitText(t, unified)
 
 	switch {
 	case thermal:
@@ -533,7 +578,7 @@ func thermalFindings(t *types.ThermalInfo) []types.Finding {
 			Severity: types.SeverityInfo,
 			Title:    "GPU Running at Its Power Limit",
 			Evidence: fmt.Sprintf("Active reason: sw_power_cap. Power draw: %s / limit %s. Clock: %d MHz / %d MHz max. Temperature: %d°C. Utilization: %d%%.",
-				valueOrUnknown(t.PowerDrawW), valueOrUnknown(t.PowerLimitW), t.CurrentClockMHz, t.MaxClockMHz, t.TemperatureC, t.UtilizationPct),
+				valueOrUnknown(t.PowerDrawW), limitText, t.CurrentClockMHz, t.MaxClockMHz, t.TemperatureC, t.UtilizationPct),
 			WhyItMatters: "The driver is holding clocks at the card's configured power limit. Under a sustained heavy load this is normal behaviour, not a fault; it only matters if you expected higher clocks than the limit allows.",
 			NextSteps: []string{
 				"No action needed for normal use.",
@@ -548,7 +593,7 @@ func thermalFindings(t *types.ThermalInfo) []types.Finding {
 			Severity: types.SeverityWarn,
 			Title:    "GPU Clock Slowdown Active",
 			Evidence: fmt.Sprintf("Active slowdown reasons: %s. Power draw: %s / limit %s. Clock: %d MHz / %d MHz max. Temperature: %d°C.",
-				reasonText, valueOrUnknown(t.PowerDrawW), valueOrUnknown(t.PowerLimitW), t.CurrentClockMHz, t.MaxClockMHz, t.TemperatureC),
+				reasonText, valueOrUnknown(t.PowerDrawW), limitText, t.CurrentClockMHz, t.MaxClockMHz, t.TemperatureC),
 			WhyItMatters: "The GPU is lowering its clocks for a non-thermal reason such as hitting its power limit or an external hardware brake. Under load this caps performance below what the card can deliver.",
 			NextSteps: []string{
 				"If sw_power_cap is listed, this is normal at the power limit; raise the limit only if your PSU and cooling allow.",
@@ -663,6 +708,13 @@ func analyzePCIe(report *types.Report) []types.Finding {
 // pcieFindings evaluates one GPU's PCIe link sample.
 func pcieFindings(p *types.PCIeInfo) []types.Finding {
 	var findings []types.Finding
+
+	// On-package GPUs (GB10 / N1X) talk to the CPU over NVLink-C2C and
+	// nvidia-smi misreports the link as "GEN 1@ 1x"; there is no slot to
+	// reseat, so every PCIe rule is suppressed (spec 5.1).
+	if p.OnPackage {
+		return findings
+	}
 
 	curGen, maxGen := parsePCIeGen(p.CurrentSpeed), parsePCIeGen(p.MaxSpeed)
 	curWidth, maxWidth := parsePCIeWidth(p.CurrentWidth), parsePCIeWidth(p.MaxWidth)
@@ -968,7 +1020,13 @@ func analyzeLinuxAdvanced(report *types.Report) []types.Finding {
 		var codes []string
 		for _, xid := range report.Linux.XidErrors {
 			totalCount += xid.Count
-			codes = append(codes, fmt.Sprintf("Xid %d (%s) x%d", xid.Code, xid.Message, xid.Count))
+			msg := xid.Message
+			// Spec 5.1: on GB10, Xid 119 is the GSP RPC timeout of a driver /
+			// GSP firmware pairing break (dgx-spark-gsp-init-failure).
+			if xid.Code == 119 && gb10Hardware(report) {
+				msg += "; on GB10 this usually means the driver and GSP firmware packages are not OTA-paired (see dgx-spark-gsp-init-failure / dgx-spark-ota-torn)"
+			}
+			codes = append(codes, fmt.Sprintf("Xid %d (%s) x%d", xid.Code, msg, xid.Count))
 		}
 		findings = append(findings, types.Finding{
 			ID:           "xid-errors",
@@ -2036,8 +2094,16 @@ func analyzeWSL(report *types.Report) []types.Finding {
 func analyzeVRAM(report *types.Report) []types.Finding {
 	var findings []types.Finding
 
+	// Unified-memory platforms have no dedicated VRAM and nvidia-smi prints
+	// [N/A]; the pool is described by unified-memory-nvsmi-expected (spec 5.1).
+	if isUnifiedMem(report) {
+		return findings
+	}
 	var low []string
 	for _, gpu := range report.GPUs {
+		if gpu.MemoryReporting == memoryReportingNotSupported {
+			continue
+		}
 		if gpu.IsNVIDIA && gpu.VRAMTotalMB > 0 && gpu.VRAMTotalMB < 4096 {
 			low = append(low, fmt.Sprintf("%s (%d MB)", gpu.Name, gpu.VRAMTotalMB))
 		}
@@ -2201,6 +2267,10 @@ func valueOrUnknown(s string) string {
 // as such so users do not chase a non-problem.
 func pcieSummary(report *types.Report) string {
 	p := report.PCIe
+	// Spec 5.1: on-package GPUs (NVLink-C2C) have no PCIe link to report.
+	if p.OnPackage {
+		return "PCIe: n/a (on-package, NVLink-C2C)"
+	}
 	s := fmt.Sprintf("PCIe: %s %s", p.CurrentSpeed, p.CurrentWidth)
 	warned := pcieWarnedFor(report.Findings, p.GPUIndex)
 	switch {
@@ -2271,15 +2341,27 @@ func buildSummaryBlock(report *types.Report) string {
 	}
 	add("%s | Arch: %s", osLine, report.System.Architecture)
 
+	// Spec 5.1: a "Platform:" line names the detected class (e.g. "Platform:
+	// DGX Spark") so forum readers see the unified-memory context first.
+	if report.Platform.Class != "" {
+		add("%s", platformSummaryLine(report))
+	}
+
+	unified := isUnifiedMem(report)
 	for _, gpu := range report.GPUs {
 		if !gpu.IsNVIDIA {
 			continue
 		}
 		line := fmt.Sprintf("GPU: %s | Driver: %s", gpu.Name, gpu.DriverVersion)
-		if gpu.VRAMTotalMB > 0 {
+		if gpu.VRAMTotalMB > 0 && !unified && gpu.MemoryReporting != memoryReportingNotSupported {
 			line += fmt.Sprintf(" | VRAM: %d MB", gpu.VRAMTotalMB)
 		}
 		add("%s", line)
+	}
+	// Spec 5.1: "VRAM: N MB" becomes the unified pool measured from
+	// /proc/meminfo (nvidia-smi memory is [N/A] on GB10 / N1X).
+	if unified && report.UnifiedMemory != nil {
+		add("Unified memory: %s GiB total, %s GiB available", fmtGiB(report.UnifiedMemory.MemTotalKB), fmtGiB(report.UnifiedMemory.MemAvailableKB))
 	}
 
 	if report.Driver.CUDAVersion != "" {
@@ -2347,4 +2429,84 @@ func buildSummaryBlock(report *types.Report) string {
 	}
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// ── Spark post-processing ─────────────────────────────────────────────
+
+// platformSummaryLine renders "Platform: DGX Spark (Founders Edition) | DGX
+// OS 7.5.0 / OTA2607" for the summary block. It is kept short (72 columns):
+// FE units are NVIDIA by definition, so only OEM units name vendor and model;
+// the OS line above already says Windows + arm64 for RTX Spark.
+func platformSummaryLine(report *types.Report) string {
+	line := "Platform: " + platformLabel(report.Platform.Class)
+	model := strings.TrimSpace(report.Platform.Vendor + " " + report.Platform.Model)
+	switch {
+	case isDGXSpark(report) && feOrOEM(report) == "Founders Edition":
+		line += " (Founders Edition)"
+	case isDGXSpark(report) && model != "":
+		line += " (" + feOrOEM(report) + ": " + model + ")"
+	case model != "":
+		line += " (" + model + ")"
+	}
+	if report.DGXOS != nil && report.DGXOS.SWBuildVersion != "" {
+		line += " | DGX OS " + report.DGXOS.SWBuildVersion
+		if report.DGXOS.OTAName != "" {
+			line += " / " + report.DGXOS.OTAName
+		}
+	}
+	return line
+}
+
+// applySparkSuppressions removes findings that a more specific Spark rule
+// supersedes (spec 5.1): gb10-pd-power-wedge takes precedence over
+// gpu-power-state-stuck for the same GPU (the wedge explains the P-state).
+func applySparkSuppressions(findings []types.Finding) []types.Finding {
+	wedged := map[int]bool{}
+	wedgedAll := false
+	for _, f := range findings {
+		if f.ID != "gb10-pd-power-wedge" {
+			continue
+		}
+		if len(f.GPUIndexes) == 0 {
+			wedgedAll = true
+		}
+		for _, idx := range f.GPUIndexes {
+			wedged[idx] = true
+		}
+	}
+	if !wedgedAll && len(wedged) == 0 {
+		return findings
+	}
+	out := findings[:0]
+	for _, f := range findings {
+		if f.ID == "gpu-power-state-stuck" {
+			drop := wedgedAll || len(f.GPUIndexes) == 0
+			for _, idx := range f.GPUIndexes {
+				if wedged[idx] {
+					drop = true
+				}
+			}
+			if drop {
+				continue
+			}
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// fillImpact gives every finding without an Impact the catalog value for its
+// id (spec 5: every rule carries impact). Spark findings already carry it
+// from sparkFinding; the pre-Spark rules take theirs from legacyImpact.
+func fillImpact(findings []types.Finding) {
+	for i := range findings {
+		if findings[i].Impact != "" {
+			continue
+		}
+		if imp, ok := legacyImpact[findings[i].ID]; ok {
+			findings[i].Impact = imp
+		} else if rule, ok := sparkRules[findings[i].ID]; ok {
+			findings[i].Impact = rule.Impact
+		}
+	}
 }

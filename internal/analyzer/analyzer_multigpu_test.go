@@ -35,8 +35,10 @@ func TestAnalyze_JetsonSuppressesDesktopFindings(t *testing.T) {
 		if f.Severity != types.SeverityInfo || f.Confidence != 90 || f.Category != "gpu" {
 			t.Errorf("mode %s: severity/confidence/category = %s/%d/%s", mode, f.Severity, f.Confidence, f.Category)
 		}
-		if !strings.Contains(f.Evidence, jetsonRelease) || !strings.Contains(f.Evidence, "nvidia-smi is not available on Tegra") {
-			t.Errorf("mode %s: evidence should quote the release and explain nvidia-smi: %q", mode, f.Evidence)
+		// Spec 5.1: Jetson Thor ships nvidia-smi, so the wording must not
+		// claim it is absent on Tegra in general.
+		if !strings.Contains(f.Evidence, jetsonRelease) || !strings.Contains(f.Evidence, "Jetson Thor / JetPack 7 ships it") || strings.Contains(f.Evidence, "nvidia-smi is not available on Tegra") {
+			t.Errorf("mode %s: evidence should quote the release and explain nvidia-smi without claiming Tegra never has it: %q", mode, f.Evidence)
 		}
 		steps := strings.Join(f.NextSteps, "\n")
 		if !strings.Contains(steps, "sudo tegrastats") || !strings.Contains(steps, "jetson_release -v") {

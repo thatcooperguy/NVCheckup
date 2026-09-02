@@ -512,6 +512,7 @@ type PlatformInfo struct {
 	GDMSleepPolicy      string         `json:"gdm_sleep_policy,omitempty"`
 	SuspendAttempts     int            `json:"suspend_attempts,omitempty"`
 	SuspendFailed       bool           `json:"suspend_failed,omitempty"`
+	UncleanBoots        int            `json:"unclean_boots,omitempty"` // boots in the gb10-logless-hard-poweroff window (14 days) whose journal ended without a clean-shutdown marker; WP2 addition, spec section 5
 }
 
 // DGXOSInfo holds DGX OS release, OTA, package and service state read on
