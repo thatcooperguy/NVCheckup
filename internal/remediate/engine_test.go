@@ -1,25 +1,105 @@
 package remediate
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// MockExecutor records commands without executing them.
+// mockResponse is a canned reply for any command whose rendered form starts
+// with prefix (e.g. "reg query" or "powercfg /getactivescheme").
+type mockResponse struct {
+	prefix string
+	output string
+	err    error
+}
+
+// MockExecutor records commands without executing them. Replies are looked up
+// in responses (an exact match wins over a prefix match, then the first prefix
+// match wins) and fall back to output/err, so a single mock can script a
+// whole apply/undo sequence. The exact-match rule matters because
+// "reg query <key>" is a prefix of "reg query <key> /v <name>".
 type MockExecutor struct {
-	commands []string
-	output   string
-	err      error
+	commands  []string
+	output    string
+	err       error
+	responses []mockResponse
 }
 
 func (m *MockExecutor) Run(name string, args ...string) (string, error) {
-	cmd := name
-	for _, a := range args {
-		cmd += " " + a
-	}
+	cmd := strings.Join(append([]string{name}, args...), " ")
 	m.commands = append(m.commands, cmd)
+	for _, r := range m.responses {
+		if cmd == r.prefix {
+			return r.output, r.err
+		}
+	}
+	for _, r := range m.responses {
+		if strings.HasPrefix(cmd, r.prefix) {
+			return r.output, r.err
+		}
+	}
 	return m.output, m.err
+}
+
+// anyAction returns the first platform action, or skips on platforms without any.
+func anyAction(t *testing.T) types.RemediationAction {
+	t.Helper()
+	actions := getAvailableActions()
+	if len(actions) == 0 {
+		t.Skip("no remediation actions on this platform")
+	}
+	return actions[0]
+}
+
+// writeCorruptJournal plants a journal that Journal.Read rejects and returns
+// its raw content so tests can check it was left untouched.
+func writeCorruptJournal(t *testing.T, dir string) string {
+	t.Helper()
+	raw := `[{"action_id":"disable-hags","applied_at":"not-a-time","success":true}]`
+	if err := os.WriteFile(filepath.Join(dir, journalFilename), []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// setElevation replaces the elevation check for the duration of a test.
+func setElevation(t *testing.T, elevated bool) {
+	t.Helper()
+	old := elevationCheck
+	elevationCheck = func() bool { return elevated }
+	t.Cleanup(func() { elevationCheck = old })
+}
+
+// firstAdminAction returns a platform action that needs elevation, or skips.
+func firstAdminAction(t *testing.T) types.RemediationAction {
+	t.Helper()
+	for _, a := range getAvailableActions() {
+		if a.NeedsAdmin {
+			return a
+		}
+	}
+	t.Skip("no admin action on this platform")
+	return types.RemediationAction{}
+}
+
+// sampleUndoInfo returns a value that passes validateUndoInfo for the action.
+func sampleUndoInfo(id string) string {
+	switch id {
+	case "set-high-performance":
+		return "381b4222-f694-41f0-9685-ff5bb260df2e"
+	case "disable-hags", "disable-game-mode":
+		return "2"
+	case "blacklist-nouveau":
+		return absentSentinel
+	default:
+		return ""
+	}
 }
 
 func TestNewEngine_DefaultExecutor(t *testing.T) {
@@ -49,23 +129,18 @@ func TestPreview(t *testing.T) {
 		ID:          "test-action",
 		Title:       "Test Action",
 		Description: "Does a test thing",
+		DryRunDesc:  "Would run: frobnicate",
+		UndoDesc:    "Unfrobnicate",
 		Risk:        types.RiskLow,
 		NeedsAdmin:  true,
 		NeedsReboot: true,
 	}
 
 	preview := e.Preview(action)
-	if preview == "" {
-		t.Fatal("Preview should return non-empty string")
-	}
-	if !contains(preview, "Test Action") {
-		t.Error("Preview should contain action title")
-	}
-	if !contains(preview, "elevated") {
-		t.Error("Preview should mention admin requirement")
-	}
-	if !contains(preview, "reboot") {
-		t.Error("Preview should mention reboot requirement")
+	for _, want := range []string{"Test Action", "elevated", "reboot", "Would run: frobnicate", "Unfrobnicate", "could not be determined"} {
+		if !strings.Contains(preview, want) {
+			t.Errorf("Preview should contain %q, got:\n%s", want, preview)
+		}
 	}
 }
 
@@ -78,26 +153,29 @@ func TestPreview_DryRun(t *testing.T) {
 	}
 
 	preview := e.Preview(action)
-	if !contains(preview, "DRY RUN") {
+	if !strings.Contains(preview, "DRY RUN") {
 		t.Error("Preview in dry-run mode should mention DRY RUN")
 	}
 }
 
 func TestApply_DryRun(t *testing.T) {
+	setElevation(t, false) // dry-run must work unelevated
 	mock := &MockExecutor{}
-	e := NewEngine(mock, t.TempDir(), true)
+	dir := t.TempDir()
+	e := NewEngine(mock, dir, true)
 	action := types.RemediationAction{
-		ID:    "test-action",
-		Title: "Test Action",
-		Risk:  types.RiskLow,
+		ID:         "test-action",
+		Title:      "Test Action",
+		Risk:       types.RiskLow,
+		NeedsAdmin: true,
 	}
 
 	result, err := e.Apply(action)
 	if err != nil {
 		t.Fatalf("Apply dry-run should not error: %v", err)
 	}
-	if !result.Success {
-		t.Error("Dry-run apply should report success")
+	if result == nil || !result.Success {
+		t.Fatal("Dry-run apply should report success")
 	}
 	if !result.DryRun {
 		t.Error("Result should indicate dry run")
@@ -105,31 +183,225 @@ func TestApply_DryRun(t *testing.T) {
 	if len(mock.commands) != 0 {
 		t.Errorf("Dry-run should not execute commands, got %d", len(mock.commands))
 	}
-}
-
-func TestListAvailable(t *testing.T) {
-	e := NewEngine(&MockExecutor{}, t.TempDir(), false)
-	actions := e.ListAvailable()
-	// Should return at least some actions on the current platform
-	// (on Windows during tests, should have set-high-performance, disable-hags, etc.)
-	// This is a basic smoke test
-	if actions == nil {
-		// On unsupported platforms, nil is expected
-		t.Log("No actions available (may be unsupported platform)")
+	if _, statErr := os.Stat(NewJournal(dir).Path()); !os.IsNotExist(statErr) {
+		t.Error("dry-run must not write the journal")
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 &&
-		len(s) >= len(substr) &&
-		(s == substr || containsHelper(s, substr))
+func TestApply_RefusesWhenNotElevated(t *testing.T) {
+	setElevation(t, false)
+	mock := &MockExecutor{output: "should not run"}
+	dir := t.TempDir()
+	e := NewEngine(mock, dir, false)
+	action := types.RemediationAction{ID: "set-high-performance", Title: "x", NeedsAdmin: true}
+
+	result, err := e.Apply(action)
+	if !errors.Is(err, errNotElevated) {
+		t.Fatalf("expected errNotElevated, got %v", err)
+	}
+	if result != nil {
+		t.Errorf("result should be nil on refusal, got %+v", result)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run before the elevation check, got %v", mock.commands)
+	}
+	if _, statErr := os.Stat(NewJournal(dir).Path()); !os.IsNotExist(statErr) {
+		t.Error("refusal must not be journaled")
+	}
+	if !strings.Contains(err.Error(), "nothing was changed") {
+		t.Errorf("error should tell the user nothing changed, got %q", err.Error())
+	}
 }
 
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+// A caller cannot bypass the elevation check by handing Apply a struct with
+// NeedsAdmin=false; the platform definition is consulted too.
+func TestApply_ElevationUsesRegistryDefinition(t *testing.T) {
+	setElevation(t, false)
+	def := firstAdminAction(t)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, t.TempDir(), false)
+
+	_, err := e.Apply(types.RemediationAction{ID: def.ID, Title: def.Title, NeedsAdmin: false})
+	if !errors.Is(err, errNotElevated) {
+		t.Fatalf("expected errNotElevated, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run, got %v", mock.commands)
+	}
+}
+
+func TestUndo_RefusesWhenNotElevated(t *testing.T) {
+	setElevation(t, false)
+	def := firstAdminAction(t)
+	mock := &MockExecutor{}
+	dir := t.TempDir()
+	e := NewEngine(mock, dir, false)
+
+	entry := types.ChangeJournalEntry{
+		ActionID:  def.ID,
+		Title:     def.Title,
+		AppliedAt: time.Now(),
+		Success:   true,
+		UndoInfo:  sampleUndoInfo(def.ID),
+	}
+	if err := NewJournal(dir).Append(entry); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.Undo(entry)
+	if !errors.Is(err, errNotElevated) {
+		t.Fatalf("expected errNotElevated, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run, got %v", mock.commands)
+	}
+	entries, _ := NewJournal(dir).Read()
+	if len(entries) != 1 || !entries[0].UndoneAt.IsZero() {
+		t.Errorf("journal must be untouched after refusal, got %+v", entries)
+	}
+}
+
+// A change that cannot be journaled cannot be undone, so an unreadable
+// journal must stop Apply before any command runs.
+func TestApply_RefusesWhenJournalUnreadable(t *testing.T) {
+	setElevation(t, true)
+	def := anyAction(t)
+	dir := t.TempDir()
+	raw := writeCorruptJournal(t, dir)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, dir, false)
+
+	result, err := e.Apply(def)
+	if err == nil || !strings.Contains(err.Error(), "journal is unreadable") {
+		t.Fatalf("expected journal refusal, got %v", err)
+	}
+	if result != nil {
+		t.Errorf("result should be nil on refusal, got %+v", result)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run when the journal is unreadable, got %v", mock.commands)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, journalFilename))
+	if string(got) != raw {
+		t.Error("the corrupt journal must be left untouched for the user to inspect")
+	}
+}
+
+func TestUndo_RefusesWhenJournalUnreadable(t *testing.T) {
+	setElevation(t, true)
+	def := anyAction(t)
+	dir := t.TempDir()
+	raw := writeCorruptJournal(t, dir)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, dir, false)
+
+	entry := types.ChangeJournalEntry{ActionID: def.ID, Title: def.Title, AppliedAt: time.Now(), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	err := e.Undo(entry)
+	if err == nil || !strings.Contains(err.Error(), "journal is unreadable") {
+		t.Fatalf("expected journal refusal, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands may run when the journal is unreadable, got %v", mock.commands)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, journalFilename))
+	if string(got) != raw {
+		t.Error("the corrupt journal must be left untouched")
+	}
+}
+
+func TestUndo_RejectsInvalidUndoInfo(t *testing.T) {
+	setElevation(t, true)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, t.TempDir(), false)
+
+	cases := []types.ChangeJournalEntry{
+		{ActionID: "disable-hags", AppliedAt: time.Now(), Success: true, UndoInfo: `2 /f & calc.exe`},
+		{ActionID: "set-high-performance", AppliedAt: time.Now(), Success: true, UndoInfo: "/h"},
+		{ActionID: "blacklist-nouveau", AppliedAt: time.Now(), Success: true, UndoInfo: "install nouveau /bin/true\n"},
+		{ActionID: "update-ldconfig", AppliedAt: time.Now(), Success: true, UndoInfo: "x"},
+		{ActionID: "disable-hags", AppliedAt: time.Now(), Success: true, UndoInfo: ""},
+		{ActionID: "", AppliedAt: time.Now(), Success: true, UndoInfo: "2"},
+		{ActionID: "no-such-action", AppliedAt: time.Now(), Success: true, UndoInfo: "2"},
+	}
+	for _, c := range cases {
+		if err := e.Undo(c); err == nil {
+			t.Errorf("Undo(%q, %q) should fail validation", c.ActionID, c.UndoInfo)
 		}
 	}
-	return false
+	if len(mock.commands) != 0 {
+		t.Errorf("invalid undo info must never reach the executor, got %v", mock.commands)
+	}
+}
+
+func TestUndo_RejectsFailedEntry(t *testing.T) {
+	setElevation(t, true)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, t.TempDir(), false)
+	entry := types.ChangeJournalEntry{ActionID: "disable-hags", AppliedAt: time.Now(), Success: false, UndoInfo: "2"}
+	if err := e.Undo(entry); err == nil || !strings.Contains(err.Error(), "did not succeed") {
+		t.Fatalf("expected 'did not succeed' error, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("no commands should run, got %v", mock.commands)
+	}
+}
+
+func TestUndo_DryRun(t *testing.T) {
+	setElevation(t, false)
+	def := firstAdminAction(t)
+	mock := &MockExecutor{}
+	e := NewEngine(mock, t.TempDir(), true)
+	entry := types.ChangeJournalEntry{ActionID: def.ID, AppliedAt: time.Now(), Success: true, UndoInfo: sampleUndoInfo(def.ID)}
+	if err := e.Undo(entry); err != nil {
+		t.Fatalf("dry-run undo should succeed unelevated, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Errorf("dry-run undo must not run commands, got %v", mock.commands)
+	}
+}
+
+func TestListAvailable_ConsistentWithKnowledgeLabels(t *testing.T) {
+	e := NewEngine(&MockExecutor{}, t.TempDir(), false)
+	// Canonical risk labels (see knowledge/remediations.json).
+	wantRisk := map[string]types.RiskLevel{
+		"set-high-performance": types.RiskLow,
+		"disable-hags":         types.RiskMedium,
+		"disable-game-mode":    types.RiskLow,
+		"blacklist-nouveau":    types.RiskMedium,
+		"update-ldconfig":      types.RiskLow,
+	}
+	for _, a := range e.ListAvailable() {
+		if want, ok := wantRisk[a.ID]; ok && a.Risk != want {
+			t.Errorf("%s risk = %s, want %s", a.ID, a.Risk, want)
+		}
+		if a.DryRunDesc == "" || a.UndoDesc == "" {
+			t.Errorf("%s must populate DryRunDesc and UndoDesc", a.ID)
+		}
+	}
+}
+
+func TestDescribeUndoInfo(t *testing.T) {
+	if got := describeUndoInfo(absentSentinel); !strings.Contains(got, "did not exist") {
+		t.Errorf("absent sentinel description = %q", got)
+	}
+	if got := describeUndoInfo(absentKeySentinel); !strings.Contains(got, "key and value did not exist") {
+		t.Errorf("absent key sentinel description = %q", got)
+	}
+	if got := describeUndoInfo(""); !strings.Contains(got, "nothing") {
+		t.Errorf("empty description = %q", got)
+	}
+	if got := describeUndoInfo("a\nb\n"); !strings.Contains(got, "file content") {
+		t.Errorf("multi-line description = %q", got)
+	}
+	if got := describeUndoInfo("2"); got != "2" {
+		t.Errorf("scalar description = %q", got)
+	}
+}
+
+func TestCmdString(t *testing.T) {
+	got := cmdString("reg", "add", `HKLM\Software\X Y`, "/f")
+	want := `reg add "HKLM\Software\X Y" /f`
+	if got != want {
+		t.Errorf("cmdString = %q, want %q", got, want)
+	}
 }
