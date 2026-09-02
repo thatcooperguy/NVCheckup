@@ -255,3 +255,126 @@ func TestCX7Check(t *testing.T) {
 		t.Error("two-node plan without an active fabric must FAIL")
 	}
 }
+
+// driverPrereq evaluates the checklist for a saved report of any platform
+// (pool from the report only) and returns its driver-present line.
+func driverPrereq(t *testing.T, r *types.Report, goos string) Prereq {
+	t.Helper()
+	pool, _ := DerivePool(r, goos, 5, 0, true)
+	in := Inputs{Model: mustModel(t, "llama-3.1-8b-instruct"), Quant: QuantBF16, KV: KVF16, Context: 8192, Concurrency: 1, Runtime: RuntimeLlamaCpp, Nodes: 1,
+		PoolBytes: pool.TotalBytes, AvailableBytes: pool.AvailableBytes}
+	s := Compute(in)
+	cmd := RenderCommand(in, s, "chat", ClusterFacts{})
+	ps := Evaluate(Facts{Report: r, Pool: pool, GOOS: goos}, in, s, cmd)
+	p, ok := statusOf(ps, "driver-present")
+	if !ok {
+		t.Fatal("driver-present missing")
+	}
+	return p
+}
+
+// isWDDMVersion: four numeric fields with a 30-40 WDDM generation first; a
+// Linux branch, a bare "616.00" or anything with letters is not one.
+func TestIsWDDMVersion(t *testing.T) {
+	for s, want := range map[string]bool{
+		"32.0.16.1600": true, "32.0.15.8129": true, " 31.0.15.3667 ": true, "30.0.14.7168": true,
+		"580.95.05": false, "616.00": false, "581.29": false, "32.0.16": false, "32.0.16.1600.1": false,
+		"29.0.15.1000": false, "41.0.1.1": false, "32.0.16.16a0": false, "32..16.1600": false, "": false, "N/A": false,
+	} {
+		if got := isWDDMVersion(s); got != want {
+			t.Errorf("isWDDMVersion(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
+
+// driver-present on RTX Spark (spec 2.2, 8): the developer-preview package
+// has no nvidia-smi.exe, so Driver.Version is empty and the WDDM string from
+// WMI ("32.0.16.1600") is the only driver source. It is never read as a
+// branch against the 580 minimum; the 616.00 Developer Preview WARNs because
+// rule rtx-spark-driver-developer-preview is WARN (pre-release, not for
+// production or benchmarking), any other WDDM string is a PASS with the
+// mapping labelled unconfirmed, and Linux / Windows x64 keep their results.
+func TestEvaluate_DriverPresent(t *testing.T) {
+	// RTX Spark as the Windows collectors leave it without nvidia-smi.exe.
+	n1xWDDM := func() *types.Report {
+		r := n1xWindowsReport()
+		r.Driver = types.DriverInfo{}
+		return r
+	}
+	cases := []struct {
+		name   string
+		rep    func() *types.Report
+		goos   string
+		status string
+		want   []string // substrings the detail must contain
+		reject []string // substrings the detail must not contain
+	}{
+		{"rtx-spark WDDM 16.1600 without nvidia-smi", n1xWDDM, "windows", StatusWarn,
+			[]string{"WDDM driver 32.0.16.1600", "616.00", "developer preview", "nvidia-smi.exe not shipped", "rtx-spark-driver-developer-preview"}, []string{"580"}},
+		{"rtx-spark WDDM string of another driver", func() *types.Report {
+			r := n1xWDDM()
+			r.GPUs[0].DriverVersion = "32.0.16.2005"
+			return r
+		}, "windows", StatusPass, []string{"WDDM driver 32.0.16.2005", "nvidia-smi.exe absent", "version mapping unconfirmed"}, []string{"616.00", "580"}},
+		{"rtx-spark WDDM from Platform.WoA only", func() *types.Report {
+			r := n1xWDDM()
+			r.GPUs[0].DriverVersion = ""
+			r.Platform.WoA = &types.WoAInfo{DriverVersion: "32.0.16.1600", InfFilename: "nv_surface_woa.inf", DeveloperPreview: true}
+			return r
+		}, "windows", StatusWarn, []string{"WDDM driver 32.0.16.1600", "616.00"}, []string{"580"}},
+		{"rtx-spark INF-flagged preview with an unconfirmed WDDM string", func() *types.Report {
+			r := n1xWDDM()
+			r.GPUs[0].DriverVersion = "32.0.16.2005"
+			r.Platform.WoA = &types.WoAInfo{DriverVersion: "32.0.16.2005", InfFilename: "nv_surface_woa.inf", DeveloperPreview: true}
+			return r
+		}, "windows", StatusWarn, []string{"WDDM driver 32.0.16.2005", "nv_surface_woa.inf", "version mapping unconfirmed"}, []string{"616.00", "580"}},
+		{"rtx-spark inferred from Windows on Arm and the adapter name", func() *types.Report {
+			r := n1xWDDM()
+			r.Platform.Class, r.Platform.GPUSoC = "", ""
+			return r
+		}, "windows", StatusWarn, []string{"WDDM driver 32.0.16.1600", "616.00"}, []string{"580"}},
+		{"rtx-spark with nvidia-smi 616.00", n1xWindowsReport, "windows", StatusWarn,
+			[]string{"driver 616.00", "developer preview", "rtx-spark-driver-developer-preview"}, []string{"WDDM", "not shipped", "580"}},
+		{"rtx-spark without any driver string", func() *types.Report {
+			r := n1xWDDM()
+			r.GPUs[0].DriverVersion = ""
+			return r
+		}, "windows", StatusFail, []string{"no NVIDIA driver version detected"}, nil},
+		{"windows x64 3090 with nvidia-smi 581.29", func() *types.Report {
+			r := rtx3090Report()
+			r.Driver.Version, r.GPUs[0].DriverVersion = "581.29", "581.29"
+			return r
+		}, "windows", StatusPass, []string{"driver 581.29"}, []string{"WDDM", "developer preview"}},
+		{"windows x64 3090 without nvidia-smi (WDDM only)", func() *types.Report {
+			r := rtx3090Report()
+			r.Driver = types.DriverInfo{}
+			r.GPUs[0].DriverVersion = "32.0.15.8129"
+			return r
+		}, "windows", StatusPass, []string{"WDDM driver 32.0.15.8129", "version mapping unconfirmed"}, []string{"580", "616.00", "developer preview"}},
+		{"linux GB10 580.95.05", gb10Report, "linux", StatusPass, []string{"driver 580.95.05"}, []string{"WDDM"}},
+		{"linux GB10 570 branch", func() *types.Report {
+			r := gb10Report()
+			r.Driver.Version, r.GPUs[0].DriverVersion = "570.86.10", "570.86.10"
+			return r
+		}, "linux", StatusWarn, []string{"driver 570.86.10", "580 branch"}, nil},
+		{"linux GH200 570 off Spark", gh200Report, "linux", StatusPass, []string{"driver 570.86.15"}, []string{"580"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := driverPrereq(t, tc.rep(), tc.goos)
+			if p.Status != tc.status {
+				t.Errorf("status = %s (%s), want %s", p.Status, p.Detail, tc.status)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(p.Detail, w) {
+					t.Errorf("detail %q lacks %q", p.Detail, w)
+				}
+			}
+			for _, w := range tc.reject {
+				if strings.Contains(p.Detail, w) {
+					t.Errorf("detail %q must not contain %q", p.Detail, w)
+				}
+			}
+		})
+	}
+}
