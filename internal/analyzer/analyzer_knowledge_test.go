@@ -24,6 +24,20 @@ type knowledgeRule struct {
 	Platform       string   `json:"platform"`
 	RemediationID  *string  `json:"remediation_id"`
 	Description    string   `json:"description"`
+
+	// Spark / unified-memory additions (spec section 5).
+	Platforms       []string `json:"platforms"`
+	Impact          string   `json:"impact"`
+	NextSteps       []string `json:"next_steps"`
+	WhyItMatters    string   `json:"why_it_matters"`
+	SourceIDs       []string `json:"source_ids"`
+	Sources         []string `json:"sources"`
+	Trigger         string   `json:"trigger"`
+	EvidenceTmpl    string   `json:"evidence_template"`
+	SeverityEscalat *struct {
+		Threshold int    `json:"threshold"`
+		Escalated string `json:"escalated"`
+	} `json:"severity_escalation"`
 }
 
 func loadKnowledgeRules(t *testing.T) (version string, rules map[string]knowledgeRule) {
@@ -49,27 +63,48 @@ func loadKnowledgeRules(t *testing.T) (version string, rules map[string]knowledg
 	return doc.Version, rules
 }
 
-// analyzerSourceIDs collects every Finding.ID literal assigned in analyzer.go.
+// analyzerSourceIDs collects every Finding.ID literal assigned in any
+// non-test .go file of the package (spec 5: rules may live in analyzer.go,
+// analyzer_spark.go, analyzer_cluster.go, analyzer_woa.go). Literal `ID:`
+// assignments count, as do sparkFinding("id", ...) calls, which pull the rest
+// of the finding from the generated sparkRules table.
 // It is the ground truth for "which rules exist": a rule nobody's synthetic
 // report triggers still shows up here, so the corpus below cannot silently
 // hide a rule from the rules.json comparison.
 func analyzerSourceIDs(t *testing.T) []string {
 	t.Helper()
-	src, err := os.ReadFile("analyzer.go")
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("read analyzer.go: %v", err)
+		t.Fatalf("glob: %v", err)
 	}
-	re := regexp.MustCompile(`(?m)^\s+ID:\s+"([a-z0-9-]+)",$`)
+	idRe := regexp.MustCompile(`(?m)^\s+ID:\s+"([a-z0-9-]+)",$`)
+	callRe := regexp.MustCompile(`sparkFinding\("([a-z0-9-]+)"`)
 	seen := map[string]bool{}
 	var ids []string
-	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			ids = append(ids, m[1])
+	scanned := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		scanned++
+		for _, re := range []*regexp.Regexp{idRe, callRe} {
+			for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+				if !seen[m[1]] {
+					seen[m[1]] = true
+					ids = append(ids, m[1])
+				}
+			}
 		}
 	}
-	if len(ids) < 40 {
-		t.Fatalf("only found %d finding ids in analyzer.go; the regexp is probably out of date", len(ids))
+	if scanned < 4 {
+		t.Fatalf("scanned only %d non-test files; expected analyzer.go plus the Spark files", scanned)
+	}
+	if len(ids) < 90 {
+		t.Fatalf("only found %d finding ids in the analyzer sources; the regexps are probably out of date", len(ids))
 	}
 	return ids
 }
@@ -134,6 +169,10 @@ func ruleCorpus() []struct {
 		// GeForce Experience rather than NVIDIA App
 		full(&types.Report{GPUs: nv, Driver: drv, Windows: &types.WindowsInfo{GFEVersion: "3.28"}}),
 	)
+	// Spark / unified-memory rules (analyzer_spark_test.go).
+	for _, c := range sparkCorpus() {
+		corpus = append(corpus, entry{c.mode, c.report})
+	}
 	return corpus
 }
 
