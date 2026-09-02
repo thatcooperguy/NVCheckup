@@ -5,24 +5,29 @@
 # docs/roadmap/spark-support.md 2.1 (dgx-dashboard.service,
 # dgx-dashboard-admin.service, fwupd) and 5 (gb10-clock-cap.service,
 # nvidia-persistenced, avahi, ufw). Unknown units are "inactive" (exit 3), as
-# with the real tool. Anything that would start, stop, enable, mask or edit a
-# unit is refused. Never calls the real systemctl.
+# with the real tool; `show -p LoadState [--value]` answers "loaded" only for
+# units the scenario lists and "not-found" otherwise (the collector uses it to
+# tell an installed-but-stopped gb10-clock-cap.service from a missing one).
+# Anything that would start, stop, enable, mask or edit a unit is refused.
+# Never calls the real systemctl.
 . "$(dirname "$0")/nvc-sim-lib.sh"
 
-state_of() {
-  local u="$1"
-  case "$u" in *.service|*.socket|*.target|*.timer) ;; *) u="$u.service" ;; esac
-  sim_get "systemd_units.$u" inactive
+unit_name() {
+  case "$1" in *.service|*.socket|*.target|*.timer|*.mount|*.path) echo "$1" ;; *) echo "$1.service" ;; esac
 }
+state_of() { sim_get "systemd_units.$(unit_name "$1")" inactive; }
+load_state_of() { if sim_has "systemd_units.$(unit_name "$1")"; then echo loaded; else echo not-found; fi; }
 
 cmd=""
 props=""
+value_only=0
 units=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -p|--property) props="$2"; shift 2 ;;
     --property=*) props="${1#--property=}"; shift ;;
-    --no-pager|--quiet|-q|--plain|--no-legend|--all|-a|--user|--system|--value) shift ;;
+    --value) value_only=1; shift ;;
+    --no-pager|--quiet|-q|--plain|--no-legend|--all|-a|--user|--system) shift ;;
     --type=*|-t) shift ;;
     -*) shift ;;
     *) if [ -z "$cmd" ]; then cmd="$1"; else units+=("$1"); fi; shift ;;
@@ -44,12 +49,18 @@ case "$cmd" in
     for u in "${units[@]}"; do echo "$(state_of "$u")"; done
     exit 1 ;;
   show)
+    # prop NAME VALUE: print "NAME=VALUE", or just VALUE under --value, when NAME was asked for (or no -p was given).
+    prop() { if [ -z "$props" ] || [[ ",$props," == *",$1,"* ]]; then if [ "$value_only" = 1 ]; then echo "$2"; else echo "$1=$2"; fi; fi; }
     for u in "${units[@]}"; do
       s="$(state_of "$u")"
-      if [ -z "$props" ] || [[ ",$props," == *",ActiveState,"* ]]; then echo "ActiveState=$s"; fi
-      if [ -z "$props" ] || [[ ",$props," == *",SubState,"* ]]; then [ "$s" = active ] && echo "SubState=running" || echo "SubState=dead"; fi
-      if [ -z "$props" ] || [[ ",$props," == *",UnitFileState,"* ]]; then [ "$s" = active ] && echo "UnitFileState=enabled" || echo "UnitFileState=disabled"; fi
-      if [ -z "$props" ] || [[ ",$props," == *",Id,"* ]]; then echo "Id=$u"; fi
+      ls="$(load_state_of "$u")"
+      prop Id "$(unit_name "$u")"
+      prop LoadState "$ls"
+      prop ActiveState "$s"
+      if [ "$s" = active ]; then prop SubState running; else prop SubState dead; fi
+      if [ "$ls" = loaded ]; then
+        if [ "$s" = active ]; then prop UnitFileState enabled; else prop UnitFileState disabled; fi
+      fi
     done
     exit 0 ;;
   status)

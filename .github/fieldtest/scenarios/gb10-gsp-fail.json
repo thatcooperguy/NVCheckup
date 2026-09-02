@@ -1,5 +1,5 @@
 {
-  "description": "DGX Spark (GB10) whose GPU failed GSP initialisation at boot (spec section 10 variant gb10-gsp-fail, strings from spec 3.2 / S12). Same machine, DGX OS and packages as gb10.json, but every nvidia-smi invocation prints 'No devices were found' (spec 3.2) and dmesg carries the Xid 119 GSP RPC timeout, the ksec2PrepareBootCommands_GB20B SEC2 secure-boot timeout, 'RmInitAdapter: Cannot initialize GSP firmware RM' and 'RmInitAdapter failed! (0x62:0x65:2028)' (all spec 3.2). lspci still lists [10de:2e12] at 000f:01:00.0 (spec 3.1 row 5) and lsmod still shows the nvidia modules loaded. The OTA checker reports failed: [\"driver\"] (spec 3.2). Expected (spec 10): dgx-spark-gsp-init-failure CRIT; forbidden: no-nvidia-gpu (spec 5.1 also suppresses driver-not-detected). lspci_lines and other_netdevs carry the same omissions as gb10.json (no PCIe root ports, no mgmt-NIC / Wi-Fi PCI ids: spec 2.1 names only the drivers). PLACEHOLDERS: the nvidia-smi exit code for 'No devices were found' (6 here) is not in the spec (the collectors only test for non-zero), and, as in gb10.json, the DGX_SWBUILD_DATE / DGX_SWBUILD_VERSION / DGX_COMMIT_ID / DGX_OTA_DATE values, the fastos-release VERSION and the BIOS release date are inherited from the draft scenario (the spec gives only the key list).",
+  "description": "DGX Spark (GB10) whose GPU failed GSP initialisation at boot (spec section 10 variant gb10-gsp-fail, strings from spec 3.2 / S12). Same machine, DGX OS and packages as gb10.json, but every nvidia-smi invocation prints 'No devices were found' (spec 3.2) and dmesg carries the Xid 119 GSP RPC timeout, the ksec2PrepareBootCommands_GB20B SEC2 secure-boot timeout, 'RmInitAdapter: Cannot initialize GSP firmware RM' and 'RmInitAdapter failed! (0x62:0x65:2028)' (all spec 3.2). lspci still lists [10de:2e12] at 000f:01:00.0 (spec 3.1 row 5) and lsmod still shows the nvidia modules loaded. The OTA checker reports failed: [\"driver\"] (spec 3.2). Expected (spec 10): dgx-spark-gsp-init-failure CRIT; forbidden: no-nvidia-gpu (spec 5.1 also suppresses driver-not-detected). lspci_lines and other_netdevs carry the same omissions as gb10.json (no PCIe root ports, no mgmt-NIC / Wi-Fi PCI ids: spec 2.1 names only the drivers). PLACEHOLDERS: the nvidia-smi exit code for 'No devices were found' (6 here) is not in the spec (the collectors only test for non-zero), and, as in gb10.json, the DGX_SWBUILD_DATE / DGX_SWBUILD_VERSION / DGX_COMMIT_ID / DGX_OTA_DATE values, the fastos-release VERSION and the BIOS release date are inherited from the draft scenario (the spec gives only the key list). INTEGRATION ADDITIONS (2026-09-02, after WP1-WP5 merged): journal_boots / journal_units / hostname feed the journalctl shim (previous boot ends with the systemd 255 shutdown lines 'Shutting down.', 'systemd-shutdown', 'Journal stopped'; these are systemd behaviour, not hardware facts, and the boot id / timestamps are placeholders); ldconfig_libs lists the driver libraries the collectors look up (libcuda.so.1, libnvidia-ml.so.1 under the Ubuntu arm64 multiarch dir, the same path linux.go probes; whether a CUDA toolkit is preinstalled is unconfirmed, so no libcudart entry); netplan persists the cage-0 addresses with mtu 9000 (spec 9 'MTU 9000 on every node'; the file name 50-cx7.yaml is a placeholder); cx7_hotplug_enabled creates /etc/nvidia/cx7-hotplug-enabled (spec 9 lists the file; whether a stock unit ships it is unconfirmed, the analyzer only echoes its presence); docker writes /etc/docker/daemon.json with the nvidia runtime plus features.cdi and /etc/cdi/nvidia.yaml (the toolkit's documented 'nvidia-ctk runtime configure' / 'nvidia-ctk cdi generate' result; whether DGX OS enables CDI by default is unconfirmed); apt_sources carries NVIDIA's documented nvidia-container-toolkit.list line (S44 checks its first line). gb10-clock-cap.service was removed from systemd_units: it is a community add-on (S48), a stock unit has no such unit file, and the collector now asks systemctl show -p LoadState so a listed-but-inactive unit would read as installed.",
   "machine": "aarch64",
   "driver": "580.159.03",
   "cuda": "13.0",
@@ -312,7 +312,6 @@
     "dgx-dashboard-admin.service": "active",
     "fwupd.service": "active",
     "nvidia-persistenced.service": "active",
-    "gb10-clock-cap.service": "inactive",
     "avahi-daemon.service": "active",
     "ufw.service": "inactive",
     "docker.service": "active",
@@ -353,5 +352,104 @@
   "nvidia_smi_failure": {
     "stdout": "No devices were found",
     "exit_code": 6
+  },
+  "hostname": "spark-0f01",
+  "journal_boots": [
+    {
+      "index": -1,
+      "boot_id": "5f2a9c4e1b7d4d3a8e6f0c2b9a1d7e35",
+      "first": "2026-08-31 08:00:00",
+      "last": "2026-08-31 22:15:03",
+      "lines": [
+        {
+          "ident": "systemd[1]",
+          "msg": "Stopped target multi-user.target - Multi-User System."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Stopped target basic.target - Basic System."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Reached target shutdown.target - System Shutdown."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Reached target final.target - Late Shutdown Services."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Finished systemd-poweroff.service - System Power Off."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Reached target power-off.target - System Power Off."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Shutting down."
+        },
+        {
+          "ident": "systemd-shutdown[1]",
+          "msg": "Syncing filesystems and block devices."
+        },
+        {
+          "ident": "systemd-shutdown[1]",
+          "msg": "Sending SIGTERM to remaining processes..."
+        },
+        {
+          "ident": "systemd-journald[300]",
+          "msg": "Journal stopped"
+        }
+      ]
+    },
+    {
+      "index": 0,
+      "boot_id": "8c1d3e5f7a9b4c2d6e8f0a1b3c5d7e91",
+      "first": "2026-09-01 07:30:12",
+      "last": "2026-09-01 09:45:00",
+      "lines": [
+        {
+          "ident": "systemd[1]",
+          "msg": "Reached target multi-user.target - Multi-User System."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Reached target graphical.target - Graphical Interface."
+        },
+        {
+          "ident": "systemd[1]",
+          "msg": "Startup finished in 12.345s (firmware) + 4.567s (loader) + 8.901s (kernel) + 21.234s (userspace) = 47.047s."
+        }
+      ]
+    }
+  ],
+  "journal_units": {
+    "avahi-daemon.service": [
+      "Server startup complete. Host name is spark-0f01.local. Local service cookie is 1234567890."
+    ]
+  },
+  "ldconfig_libs": [
+    "libnvidia-ml.so.1 (libc6,AArch64) => /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1",
+    "libcuda.so.1 (libc6,AArch64) => /usr/lib/aarch64-linux-gnu/libcuda.so.1",
+    "libcuda.so (libc6,AArch64) => /usr/lib/aarch64-linux-gnu/libcuda.so"
+  ],
+  "netplan": {
+    "file": "50-cx7.yaml",
+    "interfaces": [
+      "enp1s0f0np0",
+      "enP2p1s0f0np0"
+    ]
+  },
+  "cx7_hotplug_enabled": true,
+  "docker": {
+    "runtimes": [
+      "nvidia"
+    ],
+    "cdi": true,
+    "cdi_spec": true
+  },
+  "apt_sources": {
+    "nvidia-container-toolkit.list": "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /\n"
   }
 }
