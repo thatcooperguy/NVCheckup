@@ -14,17 +14,162 @@
 #   ./scripts/spark-capture.sh                 # writes nvcheckup-spark-capture-<stamp>.tar.gz
 #   ./scripts/spark-capture.sh --out DIR       # capture into DIR (no tarball; used by linux-fieldtest.sh)
 #   ./scripts/spark-capture.sh --no-sudo       # never call sudo even if it is passwordless
+#   ./scripts/spark-capture.sh --self-test     # check the redaction rules against sample lines; captures nothing
 #
 # Attach the tarball to https://github.com/thatcooperguy/NVCheckup/issues/2.
 set -uo pipefail
 
 REPO="thatcooperguy/NVCheckup"
+
+# --- redaction ---------------------------------------------------------------
+# Serial numbers, GUIDs and GPU UUIDs identify the unit; MACs, IPs, hostname,
+# user and home identify the network and the person. Version strings such as
+# 580.159.03, 6.17.0-1026 or 580.159.03-0ubuntu0.24.04.1 must survive, so:
+#  - IPv4 needs exactly four octets in 0-255 not adjacent to more dots or
+#    digits, and the rule is not applied to the package/version-only files
+#    (02-os-release, 03-uname, 23-dpkg, 33-modinfo, 37-python-torch,
+#    39-cuda-toolkit) where a four-part version such as 1.2.3.4 would
+#    otherwise become <ip> and where no address can occur;
+#  - IPv6 is matched as a whole token (an address containing "::" or exactly
+#    eight hextet groups, optional /prefix) so that the last address on an
+#    `ip -br addr` line is caught while nvidia-smi timestamps (04:22:42),
+#    bus ids (0000000F:01:00.0), the RmInitAdapter tuple (0x62:0x65:2028)
+#    and MACs (replaced first) are left alone.
+# `redact --self-test` runs the rules over built-in sample lines (including the
+# two `ip -br addr` shapes above) and exits non-zero on any miss; CI runs it.
+redact() {
+  # DGX OS ships python3; the fallback to plain "python" only matters when the script is
+  # exercised on a developer box whose python3 is a store stub.
+  local py=python3 err=/dev/null
+  python3 -c pass >/dev/null 2>&1 || py=python
+  if [ "${1:-}" = "--self-test" ]; then
+    err=/dev/stderr
+    set -- --self-test - - -  # identity values are fixed inside the python
+  else
+    set -- "$OUT" "$(hostname)" "$(id -un)" "${HOME:-/nonexistent}"
+  fi
+  "$py" - "$@" <<'PY' 2>"$err"
+import os, re, sys
+out, host, user, home = sys.argv[1:5]
+ipv4 = re.compile(r'(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])')
+# Whole-token IPv6: a run of hextets that either contains "::" or has exactly eight groups,
+# optionally followed by /prefix, not glued to other word characters, colons or dots.
+ipv6 = re.compile(r'(?i)(?<![\w:.])(?=[0-9a-f:]*::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4})(?:[0-9a-f]{1,4})?(?::[0-9a-f]{0,4}){2,7}(?:/\d{1,3})?(?![\w:])')
+rules = [
+    (re.compile(r'(?i)(DGX_SERIAL_NUMBER=)"[^"]*"'), r'\1"<serial>"'),
+    (re.compile(r'(?i)(Serial Number\s*:\s*)\S.*'), r'\1<serial>'),
+    (re.compile(r'(?i)("Serial"\s*:\s*)"[^"]*"'), r'\1"<serial>"'),
+    (re.compile(r'(?i)(product_serial|board_serial|chassis_serial)\s*\n[^\n]*'), r'\1\n<serial>'),
+    (re.compile(r'GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'), '<gpu-uuid>'),
+    (re.compile(r'(?i)((?:Node|Port|System image)\s+GUID\s*:\s*)0x[0-9a-f]+'), r'\1<guid>'),
+    (re.compile(r'(?i)(DeviceId"\s*:\s*)"[0-9a-f]{40}"'), r'\1"<device-id>"'),
+    (re.compile(r'(?i)(Device ID:\s*)[0-9a-f]{40}'), r'\1<device-id>'),
+    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b'), '<mac>'),
+    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){7}[0-9a-fA-F]{2}\b'), '<mac>'),
+    (re.compile(r'(?i)(ssid|psk|password|token)\s*[:=]\s*\S+'), r'\1=<redacted>'),
+]
+keep_ip = {"127.0.0.1", "0.0.0.0", "1.1.1.1", "8.8.8.8", "255.255.255.255"}
+keep_ip6 = {"::", "::1", "::/0", "::1/128"}
+# Package / version listings never contain addresses; skipping them keeps 1.2.3.4-style versions.
+version_only = {"02-os-release.txt", "03-uname.txt", "23-dpkg.txt", "33-modinfo.txt", "37-python-torch.txt", "39-cuda-toolkit.txt"}
+
+
+def redact_text(text, name, counts):
+    for rx, rep in rules:
+        text, n = rx.subn(rep, text)
+        counts[rx.pattern[:30]] = counts.get(rx.pattern[:30], 0) + n
+    text, n = ipv6.subn(lambda m: m.group(0) if m.group(0) in keep_ip6 else "<ipv6>", text)
+    counts["ipv6"] = counts.get("ipv6", 0) + n
+    if name not in version_only:
+        text, n = ipv4.subn(lambda m: m.group(0) if m.group(0) in keep_ip else "<ip>", text)
+        counts["ipv4"] = counts.get("ipv4", 0) + n
+    if home and home != "/" and home != "/nonexistent":
+        text = text.replace(home, "<home>")
+    if host:
+        text = re.sub(r'(?<![\w.-])' + re.escape(host) + r'(?![\w-])', "<host>", text)
+    # Also the bare account of a domain user (DOMAIN+name, DOMAIN\name) and the home directory's last component.
+    names = {user, user.split("+")[-1], user.split("\\")[-1], os.path.basename(home.rstrip("/"))}
+    for u in sorted(names, key=len, reverse=True):
+        if u and u not in ("root", "nonexistent") and len(u) > 2:
+            text = re.sub(r'(?<![\w-])' + re.escape(u) + r'(?![\w-])', "<user>", text)
+    return text
+
+
+if out == "--self-test":
+    host, user, home = "testhost", "testuser", "/home/testuser"  # fixed identity for the sample lines
+    # (file name the line would land in, input, expected output)
+    cases = [
+        ("28-ip.txt", "enP7s7           UP             192.168.1.50/24 fe80::1a2b:3c4d:5e6f:7a8b/64",
+                      "enP7s7           UP             <ip>/24 <ipv6>"),
+        ("28-ip.txt", "enp1s0f0np0      UP             2001:db8:abcd:12::1/64 fe80::1/64",
+                      "enp1s0f0np0      UP             <ipv6> <ipv6>"),
+        ("28-ip.txt", "    inet6 fe80::1a2b:3c4d:5e6f:7a8b/64 scope link", "    inet6 <ipv6> scope link"),
+        ("28-ip.txt", "    inet6 ::1/128 scope host", "    inet6 ::1/128 scope host"),
+        ("28-ip.txt", "2001:0db8:85a3:0000:0000:8a2e:0370:7334", "<ipv6>"),
+        ("28-ip.txt", "    link/ether 3c:ec:ef:12:34:56 brd ff:ff:ff:ff:ff:ff", "    link/ether <mac> brd <mac>"),
+        ("28-ip.txt", "default via 192.168.1.1 dev enP7s7 proto dhcp src 192.168.1.50 metric 100",
+                      "default via <ip> dev enP7s7 proto dhcp src <ip> metric 100"),
+        ("28-ip.txt", "::/0 via fe80::1 dev enP7s7 metric 1024", "::/0 via <ipv6> dev enP7s7 metric 1024"),
+        ("25-listening-ports.txt", "tcp LISTEN 0 4096 0.0.0.0:11000 0.0.0.0:*", "tcp LISTEN 0 4096 0.0.0.0:11000 0.0.0.0:*"),
+        ("25-listening-ports.txt", "tcp LISTEN 0 4096 [::]:11000 [::]:*", "tcp LISTEN 0 4096 [::]:11000 [::]:*"),
+        ("25-listening-ports.txt", "tcp LISTEN 0 4096 10.20.30.40:22 0.0.0.0:*", "tcp LISTEN 0 4096 <ip>:22 0.0.0.0:*"),
+        # spec 2.1 nvidia-smi table / -q shapes and the spec 3.2 RmInitAdapter tuple must survive.
+        ("18-nvidia-smi-q.txt", "Timestamp                                 : Tue Sep  2 04:22:42 2026",
+                                "Timestamp                                 : Tue Sep  2 04:22:42 2026"),
+        ("15-nvidia-smi-table.txt", "|   0  NVIDIA GB10                    On  |   0000000F:01:00.0  Off |                  N/A |",
+                                    "|   0  NVIDIA GB10                    On  |   0000000F:01:00.0  Off |                  N/A |"),
+        ("34-dmesg.txt", "NVRM: RmInitAdapter failed! (0x62:0x65:2028)", "NVRM: RmInitAdapter failed! (0x62:0x65:2028)"),
+        ("11-lspci-nvidia.txt", "000f:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2e12] (rev a1)",
+                                "000f:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2e12] (rev a1)"),
+        ("14-nvidia-smi-L.txt", "GPU 0: NVIDIA GB10 (UUID: GPU-12345678-abcd-ef01-2345-67890abcdef0)", "GPU 0: NVIDIA GB10 (UUID: <gpu-uuid>)"),
+        # spec 3.1 row 4 / 12: version strings of every shape stay readable.
+        ("23-dpkg.txt", "ii  nvidia-driver-580-open  580.159.03-0ubuntu0.24.04.1  arm64", "ii  nvidia-driver-580-open  580.159.03-0ubuntu0.24.04.1  arm64"),
+        ("23-dpkg.txt", "ii  some-package  1.2.3.4-1  arm64", "ii  some-package  1.2.3.4-1  arm64"),
+        ("37-python-torch.txt", "torch 2.9.0+cu130 ['sm_120', 'sm_121'] V13.0.88", "torch 2.9.0+cu130 ['sm_120', 'sm_121'] V13.0.88"),
+        ("03-uname.txt", "Linux testhost 6.17.0-1026-nvidia #26-Ubuntu SMP aarch64", "Linux <host> 6.17.0-1026-nvidia #26-Ubuntu SMP aarch64"),
+        ("09-meminfo.txt", "MemTotal:       125513944 kB", "MemTotal:       125513944 kB"),
+        ("29-sysfs-net.txt", "rate: 200 Gb/sec (4X HDR)  state: 4: ACTIVE  phys_state: 5: LinkUp", "rate: 200 Gb/sec (4X HDR)  state: 4: ACTIVE  phys_state: 5: LinkUp"),
+        ("27-ibstat.txt", "        Port GUID: 0x9c63c0030012ab34", "        Port GUID: <guid>"),
+        ("01-dgx-release.txt", 'DGX_SERIAL_NUMBER="1234567890123"', 'DGX_SERIAL_NUMBER="<serial>"'),
+        ("31-env-nccl.txt", "HOME=/home/testuser USER=testuser NCCL_SOCKET_IFNAME=enp1s0f0np0", "HOME=<home> USER=<user> NCCL_SOCKET_IFNAME=enp1s0f0np0"),
+    ]
+    failed = 0
+    for name, src, want in cases:
+        got = redact_text(src, name, {})
+        if got != want:
+            failed += 1
+            print("FAIL %s\n  in:   %r\n  want: %r\n  got:  %r" % (name, src, want, got), file=sys.stderr)
+    print("redaction self-test: %d cases, %d failed" % (len(cases), failed))
+    sys.exit(1 if failed else 0)
+
+counts = {}
+for root, _, files in os.walk(out):
+    for name in files:
+        path = os.path.join(root, name)
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        new = redact_text(text, name, counts)
+        if new != text:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new)
+with open(os.path.join(out, "00-redaction.txt"), "w", encoding="utf-8") as f:
+    f.write("redaction pass: tokens <serial> <gpu-uuid> <guid> <device-id> <mac> <ip> <ipv6> <host> <user> <home>\n")
+    f.write("ipv4 rule skipped in version-only files: %s\n" % " ".join(sorted(version_only)))
+    for k, v in sorted(counts.items()):
+        if v:
+            f.write("%-32s %d\n" % (k, v))
+print("redacted")
+PY
+}
 OUT=""
 USE_SUDO=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
     --no-sudo) USE_SUDO=0; shift ;;
+    --self-test) redact --self-test; exit $? ;;
     -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -174,75 +319,6 @@ cap 38-docker.txt sh -c "docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/
 cap 39-cuda-toolkit.txt sh -c "ls -la /usr/local/cuda* 2>&1 | head; /usr/local/cuda/bin/nvcc --version 2>&1 | tail -2; /usr/local/cuda/bin/ptxas --version 2>&1 | tail -1"
 cap 39-cuda-toolkit.txt sh -c "ldconfig -p | grep -E 'libcuda|libcudart|libnvidia-ml|libnccl' "
 
-# --- redaction ---------------------------------------------------------------
-# Serial numbers, GUIDs and GPU UUIDs identify the unit; MACs, IPs, hostname,
-# user and home identify the network and the person. Version strings such as
-# 580.159.03 or 6.17.0-1026 must survive, so IPv4 needs exactly four octets
-# in 0-255 not adjacent to more dots or digits.
-redact() {
-  # DGX OS ships python3; the fallback to plain "python" only matters when the script is
-  # exercised on a developer box whose python3 is a store stub.
-  local py=python3
-  python3 -c pass >/dev/null 2>&1 || py=python
-  "$py" - "$OUT" "$(hostname)" "$(id -un)" "${HOME:-/nonexistent}" <<'PY' 2>/dev/null
-import os, re, sys
-out, host, user, home = sys.argv[1:5]
-ipv4 = re.compile(r'(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])')
-rules = [
-    (re.compile(r'(?i)(DGX_SERIAL_NUMBER=)"[^"]*"'), r'\1"<serial>"'),
-    (re.compile(r'(?i)(Serial Number\s*:\s*)\S.*'), r'\1<serial>'),
-    (re.compile(r'(?i)("Serial"\s*:\s*)"[^"]*"'), r'\1"<serial>"'),
-    (re.compile(r'(?i)(product_serial|board_serial|chassis_serial)\s*\n[^\n]*'), r'\1\n<serial>'),
-    (re.compile(r'GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'), '<gpu-uuid>'),
-    (re.compile(r'(?i)((?:Node|Port|System image)\s+GUID\s*:\s*)0x[0-9a-f]+'), r'\1<guid>'),
-    (re.compile(r'(?i)(DeviceId"\s*:\s*)"[0-9a-f]{40}"'), r'\1"<device-id>"'),
-    (re.compile(r'(?i)(Device ID:\s*)[0-9a-f]{40}'), r'\1<device-id>'),
-    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b'), '<mac>'),
-    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){7}[0-9a-fA-F]{2}\b'), '<mac>'),
-    (re.compile(r'(?i)\b(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{1,4}(?:/\d{1,3})?\b(?=.*(?:inet6|scope|fe80|::))'), '<ipv6>'),
-    (re.compile(r'(?i)(ssid|psk|password|token)\s*[:=]\s*\S+'), r'\1=<redacted>'),
-]
-keep_ip = {"127.0.0.1", "0.0.0.0", "1.1.1.1", "8.8.8.8", "255.255.255.255"}
-
-
-def ip_sub(m):
-    return m.group(0) if m.group(0) in keep_ip else "<ip>"
-
-
-counts = {}
-for root, _, files in os.walk(out):
-    for name in files:
-        path = os.path.join(root, name)
-        try:
-            text = open(path, encoding="utf-8", errors="replace").read()
-        except OSError:
-            continue
-        orig = text
-        for rx, rep in rules:
-            text, n = rx.subn(rep, text)
-            counts[rx.pattern[:30]] = counts.get(rx.pattern[:30], 0) + n
-        text, n = ipv4.subn(ip_sub, text)
-        counts["ipv4"] = counts.get("ipv4", 0) + n
-        if home and home != "/" and home != "/nonexistent":
-            text = text.replace(home, "<home>")
-        if host:
-            text = re.sub(r'(?<![\w.-])' + re.escape(host) + r'(?![\w-])', "<host>", text)
-        # Also the bare account of a domain user (DOMAIN+name, DOMAIN\name) and the home directory's last component.
-        names = {user, user.split("+")[-1], user.split("\\")[-1], os.path.basename(home.rstrip("/"))}
-        for u in sorted(names, key=len, reverse=True):
-            if u and u not in ("root", "nonexistent") and len(u) > 2:
-                text = re.sub(r'(?<![\w-])' + re.escape(u) + r'(?![\w-])', "<user>", text)
-        if text != orig:
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(text)
-with open(os.path.join(out, "00-redaction.txt"), "w", encoding="utf-8") as f:
-    f.write("redaction pass: tokens <serial> <gpu-uuid> <guid> <device-id> <mac> <ip> <ipv6> <host> <user> <home>\n")
-    for k, v in sorted(counts.items()):
-        if v:
-            f.write("%-32s %d\n" % (k, v))
-print("redacted")
-PY
-}
 if ! redact; then
   note "python3 unavailable: falling back to sed redaction (hostname, user, home, MACs, serial lines only)"
   h="$(hostname)"; u="$(id -un)"
@@ -278,7 +354,7 @@ can answer) and the values it marks *unconfirmed* / *placeholder* in sections
 | `09-meminfo.txt` | `MemTotal` on this unit (125,513,944 kB in 2025, ~121.7 GiB in 2026 per 2.1), swap size and device shipped by DGX OS (fixture placeholder), `HugePages_*` (3.3) |
 | `10-thermal.txt` | Which ACPI thermal zones exist and their idle temperature (5 `gb10-acpi-thermal-zone-hot` threshold inference) |
 | `11-lspci-nvidia.txt` | `[10de:2e12]` at `000f:01:00.0` (3.1 row 5), `LnkCap`/`LnkSta` of the misreported link (2.1 `GEN 1@ 1x`) |
-| `12-lspci-mellanox.txt`, `13-lspci-all.txt` | Four ConnectX-7 functions `0000:01:00.0/.1` and `0002:01:00.0/.1` `[15b3:1021]` (2.1); Realtek `10ec:8127` and MediaTek `14c3:7925` ids |
+| `12-lspci-mellanox.txt`, `13-lspci-all.txt` | Four ConnectX-7 functions `0000:01:00.0/.1` and `0002:01:00.0/.1` `[15b3:1021]` (2.1); the PCI ids and addresses of the Realtek r8127 mgmt NIC `enP7s7` and the MediaTek MT7925 Wi-Fi `wlP9s9`, and of the PCIe root ports (2.1 names only the drivers and netdevs, so the gb10 fixture leaves those lspci lines out) |
 | `14-nvidia-smi-L.txt`, `15-nvidia-smi-table.txt` | Name `NVIDIA GB10`, Bus-Id `0000000F:01:00.0`, `Not Supported` Memory-Usage, `N/A` fan and cap (2.1); exact table layout used by the shim |
 | `16-nvidia-smi-query.txt` | Every collector query field list with and without units: does `compute_cap` succeed (4, `GPUCapQueryFields`); which fields print `[N/A]`; are `clocks.max.memory` and the power limits `[N/A]` (2.1) |
 | `17-nvidia-smi-compute-apps.txt` | Whether per-process memory works on unified memory (2.1) |
@@ -296,6 +372,13 @@ can answer) and the values it marks *unconfirmed* / *placeholder* in sections
 | `37-python-torch.txt` | torch build tag (`+cu130`), `get_arch_list()` containing `sm_120`/`sm_121` (3.2 ecosystem, 7.7) |
 | `38-docker.txt` | Docker runtimes (`nvidia`), CDI spec dirs, snap docker, image tags and architectures (5 `docker-*`, `arm64-container-amd64-image`, `sm121-ngc-image-too-old`) |
 | `39-cuda-toolkit.txt` | Toolkit version (`V13.0.88` / 13.0.2), bundled `ptxas`, `libcudart.so.12` vs `.13` presence (3.2, 5 `sm121-triton-ptxas-stale`, `arm64-cuda12-wheel-on-cuda13`) |
+
+Redaction notes: `<ip>` is not applied to the package/version-only files
+(`02-os-release`, `03-uname`, `23-dpkg`, `33-modinfo`, `37-python-torch`,
+`39-cuda-toolkit`) so that four-part versions such as `1.2.3.4` stay readable;
+no address is expected there, but skim them before attaching. IPv6 addresses
+are replaced as whole tokens (`<ipv6>`); `::`, `::1` and the `::/0` default
+route are kept. `scripts/spark-capture.sh --self-test` checks the rules.
 
 Not run on purpose: `sudo nvidia-bug-report.sh` (writes a large archive; run it
 separately if NVIDIA support asks), `partnerdiag` (needs Secure Boot off),

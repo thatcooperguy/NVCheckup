@@ -200,6 +200,8 @@ jobs:
             case "$f" in *nvidia-smi|*nvc-sim-scenario) python3 -m py_compile "$f" ;; *.sh) bash -n "$f" ;; *) bash -n "$f" ;; esac
           done
           for s in "$SCENARIOS"/*.json; do python3 -m json.tool "$s" >/dev/null; done
+          # Capture-kit redaction rules (spec 12): whole-token IPv6, version-safe IPv4, serial / GUID / MAC / host / user.
+          scripts/spark-capture.sh --self-test
           # The committed simroot trees must match what the scenarios generate (also creates the empty dirs).
           scripts/make-simroot.sh --all
           git status --porcelain -- .github/fieldtest/simroot
