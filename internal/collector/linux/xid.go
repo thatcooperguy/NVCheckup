@@ -61,51 +61,96 @@ func CollectXidErrors(timeout int) ([]types.XidError, []types.CollectorError) {
 	return parseAndGroupXidErrors(xidLines, readBootTime(), time.Now()), errs
 }
 
-// collectXidFromDmesg attempts to extract Xid error lines from dmesg output.
+// xidMarker is the kernel log text that identifies an NVIDIA Xid report.
+const xidMarker = "nvrm: xid"
+
+// filterXidLines returns the lines of kernel log output that carry an NVIDIA
+// Xid report (case-insensitive "NVRM: Xid"), replacing the former
+// "| grep -i" pipeline. No matching lines is a normal, healthy result and is
+// returned as an empty slice, never as an error.
+func filterXidLines(output string) []string {
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(strings.ToLower(line), xidMarker) {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+	}
+	return lines
+}
+
+// collectXidFromDmesg extracts Xid error lines from dmesg. dmesg is run
+// directly (no shell, no grep) so that "no Xid lines" is simply empty output;
+// only a failure of dmesg itself is reported, and an unprivileged read
+// (kernel.dmesg_restrict=1) keeps its "may need root" wording.
 func collectXidFromDmesg(timeout int, errs *[]types.CollectorError) []string {
 	if !util.CommandExists("dmesg") {
 		return nil
 	}
 
-	r := util.RunCommand(timeout, "sh", "-c", `dmesg 2>/dev/null | grep -i "NVRM: Xid"`)
-	if r.Err != nil {
-		// dmesg may require root; this is non-fatal
-		*errs = append(*errs, types.CollectorError{
-			Collector: "linux.xid.dmesg",
-			Error:     "dmesg Xid grep failed (may need root): " + r.Err.Error(),
-		})
+	r := util.RunCommand(timeout, "dmesg")
+	if detail := toolFailure(r); detail != "" {
+		msg := "dmesg failed: " + detail
+		if isPermissionDenied(r) {
+			msg = "dmesg failed (may need root): " + detail
+		}
+		*errs = append(*errs, types.CollectorError{Collector: "linux.xid.dmesg", Error: msg})
 		return nil
 	}
 
-	output := strings.TrimSpace(r.Stdout)
-	if output == "" {
-		return nil
-	}
-
-	return strings.Split(output, "\n")
+	return filterXidLines(r.Stdout)
 }
 
-// collectXidFromJournalctl attempts to extract Xid error lines from journalctl.
+// collectXidFromJournalctl extracts Xid error lines from the kernel journal of
+// the current boot. Like collectXidFromDmesg it filters in Go so an empty
+// result is not mistaken for a failure.
 func collectXidFromJournalctl(timeout int, errs *[]types.CollectorError) []string {
 	if !util.CommandExists("journalctl") {
 		return nil
 	}
 
-	r := util.RunCommand(timeout, "sh", "-c", `journalctl -k -b --no-pager 2>/dev/null | grep -i "NVRM: Xid"`)
-	if r.Err != nil {
+	r := util.RunCommand(timeout, "journalctl", "-k", "-b", "--no-pager")
+	if detail := toolFailure(r); detail != "" {
 		*errs = append(*errs, types.CollectorError{
 			Collector: "linux.xid.journalctl",
-			Error:     "journalctl Xid grep failed: " + r.Err.Error(),
+			Error:     "journalctl failed: " + detail,
 		})
 		return nil
 	}
 
-	output := strings.TrimSpace(r.Stdout)
-	if output == "" {
-		return nil
-	}
+	return filterXidLines(r.Stdout)
+}
 
-	return strings.Split(output, "\n")
+// toolFailure returns a description of why a command failed, or "" when it
+// succeeded. A non-zero exit that produced neither stderr nor a Go-level
+// error detail (a timeout or a failure to start) is not treated as a failure
+// worth reporting, mirroring how grep's exit 1 "no match" used to be
+// misreported. stderr is preferred over the bare "exit status N".
+func toolFailure(r util.CommandResult) string {
+	if r.Err == nil {
+		return ""
+	}
+	if stderr := strings.TrimSpace(r.Stderr); stderr != "" {
+		return firstLineOf(stderr)
+	}
+	if r.TimedOut || r.ExitCode < 0 {
+		return r.Err.Error()
+	}
+	return ""
+}
+
+// isPermissionDenied reports whether a failed command's stderr indicates an
+// unprivileged caller (dmesg under kernel.dmesg_restrict, journal ACLs).
+func isPermissionDenied(r util.CommandResult) bool {
+	e := strings.ToLower(r.Stderr)
+	return strings.Contains(e, "operation not permitted") || strings.Contains(e, "permission denied")
+}
+
+// firstLineOf returns the first line of s, trimmed.
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // readBootTime returns the kernel boot time. /proc/stat "btime" is seconds

@@ -7,7 +7,6 @@ import (
 	"net"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -348,21 +347,6 @@ func jitterFloat(rtts []float64) float64 {
 	return math.Sqrt(variance / float64(len(deltas)))
 }
 
-// medianFloat returns the median of v (0 for empty input).
-func medianFloat(v []float64) float64 {
-	if len(v) == 0 {
-		return 0
-	}
-	s := make([]float64, len(v))
-	copy(s, v)
-	sort.Float64s(s)
-	mid := len(s) / 2
-	if len(s)%2 == 1 {
-		return s[mid]
-	}
-	return (s[mid-1] + s[mid]) / 2
-}
-
 // roundMs rounds a millisecond value to two decimal places.
 func roundMs(ms float64) float64 {
 	return math.Round(ms*100) / 100
@@ -439,13 +423,6 @@ func parsePingTimesFallback(output string) []float64 {
 // parseLocaleFloat parses a decimal that may use a comma separator.
 func parseLocaleFloat(s string) (float64, error) {
 	return strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
-}
-
-// parsePingLoss extracts packet loss percentage from ping summary output,
-// returning 0 when no percentage is found.
-func parsePingLoss(output string) float64 {
-	loss, _ := parsePingLossFound(output)
-	return loss
 }
 
 // parsePingLossFound extracts the packet loss percentage and reports whether

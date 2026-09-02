@@ -301,17 +301,30 @@ func firstLine(s string) string {
 	return s
 }
 
+// checkWritePermissions probes whether the current directory is writable by
+// creating a uniquely named temporary file. os.CreateTemp never overwrites an
+// existing file (it uses O_EXCL with a random suffix), so a user file that
+// happens to share the prefix is safe. The probe is removed afterwards.
 func checkWritePermissions() CheckResult {
-	testFile := ".nvcheckup-selftest-write"
-	err := os.WriteFile(testFile, []byte("test"), 0644)
+	f, err := os.CreateTemp(".", ".nvcheckup-selftest-*")
 	if err != nil {
+		return CheckResult{
+			Name:   "Write Permissions",
+			Status: "FAIL",
+			Detail: "Cannot write to current directory: " + err.Error(),
+		}
+	}
+	name := f.Name()
+	_, writeErr := f.Write([]byte("test"))
+	closeErr := f.Close()
+	os.Remove(name)
+	if writeErr != nil || closeErr != nil {
 		return CheckResult{
 			Name:   "Write Permissions",
 			Status: "FAIL",
 			Detail: "Cannot write to current directory",
 		}
 	}
-	os.Remove(testFile)
 	return CheckResult{
 		Name:   "Write Permissions",
 		Status: "OK",

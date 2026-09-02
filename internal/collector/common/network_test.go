@@ -48,7 +48,7 @@ func TestParsePingTimesLinux(t *testing.T) {
 	}
 }
 
-func TestParsePingLoss(t *testing.T) {
+func TestParsePingLossFound_Table(t *testing.T) {
 	tests := []struct {
 		output   string
 		expected float64
@@ -60,9 +60,12 @@ func TestParsePingLoss(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := parsePingLoss(tt.output)
+		result, found := parsePingLossFound(tt.output)
+		if !found {
+			t.Errorf("parsePingLossFound(%q) found = false, want true", tt.output[:30])
+		}
 		if result != tt.expected {
-			t.Errorf("parsePingLoss(%q) = %f, want %f", tt.output[:30], result, tt.expected)
+			t.Errorf("parsePingLossFound(%q) = %f, want %f", tt.output[:30], result, tt.expected)
 		}
 	}
 }
@@ -265,23 +268,6 @@ func TestParsePingTimes_NoSamples(t *testing.T) {
 	}
 }
 
-func TestMedianFloat(t *testing.T) {
-	tests := []struct {
-		in   []float64
-		want float64
-	}{
-		{nil, 0},
-		{[]float64{5}, 5},
-		{[]float64{58, 4400, 60}, 60},
-		{[]float64{1, 2, 3, 4}, 2.5},
-	}
-	for _, tt := range tests {
-		if got := medianFloat(tt.in); got != tt.want {
-			t.Errorf("medianFloat(%v) = %v, want %v", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestJitterFloat(t *testing.T) {
 	if got := jitterFloat([]float64{10, 10, 10}); got != 0 {
 		t.Errorf("constant RTT jitter = %v, want 0", got)
@@ -345,8 +331,12 @@ func TestMeasureDNSReportsWorstSample(t *testing.T) {
 	if worst < 30 {
 		t.Errorf("worst sample %.2f ms is below the 40 ms delay of the uncached lookup", worst)
 	}
-	if med := medianFloat(samples); med >= worst {
-		t.Errorf("median %.2f should be below the worst sample %.2f in this scenario", med, worst)
+	// The cache hits must be clearly faster than the reported (worst) sample;
+	// otherwise the test is not exercising the uncached-vs-cached distinction.
+	for i, sample := range samples[1:] {
+		if sample >= worst {
+			t.Errorf("cached sample %d (%.2f ms) should be below the worst sample %.2f", i+1, sample, worst)
+		}
 	}
 }
 

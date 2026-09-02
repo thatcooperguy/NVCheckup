@@ -2,7 +2,9 @@ package remediate
 
 import (
 	"fmt"
+	"io/fs"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -184,4 +186,109 @@ func isNvidiaDriverPackage(name string) bool {
 		}
 	}
 	return false
+}
+
+// dkmsStatusHasInstalledNvidia reports whether "dkms status" output shows an
+// nvidia module that is built AND installed for the given running kernel. It
+// understands both dkms 2.x ("nvidia, 550.54.14, 6.5.0-28-generic, x86_64:
+// installed") and dkms 3.x ("nvidia/550.54.14, 6.5.0-28-generic, x86_64:
+// installed") line shapes. "added" (source registered, never built) and
+// "built" (compiled but not placed under /lib/modules) do not count, and
+// neither does a module installed only for a different kernel: that is the
+// state after a kernel upgrade whose DKMS rebuild failed.
+func dkmsStatusHasInstalledNvidia(output, kernel string) bool {
+	kernel = strings.TrimSpace(kernel)
+	if kernel == "" {
+		return false
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		if !strings.HasPrefix(lower, "nvidia") {
+			continue
+		}
+		colon := strings.LastIndex(line, ":")
+		if colon < 0 {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(line[colon+1:]))
+		if !strings.HasPrefix(status, "installed") {
+			continue
+		}
+		// The kernel version is one of the comma-separated fields before the status.
+		for _, f := range strings.Split(line[:colon], ",") {
+			if strings.TrimSpace(f) == kernel {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isNvidiaModuleFile reports whether a file name is the NVIDIA kernel module
+// in any of the compressed forms distros ship (nvidia.ko, nvidia.ko.xz,
+// nvidia.ko.zst, nvidia.ko.gz).
+func isNvidiaModuleFile(name string) bool {
+	return name == "nvidia.ko" || strings.HasPrefix(name, "nvidia.ko.")
+}
+
+// findBuiltNvidiaModule walks modulesDir (normally /lib/modules/<uname -r>)
+// and returns the path of the first nvidia.ko* it finds, or "" when none
+// exists. It covers DKMS output (updates/dkms), distro-built packages
+// (kernel/drivers/video, kernel/nvidia-550) and anything else under the
+// running kernel's module tree. A missing directory simply yields "".
+func findBuiltNvidiaModule(modulesDir string) string {
+	if strings.TrimSpace(modulesDir) == "" {
+		return ""
+	}
+	found := ""
+	_ = filepath.WalkDir(modulesDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// Unreadable subtree: keep looking elsewhere.
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() && isNvidiaModuleFile(d.Name()) {
+			found = path
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// driverInstallVerdict combines the three pieces of evidence about an NVIDIA
+// kernel driver into a decision. It is the pure core of nvidiaDriverInstalled.
+//
+//   - modinfoOK: "modinfo nvidia" succeeded, so the module is resolvable for
+//     the running kernel. Sufficient on its own.
+//   - packageEvidence: the package-manager query that listed a driver package
+//     ("" when none did).
+//   - moduleEvidence: path of a built nvidia.ko* for the running kernel, or a
+//     note that dkms status reports it installed ("" when neither).
+//
+// A package alone is NOT enough: after a failed DKMS build (missing headers,
+// Secure Boot signing failure, unsupported new kernel) the package is present
+// but no module exists, and blacklisting nouveau in that state boots to a
+// machine with no display driver at all.
+func driverInstallVerdict(modinfoOK bool, packageEvidence, moduleEvidence, kernel string) (evidence string, ok bool) {
+	switch {
+	case modinfoOK:
+		return "kernel module 'nvidia' is available (modinfo nvidia)", true
+	case packageEvidence != "" && moduleEvidence != "":
+		return fmt.Sprintf("NVIDIA driver package installed (%s) and %s", packageEvidence, moduleEvidence), true
+	case packageEvidence != "":
+		k := kernel
+		if k == "" {
+			k = "the running kernel"
+		}
+		return fmt.Sprintf("NVIDIA driver package is installed (%s) but no nvidia kernel module is built for %s: "+
+			"modinfo nvidia failed, no nvidia.ko* exists under /lib/modules/%s and dkms status does not list nvidia as installed for it. "+
+			"This is the state left by a failed DKMS build (missing kernel headers, Secure Boot signing, or an unsupported kernel)",
+			packageEvidence, k, kernel), false
+	default:
+		return "no NVIDIA driver detected (modinfo nvidia failed and no nvidia driver package is installed)", false
+	}
 }

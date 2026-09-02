@@ -106,3 +106,36 @@ func TestNoWorkingPythonError(t *testing.T) {
 	}
 	var _ types.CollectorError = err
 }
+
+func TestParseNvccVersion(t *testing.T) {
+	real := "nvcc: NVIDIA (R) Cuda compiler driver\n" +
+		"Copyright (c) 2005-2024 NVIDIA Corporation\n" +
+		"Built on Thu_Mar_28_02:18:24_PDT_2024\n" +
+		"Cuda compilation tools, release 12.4, V12.4.131\n" +
+		"Build cuda_12.4.r12.4/compiler.34097967_0\n"
+	if got := parseNvccVersion(real); got != "12.4" {
+		t.Errorf("parseNvccVersion(real) = %q, want 12.4", got)
+	}
+	if got := parseNvccVersion("Cuda compilation tools, release 11.8, V11.8.89"); got != "11.8" {
+		t.Errorf("parseNvccVersion(11.8) = %q", got)
+	}
+	if got := parseNvccVersion("nvcc fatal : No input files specified"); got != "" {
+		t.Errorf("parseNvccVersion(no release) = %q, want empty", got)
+	}
+}
+
+func TestCudaVersionFromPath(t *testing.T) {
+	cases := map[string]string{
+		"/usr/local/cuda-12.4":                "12.4",
+		"/etc/alternatives/cuda":              "",
+		"/usr/local/cuda-12":                  "12",
+		"/opt/cuda":                           "",
+		`C:\Tools\CUDA\v12.4`:                 "",
+		"/usr/local/cuda-12.4/targets/x86_64": "12.4",
+	}
+	for in, want := range cases {
+		if got := cudaVersionFromPath(in); got != want {
+			t.Errorf("cudaVersionFromPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

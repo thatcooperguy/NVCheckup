@@ -19,9 +19,12 @@
 package remediate
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -40,12 +43,78 @@ type Executor interface {
 // DefaultExecutor runs real commands via os/exec.
 type DefaultExecutor struct{}
 
+// defaultExecTimeout bounds every command run by DefaultExecutor. It is
+// generous because initramfs rebuilds (update-initramfs, dracut) legitimately
+// take a minute or more on slow disks; registry and powercfg calls finish in
+// milliseconds.
+const defaultExecTimeout = 120 * time.Second
+
+// execWaitDelay bounds how long Run blocks after the timeout while a child
+// still holds the output pipe.
+const execWaitDelay = 5 * time.Second
+
+// windowsSystemCommands are the native tools remediation actions invoke by
+// bare name on Windows. They are privileged (registry and power-plan writes),
+// so they are resolved to %SystemRoot%\System32 explicitly rather than
+// trusting PATH, where Git Bash/MSYS shims or a user-writable directory could
+// shadow them.
+var windowsSystemCommands = map[string]bool{
+	"reg": true, "powercfg": true, "whoami": true, "net": true,
+}
+
+// resolveSystemCommand maps a bare command name to its %SystemRoot%\System32
+// binary on Windows. It is a pure function of goos, systemRoot, and an
+// existence predicate so it can be unit-tested anywhere. Names that carry a
+// path, names outside windowsSystemCommands, or names whose System32 binary
+// does not exist are returned unchanged and resolve via PATH as before.
+func resolveSystemCommand(goos, systemRoot, name string, exists func(string) bool) string {
+	if goos != "windows" || systemRoot == "" {
+		return name
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return name
+	}
+	base := strings.TrimSuffix(strings.ToLower(name), ".exe")
+	if !windowsSystemCommands[base] {
+		return name
+	}
+	candidate := systemBinary(systemRoot, base+".exe")
+	if exists(candidate) {
+		return candidate
+	}
+	return name
+}
+
+// fileExists reports whether path names an existing regular file.
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// resolveCommand applies resolveSystemCommand for the running OS.
+func resolveCommand(name string) string {
+	return resolveSystemCommand(runtime.GOOS, os.Getenv("SystemRoot"), name, fileExists)
+}
+
 // Run executes the named command with the supplied arguments. It captures
-// combined stdout/stderr and returns the trimmed output or an error.
+// combined stdout/stderr and returns the trimmed output or an error. On
+// Windows the privileged system tools are resolved under System32 (see
+// resolveSystemCommand); the action files keep passing bare names so the
+// previews and journal stay readable. Every command is bounded by
+// defaultExecTimeout so a hung tool cannot wedge "fix" indefinitely.
 func (e *DefaultExecutor) Run(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultExecTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, resolveCommand(name), args...)
+	cmd.WaitDelay = execWaitDelay
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	output := strings.TrimSpace(string(out))
+	if ctx.Err() == context.DeadlineExceeded {
+		return output, fmt.Errorf("%s timed out after %s; the system may be partially changed, re-run the preview to inspect the current state",
+			cmdString(name, args...), defaultExecTimeout)
+	}
+	return output, err
 }
 
 // elevationCheck reports whether the current process has administrative rights.
