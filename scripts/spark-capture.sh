@@ -251,8 +251,9 @@ note "host: $(uname -m), $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")
 
 # --- identity of the platform (spec 3.1 rows 4, 5, 10; section 12) ---------
 capfile 01-dgx-release.txt /etc/dgx-release /etc/fastos-release /etc/nv_tegra_release
-capfile 02-os-release.txt /etc/os-release /proc/version
+capfile 02-os-release.txt /etc/os-release /proc/version /proc/sys/kernel/osrelease
 cap 03-uname.txt uname -a
+cap 03-uname.txt uname -r
 for k in system-manufacturer system-product-name system-version system-family bios-vendor bios-version bios-release-date baseboard-manufacturer baseboard-product-name; do
   capsudo 04-dmidecode.txt dmidecode -s "$k"
 done
@@ -291,22 +292,38 @@ for q in \
   cap 16-nvidia-smi-query.txt nvidia-smi "--query-gpu=$q" --format=csv
 done
 cap 17-nvidia-smi-compute-apps.txt nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv
+# The exact collector forms (unified_memory.go ComputeAppsQuery; spec 2.1: "Not Supported" or empty is the open question).
+cap 17-nvidia-smi-compute-apps.txt nvidia-smi --query-compute-apps=pid --format=csv,noheader
+cap 17-nvidia-smi-compute-apps.txt nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
 cap 18-nvidia-smi-q.txt nvidia-smi -q
 cap 19-nvidia-smi-q-sections.txt nvidia-smi -q -d MEMORY,PERFORMANCE,CLOCK,POWER,TEMPERATURE
 cap 19-nvidia-smi-q-sections.txt nvidia-smi -q -d SUPPORTED_CLOCKS
+# thermal.go PerformanceQueryArgs, verbatim: the "Clocks Event Reasons Counters" layout is an ASSUMPTION (spec 12).
+cap 19-nvidia-smi-q-sections.txt nvidia-smi -q -d PERFORMANCE
 
 # --- DGX OS tooling (spec 2.1 updates row; 5 dgx-spark-ota-torn, -dashboard-unhealthy, -firmware-behind) --
+# Raw output and exit code of every sub-command (cap records [exit=N]); torn-score's format is an ASSUMPTION in dgxos.go.
 for sub in summary torn-score installed-name is-ota-available; do
   capsudo 20-ota-check.txt nvidia-spark-ota-check "$sub"
 done
+cap 20-ota-check.txt nvidia-spark-ota-check summary
+cap 20-ota-check.txt nvidia-spark-ota-check torn-score
 cap 21-fwupdmgr.txt fwupdmgr --version
 cap 21-fwupdmgr.txt fwupdmgr get-devices
 cap 21-fwupdmgr.txt fwupdmgr get-updates
+# dgxos.go / dgxos_host.go run get-devices and get-upgrades with the offline flags; get-upgrades' exit code when nothing is pending is unconfirmed (shim uses 2).
+cap 21-fwupdmgr.txt fwupdmgr get-devices --no-unreported-check --no-metadata-check --no-remote-check --no-device-prompt
+cap 21-fwupdmgr.txt fwupdmgr get-upgrades --no-unreported-check --no-metadata-check --no-remote-check --no-device-prompt
 cap 22-fwupdmgr-devices.json fwupdmgr get-devices --json
+cap 22-fwupdmgr-devices.json fwupdmgr get-upgrades --json
 cap 23-dpkg.txt dpkg -l 'nvidia-dkms*' 'nvidia-driver*' 'nvidia-kernel*' 'nvidia-firmware*' 'linux-modules-nvidia*' 'linux-nvidia*' 'nvidia-persistenced' 'nvidia-container-toolkit' 'dgx*' 'nvidia-spark*' 'nvidia-dgx*' 'nvidia-system*' 'libnvidia-gl*' 'cuda-toolkit*' 'fwupd' 'libfwupd*'
 cap 23-dpkg.txt dpkg-query -W -f='${Package} ${Version} ${db:Status-Status}\n' 'nvidia-*' 'dgx-*' 'linux-*nvidia*'
-cap 24-systemd.txt systemctl is-active dgx-dashboard.service dgx-dashboard-admin.service fwupd.service nvidia-persistenced.service gb10-clock-cap.service avahi-daemon.service ufw.service docker.service ollama.service
+# dgxos.go collectDGXPackages, verbatim format and patterns.
+cap 23-dpkg.txt dpkg-query -W -f='${Package}\t${Version}\t${Status}\n' 'nvidia-driver-*' 'nvidia-firmware-*' 'linux-modules-nvidia-*' 'nvidia-dkms-*' dgx-release dgx-dashboard nvidia-spark-ota-check
+cap 24-systemd.txt systemctl is-active dgx-dashboard.service dgx-dashboard-admin.service fwupd.service nvidia-persistenced.service gb10-clock-cap.service avahi-daemon.service ufw.service docker.service ollama.service nvidia-suspend.service
 cap 24-systemd.txt systemctl is-enabled dgx-dashboard.service dgx-dashboard-admin.service fwupd.service nvidia-persistenced.service gb10-clock-cap.service
+# dgxos_host.go clockCapUnitState: LoadState tells an installed-but-stopped unit from a missing one.
+cap 24-systemd.txt systemctl show -p LoadState,ActiveState,UnitFileState gb10-clock-cap.service nvidia-suspend.service
 cap 24-systemd.txt sh -c "systemctl list-units --type=service --all --no-pager --plain | grep -E 'dgx|nvidia|fwupd|avahi|ufw|docker|ollama|gb10'"
 cap 25-listening-ports.txt ss -ltn
 cap 25-listening-ports.txt sh -c "grep -c . /proc/net/tcp; head -20 /proc/net/tcp"
@@ -315,9 +332,13 @@ cap 25-listening-ports.txt sh -c "grep -c . /proc/net/tcp; head -20 /proc/net/tc
 cap 26-ibdev2netdev.txt ibdev2netdev
 cap 26-ibdev2netdev.txt ibdev2netdev -v
 cap 27-ibstat.txt ibstat
+cap 27-ibstat.txt ibstat -l
 cap 28-ip.txt ip -br link
 cap 28-ip.txt ip -br addr
 cap 28-ip.txt ip -4 route
+# cx7.go / network.go verbatim forms.
+cap 28-ip.txt ip -4 -o addr show
+cap 28-ip.txt ip route show default
 cap 29-sysfs-net.txt sh -c 'for d in /sys/class/infiniband/*; do n=$(basename $d); echo "$n state=$(cat $d/ports/1/state 2>/dev/null) phys=$(cat $d/ports/1/phys_state 2>/dev/null) rate=$(cat $d/ports/1/rate 2>/dev/null) link_layer=$(cat $d/ports/1/link_layer 2>/dev/null) net=$(ls $d/device/net 2>/dev/null | tr "\n" ",") pci=$(basename $(readlink -f $d/device) 2>/dev/null)"; done'
 cap 29-sysfs-net.txt sh -c 'for d in /sys/class/net/*; do n=$(basename $d); [ "$n" = lo ] && continue; echo "$n operstate=$(cat $d/operstate 2>/dev/null) carrier=$(cat $d/carrier 2>/dev/null) speed=$(cat $d/speed 2>/dev/null) mtu=$(cat $d/mtu 2>/dev/null) driver=$(basename $(readlink -f $d/device/driver) 2>/dev/null) pci=$(basename $(readlink -f $d/device) 2>/dev/null) vendor=$(cat $d/device/vendor 2>/dev/null) device=$(cat $d/device/device 2>/dev/null)"; done'
 capfile 30-netplan-ufw.txt /etc/nvidia/cx7-hotplug-enabled /etc/ufw/ufw.conf
@@ -330,9 +351,14 @@ cap 33-modinfo.txt sh -c "modinfo nvidia | grep -Ev '^(sig|alias|depends|filenam
 cap 33-modinfo.txt sh -c "modinfo nvidia_peermem 2>&1 | head -5"
 capsudo 34-dmesg.txt sh -c "dmesg | grep -iE 'nvidia|nvrm|gsp|xid|sec2|mlx5|thermal|pcie|badf|oom|swap' | tail -400"
 cap 35-journal-prev-boot.txt sh -c "journalctl -k -b -1 --no-pager 2>&1 | tail -200"
-cap 35-journal-prev-boot.txt sh -c "journalctl --list-boots --no-pager 2>&1 | tail -10"
+# dgxos_host.go collectBootHistory, verbatim forms: the boot table layout and the last 30 message-only lines of the previous boot
+# (clean-shutdown markers 'Journal stopped', 'systemd-shutdown', 'Shutting down.', 'Reached target Power-Off/Reboot/Halt').
+cap 35-journal-prev-boot.txt journalctl --list-boots --no-pager -q
+cap 35-journal-prev-boot.txt journalctl -b -1 --no-pager -q -o cat -n 30
+cap 35-journal-prev-boot.txt sh -c "journalctl -b --no-pager -q -g 'PM: suspend entry|nv_set_system_power_state|suspend of devices failed|Failed to suspend' 2>&1 | tail -40"
 cap 35-journal-prev-boot.txt sh -c "ls -la /sys/fs/pstore 2>&1"
 cap 36-journal-fwupd-dashboard.txt sh -c "journalctl -u fwupd -u dgx-dashboard -u dgx-dashboard-admin -b --no-pager 2>&1 | tail -80"
+cap 36-journal-fwupd-dashboard.txt sh -c "journalctl -u avahi-daemon.service -b --no-pager -q -g 'Host name conflict' 2>&1 | tail -20"
 
 # --- ecosystem (spec 3.2 ecosystem strings; 7.7 prerequisites) --------------
 cap 37-python-torch.txt sh -c "python3 -c 'import torch,sys; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_arch_list())' 2>&1 | tail -5"
@@ -343,6 +369,10 @@ cap 38-docker.txt sh -c "ls -la /etc/cdi /var/run/cdi 2>&1; snap list docker 2>&
 cap 38-docker.txt sh -c "docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -iE 'nvcr|pytorch|vllm|sglang|tensorrt|ollama|cuda' | head -30"
 cap 39-cuda-toolkit.txt sh -c "ls -la /usr/local/cuda* 2>&1 | head; /usr/local/cuda/bin/nvcc --version 2>&1 | tail -2; /usr/local/cuda/bin/ptxas --version 2>&1 | tail -1"
 cap 39-cuda-toolkit.txt sh -c "ldconfig -p | grep -E 'libcuda|libcudart|libnvidia-ml|libnccl' "
+cap 39-cuda-toolkit.txt sh -c "ldconfig -p | head -1"
+# ecosystem.go: docker runtimes / CDI and the container-toolkit apt source (S44 first-line check).
+cap 38-docker.txt sh -c "cat /etc/docker/daemon.json 2>&1"
+cap 38-docker.txt sh -c "head -3 /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>&1"
 
 if ! redact; then
   note "python3 unavailable: falling back to sed redaction (hostname, user, home, MACs, serial lines only)"
@@ -375,7 +405,7 @@ can answer) and the values it marks *unconfirmed* / *placeholder* in sections
 | File | Open question / spec item it answers |
 |---|---|
 | `01-dgx-release.txt` | Exact `/etc/dgx-release` key list and values (3.1 row 4; is `DGX_PLATFORM="DGX Server for KVM"` really there; does an OEM unit differ, 2.1 OEM row); `/etc/fastos-release` `NAME="DGX SPARK FASTOS"`; confirms no `/etc/nv_tegra_release` |
-| `02-os-release.txt`, `03-uname.txt` | Kernel flavour string for 3.1 row 11 (`^\d+\.\d+\.\d+-\d+-nvidia`), Ubuntu point release |
+| `02-os-release.txt`, `03-uname.txt` | Kernel flavour string for 3.1 row 11 (`^\d+\.\d+\.\d+-\d+-nvidia`) from `uname -r` and `/proc/sys/kernel/osrelease` (the collectors read the file first), Ubuntu point release |
 | `04-dmidecode.txt`, `05-dmi-sysfs.txt` | DMI strings of 3.1 row 10 (`NVIDIA` / `NVIDIA_DGX_Spark` / `A.7` / `5.36_0ACUM0xx`) or the OEM equivalents; whether sysfs and dmidecode agree |
 | `06-device-tree.txt` | Whether DGX Spark exposes `/proc/device-tree/model` at all (12; the gb10 fixture leaves it absent) |
 | `07-lscpu.txt`, `08-cpuinfo.txt` | `Model name:` lines (`Cortex-X925` / `Cortex-A725`), `Vendor ID: ARM`, `Stepping: r0p1`, `CPU(s): 20`; MIDR parts `0xd85` / `0xd87` (3.1 last paragraph) |
@@ -385,21 +415,21 @@ can answer) and the values it marks *unconfirmed* / *placeholder* in sections
 | `12-lspci-mellanox.txt`, `13-lspci-all.txt` | Four ConnectX-7 functions `0000:01:00.0/.1` and `0002:01:00.0/.1` `[15b3:1021]` (2.1); the PCI ids and addresses of the Realtek r8127 mgmt NIC `enP7s7` and the MediaTek MT7925 Wi-Fi `wlP9s9`, and of the PCIe root ports (2.1 names only the drivers and netdevs, so the gb10 fixture leaves those lspci lines out) |
 | `14-nvidia-smi-L.txt`, `15-nvidia-smi-table.txt` | Name `NVIDIA GB10`, Bus-Id `0000000F:01:00.0`, `Not Supported` Memory-Usage, `N/A` fan and cap (2.1); exact table layout used by the shim |
 | `16-nvidia-smi-query.txt` | Every collector query field list with and without units: does `compute_cap` succeed (4, `GPUCapQueryFields`); which fields print `[N/A]`; are `clocks.max.memory` and the power limits `[N/A]` (2.1) |
-| `17-nvidia-smi-compute-apps.txt` | Whether per-process memory works on unified memory (2.1) |
-| `18-nvidia-smi-q.txt`, `19-nvidia-smi-q-sections.txt` | `-q` layout: power limits `N/A`, `Max Clocks Graphics 3003 MHz`, memory clock `N/A`, `Supported Clocks N/A`, T.Limit lines, `GPU Max Operating T.Limit Temp 0 C` (2.1); `-d PERFORMANCE` counter names for `ThermalInfo.EventCounters` (4) |
-| `20-ota-check.txt` | Exact `nvidia-spark-ota-check` output shapes for `summary`, `torn-score`, `installed-name`, `is-ota-available` (2.1, 5 `dgx-spark-ota-torn`); requires root |
-| `21-fwupdmgr.txt`, `22-fwupdmgr-devices.json` | Device names and version formats for EC / SoC / USB PD (5 `dgx-spark-firmware-behind`: hex vs dotted); `get-updates` exit code when nothing is pending |
+| `17-nvidia-smi-compute-apps.txt` | Whether per-process memory works on unified memory (2.1); what the collector's exact `--query-compute-apps=pid --format=csv,noheader` prints (`Not Supported`, empty, or rows) |
+| `18-nvidia-smi-q.txt`, `19-nvidia-smi-q-sections.txt` | `-q` layout: power limits `N/A`, `Max Clocks Graphics 3003 MHz`, memory clock `N/A`, `Supported Clocks N/A`, T.Limit lines, `GPU Max Operating T.Limit Temp 0 C` (2.1); the standalone `-q -d PERFORMANCE` block and its `Clocks Event Reasons Counters` names / units for `ThermalInfo.EventCounters` (4; the shim's layout is an assumption) |
+| `20-ota-check.txt` | Exact `nvidia-spark-ota-check` output shapes and exit codes for `summary`, `torn-score`, `installed-name`, `is-ota-available`, with and without sudo (2.1, 5 `dgx-spark-ota-torn`; the collector runs unprivileged and `parseTornScore` assumes the score is the labelled or last integer) |
+| `21-fwupdmgr.txt`, `22-fwupdmgr-devices.json` | Device names and version formats for EC / SoC / USB PD (5 `dgx-spark-firmware-behind`: hex `0x03000508` vs dotted, decoding assumed major.minor.patch = 8/16/8 bits); `get-updates` / `get-upgrades` output and exit code when nothing is pending (the shim uses 2), with the collector's offline flags |
 | `23-dpkg.txt` | Is `nvidia-dkms-580-open` installed on a stock unit (3.2 placeholder, 10 fixture); exact versions of `nvidia-driver-580-open`, `linux-modules-nvidia-580-open-<kernel>`, `dgx-release`, `dgx-dashboard`, `nvidia-spark-ota-check`, `fwupd` / `libfwupd` |
-| `24-systemd.txt`, `25-listening-ports.txt` | Unit names and states (`dgx-dashboard*.service`, `fwupd`, `nvidia-persistenced`, `gb10-clock-cap.service`), dashboard port 11000 (2.1, 5 `dgx-spark-dashboard-unhealthy`) |
-| `26-ibdev2netdev.txt`, `27-ibstat.txt`, `28-ip.txt`, `29-sysfs-net.txt` | RDMA and netdev names of the twins, sysfs `state` / `phys_state` / `rate` strings (fixture placeholder `200 Gb/sec (4X HDR)`), `speed` when cabled / uncabled, MTU, IPv4 per twin (2.1 networking row, 9) |
+| `24-systemd.txt`, `25-listening-ports.txt` | Unit names and states (`dgx-dashboard*.service`, `fwupd`, `nvidia-persistenced`, `nvidia-suspend`, `gb10-clock-cap.service`) incl. `LoadState` of the optional units, dashboard port 11000 (2.1, 5 `dgx-spark-dashboard-unhealthy`) |
+| `26-ibdev2netdev.txt`, `27-ibstat.txt`, `28-ip.txt`, `29-sysfs-net.txt` | RDMA and netdev names of the twins, `ibstat` state words and `-l` device list, sysfs `state` / `phys_state` / `rate` strings (fixture placeholder `200 Gb/sec (4X HDR)`), `speed` when cabled / uncabled, MTU, IPv4 per twin from `ip -br addr` and the collector's `ip -4 -o addr show`, default route (2.1 networking row, 9) |
 | `30-netplan-ufw.txt`, `31-env-nccl.txt` | `/etc/nvidia/cx7-hotplug-enabled` presence, netplan MTU keys, ufw default, `NCCL_*` / `UCX_NET_DEVICES` defaults (9) |
 | `32-lsmod.txt`, `33-modinfo.txt` | Module set and `license:` string of the open modules; whether `nvidia_peermem` exists (2.1 CUDA memory row) |
 | `34-dmesg.txt` | Benign `mlx5_pcie_event ... 27W` line (3.2); any GSP / Xid / `0xbadf5600` lines (3.2, 6); OOM or swap events (5 unified-memory rules) |
-| `35-journal-prev-boot.txt` | Clean-shutdown markers of the previous boot and pstore contents (5 `gb10-logless-hard-poweroff`) |
-| `36-journal-fwupd-dashboard.txt` | `libfwupd version ... does not match daemon ...` (6), dashboard unit health (5) |
+| `35-journal-prev-boot.txt` | `journalctl --list-boots` table layout, the last 30 message-only lines of the previous boot (clean-shutdown markers), suspend markers of this boot, pstore contents (5 `gb10-logless-hard-poweroff`, `dgx-spark-suspend-failure`) |
+| `36-journal-fwupd-dashboard.txt` | `libfwupd version ... does not match daemon ...` (6), dashboard unit health (5), avahi `Host name conflict` lines (9 `cx7-mdns-hostname-conflict`) |
 | `37-python-torch.txt` | torch build tag (`+cu130`), `get_arch_list()` containing `sm_120`/`sm_121` (3.2 ecosystem, 7.7) |
-| `38-docker.txt` | Docker runtimes (`nvidia`), CDI spec dirs, snap docker, image tags and architectures (5 `docker-*`, `arm64-container-amd64-image`, `sm121-ngc-image-too-old`) |
-| `39-cuda-toolkit.txt` | Toolkit version (`V13.0.88` / 13.0.2), bundled `ptxas`, `libcudart.so.12` vs `.13` presence (3.2, 5 `sm121-triton-ptxas-stale`, `arm64-cuda12-wheel-on-cuda13`) |
+| `38-docker.txt` | Docker runtimes (`nvidia`), `/etc/docker/daemon.json` (`features.cdi` default), CDI spec dirs, snap docker, image tags and architectures, the first line of `nvidia-container-toolkit.list` (5 `docker-*`, `arm64-container-amd64-image`, `sm121-ngc-image-too-old`; S44) |
+| `39-cuda-toolkit.txt` | Toolkit version (`V13.0.88` / 13.0.2), bundled `ptxas`, `libcudart.so.12` vs `.13` presence, which driver libraries `ldconfig -p` lists and under which path (3.2, 5 `sm121-triton-ptxas-stale`, `arm64-cuda12-wheel-on-cuda13`; the gb10 fixture's `ldconfig_libs`) |
 
 Redaction notes: `<ip>` is not applied to the package/version-only files
 (`02-os-release`, `03-uname`, `23-dpkg`, `33-modinfo`, `37-python-torch`,
