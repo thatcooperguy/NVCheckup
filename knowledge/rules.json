@@ -1,5 +1,5 @@
 {
-  "description": "Diagnostic rules for NVCheckup. Shared between Go and Rust implementations.",
+  "description": "Reference knowledge pack. The Go analyzer currently defines its rules in internal/analyzer; the experimental Rust companion embeds this file.",
   "version": "0.2.0",
   "rules": [
     {
