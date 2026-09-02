@@ -360,13 +360,22 @@
       "description": "A thermal slowdown bit (sw_thermal_slowdown / hw_thermal_slowdown) is active in clocks_event_reasons."
     },
     {
+      "id": "gpu-power-cap",
+      "title": "GPU Running at Its Power Limit",
+      "category": "performance",
+      "severity": "INFO",
+      "base_confidence": 70,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Only sw_power_cap is active: the driver holds clocks at the configured power limit, which is normal under sustained load."
+    },
+    {
       "id": "gpu-clock-slowdown",
       "title": "GPU Clock Slowdown Active",
       "category": "performance",
       "severity": "WARN",
       "base_confidence": 70,
       "modes": ["gaming", "ai", "creator", "streaming", "full"],
-      "description": "A non-thermal slowdown reason (sw_power_cap, hw_slowdown, hw_power_brake_slowdown) is active; the fix is power limits and cabling, not cooling."
+      "description": "A hardware slowdown or power-brake reason (hw_slowdown, hw_power_brake_slowdown) is active, alone or with sw_power_cap; the fix is cabling and PSU, not cooling."
     },
     {
       "id": "gpu-running-hot",

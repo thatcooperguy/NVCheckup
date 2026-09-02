@@ -1,0 +1,34 @@
+{
+  "description": "Three-GPU Linux workstation: GPU 0 RTX 3090 idle at Gen1 (expected), GPU 1 RTX 4090 at its power cap under load (expected), GPU 2 RTX 4090 busy but stuck at Gen1 and running hot (faults). dmesg carries an Xid 79 for GPU 2.",
+  "driver": "580.65.06",
+  "cuda": "13.0",
+  "gpus": [
+    {
+      "index": 0, "name": "NVIDIA GeForce RTX 3090", "uuid": "GPU-1a2b3c4d-0000-0000-0000-000000000001",
+      "driver_version": "580.65.06", "pci.bus_id": "00000000:01:00.0",
+      "memory.total": 24576, "memory.free": 23100, "memory.used": 1476, "temperature.gpu": 41,
+      "power.draw": "31.55", "power.limit": "350.00", "pstate": "P8",
+      "clocks.current.graphics": 210, "clocks.max.graphics": 2100, "fan.speed": 0, "utilization.gpu": 3,
+      "pcie.link.gen.current": 1, "pcie.link.gen.max": 4, "pcie.link.width.current": 16, "pcie.link.width.max": 16,
+      "clocks_event_reasons.active": "0x0000000000000001", "clocks_throttle_reasons.active": "0x0000000000000001"
+    },
+    {
+      "index": 1, "name": "NVIDIA GeForce RTX 4090", "uuid": "GPU-1a2b3c4d-0000-0000-0000-000000000002",
+      "driver_version": "580.65.06", "pci.bus_id": "00000000:41:00.0",
+      "memory.total": 24564, "memory.free": 2100, "memory.used": 22464, "temperature.gpu": 72,
+      "power.draw": "448.90", "power.limit": "450.00", "pstate": "P0",
+      "clocks.current.graphics": 2520, "clocks.max.graphics": 2520, "fan.speed": 68, "utilization.gpu": 98,
+      "pcie.link.gen.current": 4, "pcie.link.gen.max": 4, "pcie.link.width.current": 16, "pcie.link.width.max": 16,
+      "clocks_event_reasons.active": "0x0000000000000004", "clocks_throttle_reasons.active": "0x0000000000000004"
+    },
+    {
+      "index": 2, "name": "NVIDIA GeForce RTX 4090", "uuid": "GPU-1a2b3c4d-0000-0000-0000-000000000003",
+      "driver_version": "580.65.06", "pci.bus_id": "00000000:81:00.0",
+      "memory.total": 24564, "memory.free": 12000, "memory.used": 12564, "temperature.gpu": 88,
+      "power.draw": "398.10", "power.limit": "450.00", "pstate": "P0",
+      "clocks.current.graphics": 2400, "clocks.max.graphics": 2520, "fan.speed": 100, "utilization.gpu": 95,
+      "pcie.link.gen.current": 1, "pcie.link.gen.max": 4, "pcie.link.width.current": 16, "pcie.link.width.max": 16,
+      "clocks_event_reasons.active": "0x0000000000000000", "clocks_throttle_reasons.active": "0x0000000000000000"
+    }
+  ]
+}

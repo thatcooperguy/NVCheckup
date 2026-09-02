@@ -6,6 +6,7 @@
 
 [![CI](https://github.com/thatcooperguy/NVCheckup/actions/workflows/ci.yml/badge.svg)](https://github.com/thatcooperguy/NVCheckup/actions/workflows/ci.yml)
 [![Linux field test](https://github.com/thatcooperguy/NVCheckup/actions/workflows/linux-fieldtest.yml/badge.svg)](https://github.com/thatcooperguy/NVCheckup/actions/workflows/linux-fieldtest.yml)
+[![Linux field test (simulated GPU)](https://github.com/thatcooperguy/NVCheckup/actions/workflows/linux-fieldtest-sim.yml/badge.svg)](https://github.com/thatcooperguy/NVCheckup/actions/workflows/linux-fieldtest-sim.yml)
 [![Release](https://img.shields.io/github/v/release/thatcooperguy/NVCheckup?color=76b900&label=release)](https://github.com/thatcooperguy/NVCheckup/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20ARM64-76b900.svg)](#supported-platforms)
@@ -564,6 +565,7 @@ Contributions are welcome. This project values clarity, safety, and cross-platfo
 - **Bug reports**: open an issue and attach your redacted NVCheckup report; the tool exists so that this is a reasonable thing to ask.
 - **Feature requests**: open an issue describing the use case and which persona it serves.
 - **Pull requests**: fork, branch, test, submit. Include unit tests for new collectors or analyzer rules.
+- **Linux hardware**: have a Linux box or Jetson with an NVIDIA GPU? Run `scripts/linux-fieldtest.sh` (read-only, redacted) and attach the bundle to [issue #2](https://github.com/thatcooperguy/NVCheckup/issues/2). CI can only simulate a GPU on Linux; you have the real thing.
 - **GPU fixtures**: "works on my machine" is a fixture-collection problem, and the fixture we are missing is yours. `nvidia-smi --query-gpu=... --format=csv,noheader,nounits` output from hardware we do not have is the single most useful contribution. Jetson `tegrastats`, RTX 50 laptops, vGPU: see CONTRIBUTING.md for where it goes.
 
 See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community guidelines and [CHANGELOG.md](CHANGELOG.md) for release history.

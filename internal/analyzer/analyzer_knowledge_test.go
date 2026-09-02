@@ -120,6 +120,9 @@ func ruleCorpus() []struct {
 		// thermal: real thermal bit; hot without bits; fan stopped
 		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 95, ThermalThrottle: true, SlowdownActive: true, SlowdownReason: "0x40", ThrottleReasons: []string{"hw_thermal_slowdown"}, FanSupported: true, FanSpeedPct: 0}}),
 		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 95}}),
+		// at the power cap under load (INFO) vs a hardware brake (WARN)
+		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 72, PowerState: "P0", UtilizationPct: 99, SlowdownActive: true, SlowdownReason: "0x4", ThrottleReasons: []string{"sw_power_cap"}, FanSupported: true, FanSpeedPct: 60}}),
+		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 72, PowerState: "P0", UtilizationPct: 99, SlowdownActive: true, SlowdownReason: "0x80", ThrottleReasons: []string{"hw_power_brake_slowdown"}, FanSupported: true, FanSpeedPct: 60}}),
 		// PCIe: idle Gen1 (expected) and Gen1 under load (fault)
 		full(&types.Report{GPUs: nv, Driver: drv, PCIe: &types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", IdleLikely: true}}),
 		full(&types.Report{GPUs: nv, Driver: drv, PCIe: &types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P0", UtilizationPct: 99}}),

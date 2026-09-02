@@ -1,0 +1,158 @@
+name: Linux field test (simulated GPU)
+
+# GitHub's runners have no NVIDIA GPU, so this job gives the binary a
+# simulated one: small shims for nvidia-smi, lspci, lsmod, modinfo and dmesg
+# (.github/fieldtest/shims) answer the exact queries the collectors make from a
+# scenario file. That runs the GPU-dependent Linux code on real Linux (x86_64
+# and ARM64): per-GPU thermal/PCIe rows for a three-card rig, the analyzer's
+# multi-GPU attribution, Xid parsing, the blacklist-nouveau driver gate in
+# dry-run, and Jetson detection via /etc/nv_tegra_release. It is not a
+# substitute for real hardware (see issue #2); it is the closest thing we can
+# run on every push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - '.github/fieldtest/**'
+      - '.github/workflows/linux-fieldtest-sim.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulated:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      SHIMS: ${{ github.workspace }}/.github/fieldtest/shims
+      NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/rig3.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build and prepare shims
+        run: |
+          set -euo pipefail
+          go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=simtest" -o nvcheckup ./cmd/nvcheckup
+          chmod +x "$SHIMS"/*
+          PATH="$SHIMS:$PATH" nvidia-smi -L
+          PATH="$SHIMS:$PATH" nvidia-smi --query-gpu=index,pstate,pcie.link.gen.current --format=csv,noheader,nounits
+          PATH="$SHIMS:$PATH" lspci -nn | grep -c NVIDIA
+
+      - name: "Scenario rig3: self-test sees three GPUs"
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          rc=0; ./nvcheckup self-test | tee selftest.txt || rc=$?
+          echo "self-test exit=$rc"; [ "$rc" -eq 0 ]
+          grep -q "3 GPU(s) detected" selftest.txt
+
+      - name: "Scenario rig3: full run with per-GPU output"
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          mkdir -p rig3
+          rc=0; ./nvcheckup run --mode full --json --md --out rig3 || rc=$?
+          echo "run exit=$rc"
+          # GPU 2 is hot and stuck at Gen1 under load and has an Xid 79, so this must be a WARN or CRIT run, never an internal error.
+          [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ]
+          echo "--- report.txt ---"; cat rig3/report.txt
+
+      - name: "Scenario rig3: assert findings are attributed to the right GPU"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          j = json.load(open("rig3/report.json", encoding="utf-8"))
+          gpus = j["gpus"]
+          assert len(gpus) == 3 and all(g["is_nvidia"] for g in gpus), gpus
+          assert [t["gpu_index"] for t in j["gpu_thermal"]] == [0, 1, 2], j["gpu_thermal"]
+          assert [p["gpu_index"] for p in j["gpu_pcie"]] == [0, 1, 2], j["gpu_pcie"]
+          by = {f["id"]: f for f in j["findings"]}
+          print("finding ids:", [(f["id"], f["severity"], f.get("gpu_indexes")) for f in j["findings"]])
+          for must in ("pcie-downshift", "pcie-idle-power-saving", "gpu-power-cap", "gpu-running-hot", "xid-errors"):
+              assert must in by, f"missing finding {must}"
+          for never in ("no-nvidia-gpu", "driver-not-detected", "nvidia-smi-missing", "nvidia-module-not-loaded", "jetson-detected", "gpu-clock-slowdown", "thermal-throttling"):
+              assert never not in by, f"unexpected finding {never}: {by[never]}"
+          assert by["pcie-downshift"]["gpu_indexes"] == [2], by["pcie-downshift"]
+          assert by["pcie-idle-power-saving"]["gpu_indexes"] == [0], by["pcie-idle-power-saving"]
+          assert by["gpu-power-cap"]["gpu_indexes"] == [1], by["gpu-power-cap"]
+          assert by["gpu-power-cap"]["severity"] == "INFO", by["gpu-power-cap"]
+          assert by["gpu-running-hot"]["gpu_indexes"] == [2], by["gpu-running-hot"]
+          assert by["pcie-downshift"]["severity"] == "WARN", by["pcie-downshift"]
+          assert "GPU 2" in by["pcie-downshift"]["evidence"], by["pcie-downshift"]["evidence"]
+          xid = by["xid-errors"]["evidence"]
+          assert "79" in xid, xid
+          for e in j.get("collector_errors") or []:
+              assert "panic" not in e["error"].lower(), e
+          print("OK: per-GPU attribution is correct")
+          PY
+          echo "--- report.txt multi-GPU lines ---"
+          grep -n "GPUs: 3 NVIDIA" rig3/report.txt
+          test "$(grep -c '^\s*PCIe:' rig3/report.txt)" -ge 3
+          test "$(grep -c '^\s*Thermal:' rig3/report.txt)" -ge 3
+          grep -q "\[GPU 2\]" rig3/report.txt
+          grep -q "GPUs: 3 NVIDIA" rig3/report.md
+          echo "OK: three per-GPU PCIe and Thermal lines and the multi-GPU summary line are present"
+
+      - name: "Scenario rig3: blacklist-nouveau dry-run passes the driver gate"
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          rc=0; ./nvcheckup fix --id blacklist-nouveau --dry-run --journal ./journal | tee nouveau-dryrun.txt || rc=$?
+          echo "dry-run exit=$rc"; [ "$rc" -eq 0 ]
+          grep -qi "blacklist nouveau" nouveau-dryrun.txt
+          grep -qi "DRY RUN" nouveau-dryrun.txt
+          test ! -e ./journal
+          echo "OK: driver gate satisfied by the simulated nvidia module; nothing written"
+
+      - name: "Scenario jetson: /etc/nv_tegra_release present, no nvidia-smi"
+        run: |
+          set -uo pipefail
+          # No shims on PATH here: a Jetson has no nvidia-smi at all.
+          echo '# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, DATE: Wed Jan  8 01:49:37 UTC 2025' | sudo tee /etc/nv_tegra_release >/dev/null
+          mkdir -p jetson
+          rc=0; ./nvcheckup run --mode ai --json --out jetson || rc=$?
+          echo "run exit=$rc"; [ "$rc" -ne 3 ]
+          sudo rm -f /etc/nv_tegra_release
+          python3 - <<'PY'
+          import json
+          j = json.load(open("jetson/report.json", encoding="utf-8"))
+          assert j["system"].get("is_jetson") is True, j["system"]
+          assert "R36" in (j["system"].get("jetson_release") or ""), j["system"]
+          ids = [f["id"] for f in j["findings"]]
+          print("finding ids:", ids)
+          assert "jetson-detected" in ids, ids
+          for never in ("no-nvidia-gpu", "driver-not-detected", "nvidia-smi-missing", "nvidia-module-not-loaded", "libcuda-not-found"):
+              assert never not in ids, f"{never} must be suppressed on Jetson"
+          print("OK: Jetson detected and desktop-only findings suppressed")
+          PY
+          grep -n "Jetson" jetson/report.txt | head -3
+
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulated-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            rig3/
+            jetson/
+            selftest.txt
+            nouveau-dryrun.txt
+          if-no-files-found: warn

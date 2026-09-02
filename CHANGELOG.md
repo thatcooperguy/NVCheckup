@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- Thermal: when the only active slowdown reason is `sw_power_cap` (the GPU sitting at its configured power limit under load, observed live on an RTX 3090 at 99% utilisation), the report shows the INFO finding `gpu-power-cap` instead of the WARN `gpu-clock-slowdown`. Hardware slowdown and power-brake reasons remain a WARN.
+
+### Added
+- `linux-fieldtest-sim.yml` workflow: simulated `nvidia-smi`, `lspci`, `lsmod`, `modinfo` and `dmesg` shims (`.github/fieldtest/shims`) give the Ubuntu x86_64 and ARM64 runners a three-GPU rig and a Jetson, so per-GPU collection, multi-GPU attribution, Xid parsing, the `blacklist-nouveau` driver gate and Jetson detection run end to end on real Linux without hardware.
+- `scripts/linux-fieldtest.sh`: one-command field kit for a real Linux box or Jetson. Downloads and checksum-verifies the release binary for the CPU, runs everything read-only (fixes in `--dry-run` only) and tars a redacted bundle to attach to issue #2.
 
 ## [0.2.2] - 2026-09-02
 

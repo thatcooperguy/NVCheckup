@@ -80,6 +80,12 @@ They must degrade gracefully: a missing tool or a rejected query is a
 8. **Add the data to the report** (text, JSON, markdown) and to the JSON schema
    block in `PRODUCT.md`.
 
+## Testing on real Linux hardware
+
+If you have a Linux machine with an NVIDIA GPU (or a Jetson), `scripts/linux-fieldtest.sh` does the whole run for you: it downloads the release binary for your CPU, verifies the checksum, runs `self-test`, `run`, `snapshot` and the `fix` catalog in `--dry-run` only, and tars a redacted bundle you can attach to [issue #2](https://github.com/thatcooperguy/NVCheckup/issues/2). Nothing it does changes your system.
+
+CI approximates this with `.github/workflows/linux-fieldtest-sim.yml`: shims in `.github/fieldtest/shims` answer the exact `nvidia-smi`, `lspci`, `lsmod`, `modinfo` and `dmesg` queries the collectors make from `.github/fieldtest/scenarios/rig3.json`. Add a scenario there to reproduce a machine you have seen.
+
 ## Testing against GPUs you do not own
 
 NVCheckup has no model-specific code, but its parsers only stay honest if they

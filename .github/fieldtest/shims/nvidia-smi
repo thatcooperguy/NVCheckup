@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Simulated nvidia-smi for the Linux field test.
+
+GitHub's runners have no NVIDIA GPU, so this shim answers the exact queries
+NVCheckup's collectors make (-L, --query-gpu=... with csv output, and the plain
+table) from a scenario file. It lets the GPU-dependent Linux code paths run on
+real Linux hardware: per-GPU thermal/PCIe rows, the analyzer, the report
+writers, self-test's query checks and the fix driver gate.
+
+Scenario: JSON at $NVC_SIM_SCENARIO with {"driver": "...", "cuda": "...",
+"gpus": [{field: value, ...}, ...]}. Unknown fields print "[N/A]" like the real
+tool does for unsupported queries; a field name the real nvidia-smi would
+reject exits 2 with the real error text so self-test behaves realistically.
+"""
+import json
+import os
+import sys
+
+KNOWN_FIELDS = {
+    "index", "name", "uuid", "driver_version", "pci.bus_id", "memory.total", "memory.free",
+    "memory.used", "temperature.gpu", "power.draw", "power.limit", "pstate",
+    "clocks.current.graphics", "clocks.max.graphics", "fan.speed", "utilization.gpu",
+    "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.gen.gpucurrent", "pcie.link.gen.gpumax",
+    "pcie.link.width.current", "pcie.link.width.max", "clocks_event_reasons.active",
+    "clocks_throttle_reasons.active", "compute_mode", "mig.mode.current",
+}
+
+
+def load():
+    path = os.environ.get("NVC_SIM_SCENARIO")
+    if not path or not os.path.exists(path):
+        sys.stderr.write("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. "
+                         "Make sure that the latest NVIDIA driver is installed and running.\n")
+        sys.exit(9)
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def table(sc):
+    drv, cuda = sc.get("driver", "580.65.06"), sc.get("cuda", "13.0")
+    out = []
+    out.append("+-----------------------------------------------------------------------------------------+")
+    out.append("| NVIDIA-SMI %-15s Driver Version: %-15s CUDA Version: %-8s |" % (drv, drv, cuda))
+    out.append("|-----------------------------------------+------------------------+----------------------+")
+    out.append("| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |")
+    out.append("| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |")
+    out.append("|=========================================+========================+======================|")
+    for g in sc["gpus"]:
+        out.append("| %3s  %-20s Off | %s Off | N/A                  |" % (g["index"], g["name"][:20], g["pci.bus_id"]))
+        out.append("| %3s%%  %3sC   %-3s   %6sW / %6sW | %7sMiB / %7sMiB | %5s%%      Default |" % (
+            g.get("fan.speed", "N/A"), g["temperature.gpu"], g["pstate"], g["power.draw"], g["power.limit"],
+            g["memory.used"], g["memory.total"], g.get("utilization.gpu", "N/A")))
+        out.append("+-----------------------------------------+------------------------+----------------------+")
+    out.append("")
+    out.append("+-----------------------------------------------------------------------------------------+")
+    out.append("| Processes:                                                                              |")
+    out.append("|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |")
+    out.append("|=========================================================================================|")
+    out.append("|    1   N/A  N/A      4242      C   python                                        9000MiB |")
+    out.append("+-----------------------------------------------------------------------------------------+")
+    return "\n".join(out) + "\n"
+
+
+def main():
+    args = sys.argv[1:]
+    sc = load()
+    if not args:
+        sys.stdout.write(table(sc))
+        return
+    if args[0] == "-L":
+        for g in sc["gpus"]:
+            sys.stdout.write("GPU %s: %s (UUID: %s)\n" % (g["index"], g["name"], g.get("uuid", "GPU-00000000-0000-0000-0000-00000000000%s" % g["index"])))
+        return
+    query = None
+    for a in args:
+        if a.startswith("--query-gpu="):
+            query = a[len("--query-gpu="):]
+    if query is None:
+        sys.stderr.write("Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.\n")
+        sys.exit(2)
+    fields = [f.strip() for f in query.split(",") if f.strip()]
+    for f in fields:
+        if f not in KNOWN_FIELDS:
+            # Real nvidia-smi prints this on STDOUT and exits 2.
+            sys.stdout.write('Field "%s" is not a valid field to query.\n' % f)
+            sys.exit(2)
+    for g in sc["gpus"]:
+        row = []
+        for f in fields:
+            v = g.get(f)
+            if v is None:
+                v = "[N/A]"
+            row.append(str(v))
+        sys.stdout.write(", ".join(row) + "\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Simulated modinfo: the nvidia modules exist for the running kernel; anything
+# else (nouveau included) is "not found", like a machine where nouveau was
+# never built.
+case "${1:-}" in
+  nvidia|nvidia_drm|nvidia_modeset|nvidia_uvm|nvidia-drm|nvidia-modeset|nvidia-uvm)
+    echo "filename:       /lib/modules/$(uname -r)/updates/dkms/${1//-/_}.ko"
+    echo "version:        580.65.06"
+    echo "license:        NVIDIA"
+    echo "vermagic:       $(uname -r) SMP preempt mod_unload modversions"
+    exit 0 ;;
+  *)
+    echo "modinfo: ERROR: Module ${1:-} not found." >&2
+    exit 1 ;;
+esac

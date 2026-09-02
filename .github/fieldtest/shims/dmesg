@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Simulated dmesg: a normal boot log with two NVIDIA Xid errors for GPU 2
+# (bus 81:00), the classic "fallen off the bus" and an MMU fault, so the Xid
+# collector and its analyzer rule run on real Linux without a GPU.
+cat <<'EOF'
+[    0.000000] Linux version 6.8.0-45-generic (buildd@lcy02-amd64-115) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #45-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug 30 12:02:04 UTC 2024
+[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-6.8.0-45-generic root=UUID=deadbeef ro quiet splash
+[    2.104233] nvidia: loading out-of-tree module taints kernel.
+[    2.104240] nvidia: module license 'NVIDIA' taints kernel.
+[    2.311902] nvidia-nvlink: Nvlink Core is being initialized, major device number 510
+[    2.312611] NVRM: loading NVIDIA UNIX x86_64 Kernel Module  580.65.06  Tue Jul 15 22:01:10 UTC 2025
+[    2.400118] [drm] [nvidia-drm] [GPU ID 0x00000100] Loading driver
+[    2.400301] [drm] [nvidia-drm] [GPU ID 0x00004100] Loading driver
+[    2.400488] [drm] [nvidia-drm] [GPU ID 0x00008100] Loading driver
+[ 8123.456789] NVRM: Xid (PCI:0000:81:00): 31, pid=4242, name=python, Ch 00000008, intr 10000000. MMU Fault: ENGINE GRAPHICS GPCCLIENT_T1_0 faulted @ 0x7f12_34560000. Fault is of type FAULT_PDE ACCESS_TYPE_VIRT_READ
+[ 8124.001122] NVRM: Xid (PCI:0000:81:00): 79, pid='<unknown>', name=<unknown>, GPU has fallen off the bus.
+[ 8124.001199] NVRM: GPU 0000:81:00.0: GPU has fallen off the bus.
+[ 8124.001204] NVRM: A GPU crash dump has been created. If possible, please run
+EOF

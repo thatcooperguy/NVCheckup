@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Simulated lsmod: proprietary NVIDIA stack loaded, nouveau absent.
+cat <<'EOF'
+Module                  Size  Used by
+nvidia_uvm           4886528  2
+nvidia_drm            135168  12
+nvidia_modeset       1720320  20 nvidia_drm
+nvidia              97558528  1245 nvidia_uvm,nvidia_modeset
+drm_kms_helper        237568  1 nvidia_drm
+video                  73728  1 nvidia_modeset
+igb                   290816  0
+EOF

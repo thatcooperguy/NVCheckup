@@ -421,6 +421,24 @@ func reasonsMentionThermal(reasons []string) bool {
 // temperature >= 85C, and hw_slowdown at high temperature is an inference)
 // the flag is ignored and the temperature thresholds in analyzeThermal decide
 // on their own.
+// powerCapOnly reports whether the only active slowdown reasons are the
+// software power cap (and the always-present idle/app-clock bits), i.e. the
+// GPU is simply sitting at its TDP.
+func powerCapOnly(reasons []string) bool {
+	sawCap := false
+	for _, r := range reasons {
+		switch strings.ToLower(strings.TrimSpace(r)) {
+		case "sw_power_cap":
+			sawCap = true
+		case "gpu_idle", "applications_clocks_setting", "sync_boost", "display_clock_setting", "":
+			// not slowdowns
+		default:
+			return false
+		}
+	}
+	return sawCap
+}
+
 func thermalState(t *types.ThermalInfo) (thermal, slowdown bool, reasons []string) {
 	slowdown = t.SlowdownActive
 	reasons = t.ThrottleReasons
@@ -505,9 +523,26 @@ func thermalFindings(t *types.ThermalInfo) []types.Finding {
 		})
 	}
 
-	// Non-thermal slowdown (power cap, hardware brake). Reported separately
-	// because the fix is different: power limits and cabling, not cooling.
-	if slowdown && !thermal {
+	// Non-thermal slowdown. Hitting the software power cap under a heavy load
+	// is what every GPU does at its TDP (observed live: an RTX 3090 at 99%
+	// utilisation, 350 W limit), so on its own it is informational. A hardware
+	// slowdown or power-brake signal is a real WARN: cabling, PSU or the board.
+	if slowdown && !thermal && powerCapOnly(reasons) {
+		findings = append(findings, types.Finding{
+			ID:       "gpu-power-cap",
+			Severity: types.SeverityInfo,
+			Title:    "GPU Running at Its Power Limit",
+			Evidence: fmt.Sprintf("Active reason: sw_power_cap. Power draw: %s / limit %s. Clock: %d MHz / %d MHz max. Temperature: %d°C. Utilization: %d%%.",
+				valueOrUnknown(t.PowerDrawW), valueOrUnknown(t.PowerLimitW), t.CurrentClockMHz, t.MaxClockMHz, t.TemperatureC, t.UtilizationPct),
+			WhyItMatters: "The driver is holding clocks at the card's configured power limit. Under a sustained heavy load this is normal behaviour, not a fault; it only matters if you expected higher clocks than the limit allows.",
+			NextSteps: []string{
+				"No action needed for normal use.",
+				"If you want more headroom and your PSU and cooling allow it, raise the power limit (nvidia-smi -pl on Linux, or your vendor's tuning tool on Windows).",
+			},
+			Category:   "performance",
+			Confidence: 70,
+		})
+	} else if slowdown && !thermal {
 		findings = append(findings, types.Finding{
 			ID:       "gpu-clock-slowdown",
 			Severity: types.SeverityWarn,

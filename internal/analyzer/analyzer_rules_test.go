@@ -323,11 +323,18 @@ func TestAnalyzeThermal_Table(t *testing.T) {
 			forbid:  []string{"gpu-clock-slowdown", "gpu-running-hot"},
 		},
 		{
-			name: "sw_power_cap is a WARN slowdown, not thermal",
+			name: "sw_power_cap alone is the INFO power-cap note, not a slowdown WARN",
 			thermal: types.ThermalInfo{TemperatureC: 70, PowerState: "P0", UtilizationPct: 99, SlowdownActive: true,
 				SlowdownReason: "0x0000000000000004", ThrottleReasons: []string{"sw_power_cap"}, FanSupported: true, FanSpeedPct: 60},
+			wantIDs: map[string]types.Severity{"gpu-power-cap": types.SeverityInfo},
+			forbid:  []string{"thermal-throttling", "gpu-clock-slowdown"},
+		},
+		{
+			name: "hw_slowdown is a WARN even when the power cap is also active",
+			thermal: types.ThermalInfo{TemperatureC: 70, PowerState: "P0", UtilizationPct: 99, SlowdownActive: true,
+				SlowdownReason: "0x000000000000000c", ThrottleReasons: []string{"sw_power_cap", "hw_slowdown"}, FanSupported: true, FanSpeedPct: 60},
 			wantIDs: map[string]types.Severity{"gpu-clock-slowdown": types.SeverityWarn},
-			forbid:  []string{"thermal-throttling"},
+			forbid:  []string{"thermal-throttling", "gpu-power-cap"},
 		},
 		{
 			name: "old collector ThermalThrottle at 85C without thermal bits is only running hot",
@@ -424,8 +431,8 @@ func TestAnalyzeThermal_TrustsCollectorNotRawMask(t *testing.T) {
 	th := &types.ThermalInfo{TemperatureC: 70, PowerState: "P0", UtilizationPct: 99,
 		SlowdownActive: true, SlowdownReason: "4", ThrottleReasons: []string{"sw_power_cap"}}
 	findings := analyzeThermal(&types.Report{Thermal: th})
-	if findByID(findings, "gpu-clock-slowdown") == nil || findByID(findings, "thermal-throttling") != nil {
-		t.Errorf("expected only the collector's sw_power_cap slowdown, got %v", ids(findings))
+	if findByID(findings, "gpu-power-cap") == nil || findByID(findings, "gpu-clock-slowdown") != nil || findByID(findings, "thermal-throttling") != nil {
+		t.Errorf("expected only the collector's sw_power_cap note, got %v", ids(findings))
 	}
 	quiet := &types.ThermalInfo{TemperatureC: 40, PowerState: "P8", SlowdownReason: "0x0000000000000020"}
 	if got := analyzeThermal(&types.Report{Thermal: quiet}); len(got) != 0 {
