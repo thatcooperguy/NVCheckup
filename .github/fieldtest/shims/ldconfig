@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Simulated ldconfig: only the read-only cache listing `ldconfig -p` /
+# `--print-cache` is answered, from the scenario's "ldconfig_libs" (one cache
+# row per entry, e.g. "libcuda.so.1 (libc6,AArch64) => /usr/lib/aarch64-linux-gnu/libcuda.so.1").
+# The collectors read it for libcuda (linux.go LibCudaPath) and for
+# libnccl.so.2 / libnccl-net plugins (cx7.go, spec 9 nccl-env-misconfigured).
+# Every other invocation rebuilds /etc/ld.so.cache and is refused. Scenarios
+# without the key (rig3) get an empty cache, which is what a GPU-less runner
+# reports for those libraries anyway. Never calls the real ldconfig.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+print_cache=0
+for a in "$@"; do
+  case "$a" in
+    -p|--print-cache) print_cache=1 ;;
+    -C|-f|-r|-X|-n|-N|-v|--verbose) sim_refuse ldconfig "$@" ;;
+  esac
+done
+[ "$print_cache" = 1 ] || sim_refuse ldconfig "$@"
+
+libs=""
+if sim_has ldconfig_libs; then
+  libs="$(sim_lines ldconfig_libs)"
+fi
+n=0
+[ -n "$libs" ] && n="$(printf '%s\n' "$libs" | grep -c .)"
+printf '%s libs found in cache `/etc/ld.so.cache'\''\n' "$n"
+[ -n "$libs" ] && printf '%s\n' "$libs" | sed 's/^/\t/'
+exit 0

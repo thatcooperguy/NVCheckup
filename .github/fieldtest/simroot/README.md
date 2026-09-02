@@ -18,8 +18,18 @@ scripts/make-simroot.sh --all
 ```
 
 and CI regenerates them and fails when the committed copy is stale. Empty
-directories (`sys/fs/pstore`) cannot be committed and exist only after the
-script has run, which the workflow does before every scenario.
+directories (`sys/fs/pstore`, `sys/firmware/efi`) cannot be committed and exist
+only after the script has run, which the workflow does before every scenario.
+
+Besides the release files, DMI, meminfo, cpuinfo, swaps, vmstat, PSI and
+thermal fixtures, the trees carry `/proc/net/tcp` (dashboard port 11000
+listening), `/proc/sys/kernel/osrelease`, the ConnectX-7
+`/sys/class/infiniband` and `/sys/class/net` trees (state, rate, MTU, speed,
+MAC placeholder, PCI_SLOT_NAME), `/etc/netplan/50-cx7.yaml` (cage-0 addresses,
+`mtu: 9000`), `/etc/ufw/ufw.conf`, `/etc/nvidia/cx7-hotplug-enabled`,
+`/etc/docker/daemon.json` with the nvidia runtime and `features.cdi`,
+`/etc/cdi/nvidia.yaml`, and the container-toolkit apt source. The scenario's
+`description` names which of these are placeholders pending a hardware capture.
 
 The generator wipes `etc proc sys lib run var dev opt` under its output
 directory before writing, so it only accepts a directory under this folder or

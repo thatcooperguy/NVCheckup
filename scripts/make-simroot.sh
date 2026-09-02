@@ -15,8 +15,18 @@
 # The generated trees are committed; CI regenerates them and fails when the
 # committed copy is stale (`git status --porcelain .github/fieldtest/simroot`).
 # Only regular files are written (no symlinks: the trees must survive a Windows
-# checkout), directories that must merely exist (sys/fs/pstore) are created
-# empty and therefore only exist after running this script.
+# checkout), directories that must merely exist (sys/fs/pstore, sys/firmware/efi)
+# are created empty and therefore only exist after running this script.
+#
+# Files written (all read by a collector through the NVC_SIM_ROOT helper):
+#   etc/{dgx-release,fastos-release,os-release}, etc/ufw/ufw.conf, etc/netplan/*.yaml,
+#   etc/nvidia/cx7-hotplug-enabled, etc/docker/daemon.json, etc/cdi/nvidia.yaml,
+#   etc/apt/sources.list.d/*; proc/{meminfo,cpuinfo,version,swaps,vmstat},
+#   proc/sys/kernel/osrelease, proc/sys/vm/swappiness, proc/pressure/memory, proc/net/tcp;
+#   sys/class/dmi/id/*, sys/class/thermal/thermal_zoneN/{type,temp},
+#   sys/class/infiniband/<dev>/{ports/1/*,node_type,device/uevent,device/net/<if>/*},
+#   sys/class/net/<if>/{operstate,carrier,speed,mtu,address,device/{uevent,vendor,device}},
+#   sys/fs/pstore/ and sys/firmware/efi/ (empty), lib/modules/<kernel>/modules.dep.
 #
 # Safety: the generator deletes <outdir>/{etc,proc,sys,lib,run,var,dev,opt}
 # before writing, so it refuses any <outdir> that is not a fixture tree: it must
@@ -102,6 +112,48 @@ units = sc.get("systemd_units") or {}
 if "ufw.service" in units:
     write("etc/ufw/ufw.conf", "# /etc/ufw/ufw.conf\n#\n# Set to yes to start on boot.\nENABLED=%s\n\n# Please use the 'ufw' command to set the loglevel.\nLOGLEVEL=low\n" % ("yes" if units["ufw.service"] == "active" else "no"))
 
+# spec 9: netplan persists the twins' addresses and MTU (healthy = MTU 9000 on every node; cx7.go reads
+# mtu / addresses / dhcp4 per interface under ethernets:). "netplan": {"file": ..., "interfaces": [...]}
+# names the ports whose config is persisted; addresses and mtu come from the cx7_ports rows.
+np = sc.get("netplan") or {}
+if np.get("interfaces"):
+    ports_by_name = {p["netdev"]: p for p in sc.get("cx7_ports") or []}
+    y = ["network:", "  version: 2", "  renderer: networkd", "  ethernets:"]
+    for name in np["interfaces"]:
+        p = ports_by_name.get(name, {})
+        y.append("    %s:" % name)
+        if p.get("ipv4"):
+            y.append("      addresses:")
+            for c in p["ipv4"]:
+                y.append("        - %s" % c)
+        else:
+            y.append("      dhcp4: false")
+        if p.get("mtu"):
+            y.append("      mtu: %s" % p["mtu"])
+    write("etc/netplan/%s" % np.get("file", "50-cx7.yaml"), "\n".join(y) + "\n")
+
+# spec 9: /etc/nvidia/cx7-hotplug-enabled, the ConnectX-7 hotplug/persistence marker (presence only).
+if sc.get("cx7_hotplug_enabled"):
+    write("etc/nvidia/cx7-hotplug-enabled", "")
+
+# spec 5 docker-cdi-spec-missing: /etc/docker/daemon.json runtimes + features.cdi and the CDI spec
+# /etc/cdi/nvidia.yaml (ecosystem.go). "docker": {"runtimes": ["nvidia"], "cdi": true, "cdi_spec": true}.
+dk = sc.get("docker") or {}
+if dk:
+    cfg = {}
+    if dk.get("runtimes"):
+        cfg["runtimes"] = {r: {"args": [], "path": "%s-container-runtime" % r} for r in dk["runtimes"]}
+    if "cdi" in dk:
+        cfg["features"] = {"cdi": bool(dk["cdi"])}
+    write("etc/docker/daemon.json", json.dumps(cfg, indent=4, sort_keys=True) + "\n")
+    if dk.get("cdi_spec"):
+        # Minimal CDI document header; the collector only checks that the file exists.
+        write("etc/cdi/nvidia.yaml", "---\ncdiVersion: 0.5.0\nkind: nvidia.com/gpu\ndevices:\n  - name: all\n    containerEdits: {}\n")
+
+# S44 / dgxos.go AptSourceCorrupt: the first line of every listed apt source file.
+for fname, content in (sc.get("apt_sources") or {}).items():
+    write("etc/apt/sources.list.d/%s" % fname, content)
+
 # --- /proc ------------------------------------------------------------------
 # spec 2.1 / 3.3: MemTotal 125513944 kB, MemAvailable + SwapFree, HugePages_* override.
 mem = sc.get("meminfo") or {}
@@ -178,6 +230,8 @@ def netdev_files(base, d, with_device=True):
     write(base + "/carrier", str(d.get("carrier", 0)))
     write(base + "/speed", str(d.get("speed", -1)))
     write(base + "/mtu", str(d.get("mtu", 1500)))
+    # MAC: all-zero placeholder like the ip shim (the spec has none; the field kit redacts real ones).
+    write(base + "/address", "00:00:00:00:00:00")
     if with_device and d.get("pci"):
         write(base + "/device/uevent", "DRIVER=%s\nPCI_SLOT_NAME=%s\n" % (d.get("driver", "mlx5_core"), d["pci"]))
         if d.get("pci_id"):
@@ -205,6 +259,9 @@ for d in sc.get("other_netdevs") or []:
 
 # spec 5 gb10-logless-hard-poweroff: PstoreEmpty. The directory exists and is empty on a healthy unit.
 mkdir("sys/fs/pstore")
+# UEFI firmware (spec 3.1 row 10 AMI BIOS strings; spec 12 mentions Secure Boot): system.go reports
+# BootMode UEFI when the directory exists. Empty directories are not committed; CI recreates them.
+mkdir("sys/firmware/efi")
 
 # --- /lib -------------------------------------------------------------------
 if sc.get("kernel"):
