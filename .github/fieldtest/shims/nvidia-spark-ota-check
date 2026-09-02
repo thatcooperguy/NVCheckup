@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Simulated nvidia-spark-ota-check (spec docs/roadmap/spark-support.md 2.1:
+# subcommands summary, torn-score, installed-name, is-ota-available; OTA names
+# OTAyymm). Output comes from the scenario keys spark_ota_check_summary,
+# spark_ota_torn_score, spark_ota_installed_name, spark_ota_is_available. The
+# summary line shape "detected_ota OTA2607, match 100.0%, total_checks 153,
+# passed_checks 153, failed: []" and the torn-score JSON follow the S12 example
+# quoted in the research corpus; `failed: ["driver"]` is the spec 3.2 GSP
+# failure signature. The real tool needs root; the shim does not. Never calls
+# the real tool.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+case "${1:-}" in
+  summary)        sim_get spark_ota_check_summary "" ;;
+  torn-score)     sim_json spark_ota_torn_score 2>/dev/null || echo '{}' ;;
+  installed-name) sim_get spark_ota_installed_name "" ;;
+  is-ota-available) sim_json spark_ota_is_available 2>/dev/null || echo '{}' ;;
+  -h|--help|"")
+    echo "usage: nvidia-spark-ota-check {summary,torn-score,installed-name,is-ota-available}" >&2
+    [ -z "${1:-}" ] && exit 2 || exit 0 ;;
+  *) echo "nvidia-spark-ota-check: error: argument command: invalid choice: '$1'" >&2; exit 2 ;;
+esac

@@ -87,6 +87,11 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 	sysInfo, sysErrs := common.CollectSystemInfo(cfg.Timeout)
 	r.System = sysInfo
 	ph.addErrors(sysErrs)
+	// Platform class from files, lspci, DMI and the kernel (spec 3.1 rows
+	// 1-4, 6, 10, 11); the GPU-dependent rows follow after phase 3.
+	platform, platformErrs := common.DetectPlatform(cfg.Timeout)
+	r.Platform = platform
+	ph.addErrors(platformErrs)
 	ph.end()
 
 	// Phase 2: GPUs and driver
@@ -118,11 +123,16 @@ func Run(cfg types.RunConfig, verbose bool, printFn func(string)) (*types.Report
 		}
 	}
 	ph.addErrors(pcieErrs)
+	// Rows 5, 7, 8, 9 and flag rules A-C of spec 3.1 need the GPU and PCIe
+	// data above and must land before the platform collectors and analysis.
+	common.ApplyPlatformFlags(r)
 	ph.end()
 
-	// Phase 4: platform-specific (Windows/Linux)
+	// Phase 4: platform-specific (Windows/Linux), then the Spark /
+	// unified-memory collectors gated on r.Platform.
 	ph.begin("Running platform-specific checks...")
 	ph.addErrors(collectPlatformSpecific(r, cfg))
+	ph.addErrors(collectPlatformExtras(r, cfg))
 	ph.end()
 
 	// Phase 5: AI/CUDA (ai, creator and full modes)

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NVCheckup — Cross-platform NVIDIA Diagnostics</title>
-<meta name="description" content="Open-source NVIDIA GPU diagnostic tool for gaming, AI, and creators. Windows + Linux. Safe, private, read-only by default.">
+<meta name="description" content="Open-source NVIDIA GPU diagnostic tool for gaming, AI, and creators. Windows + Linux, including DGX Spark and RTX Spark unified-memory platforms. Safe, private, read-only by default.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -427,6 +427,33 @@ body {
   line-height: 1.6;
 }
 
+.feature-desc a {
+  color: var(--nv-green);
+  text-decoration: none;
+}
+
+.feature-desc a:hover {
+  text-decoration: underline;
+}
+
+.feature-pill {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #f0a030;
+  border: 1px solid rgba(240, 160, 48, 0.4);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.feature-card.spark {
+  border-color: var(--border-green);
+  background: linear-gradient(180deg, var(--nv-green-subtle), var(--bg-card));
+}
+
 /* ── Safety Banner ─────────────────────────────────── */
 
 .safety-section {
@@ -605,6 +632,10 @@ body {
     </div>
     <div class="status-item">
       <span class="status-dot"></span>
+      DGX Spark + RTX Spark &middot; simulated
+    </div>
+    <div class="status-item">
+      <span class="status-dot"></span>
       MIT License
     </div>
   </div>
@@ -676,6 +707,12 @@ body {
       <h3 class="feature-title">Overlay Conflicts</h3>
       <p class="feature-desc">Identifies Xbox Game Bar, Discord, RTSS, and other overlay software that may contribute to stutter or frame pacing issues.</p>
     </div>
+    <div class="feature-card spark">
+      <div class="feature-icon">&#x26A1;</div>
+      <span class="feature-pill">New &middot; simulated, unverified on hardware</span>
+      <h3 class="feature-title">DGX Spark &amp; RTX Spark</h3>
+      <p class="feature-desc">Recognises GB10 and N1X unified-memory platforms, reads the shared pool from /proc/meminfo instead of the [N/A] that nvidia-smi reports by design, silences the VRAM, fan and PCIe false alarms, checks DGX OS driver/firmware pairing and the ConnectX-7 twins, and sizes LLM deployments with <code>nvcheckup llm-plan</code>. <a href="https://github.com/thatcooperguy/NVCheckup#dgx-spark-rtx-spark-and-unified-memory">Read the section</a> &middot; <a href="https://github.com/thatcooperguy/NVCheckup/issues/3">own one? issue #3</a></p>
+    </div>
     <div class="feature-card">
       <div class="feature-icon">&#x1F4E6;</div>
       <h3 class="feature-title">Support Bundles</h3>
@@ -719,6 +756,10 @@ body {
     <div class="safety-item">
       <span class="safety-icon safety-x">&#x2718;</span>
       <span>No data uploads</span>
+    </div>
+    <div class="safety-item">
+      <span class="safety-icon safety-check">&#x2714;</span>
+      <span>Spark fixes are printed as Advisory steps with a revert command, never applied</span>
     </div>
   </div>
 </section>

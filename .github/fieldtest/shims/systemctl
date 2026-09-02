@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Simulated systemctl: answers is-active / is-enabled / show -p ActiveState /
+# status / list-units from the scenario's "systemd_units" map ({unit: state}).
+# Units the DGX OS collector asks about come from spec
+# docs/roadmap/spark-support.md 2.1 (dgx-dashboard.service,
+# dgx-dashboard-admin.service, fwupd) and 5 (gb10-clock-cap.service,
+# nvidia-persistenced, avahi, ufw). Unknown units are "inactive" (exit 3), as
+# with the real tool. Anything that would start, stop, enable, mask or edit a
+# unit is refused. Never calls the real systemctl.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+state_of() {
+  local u="$1"
+  case "$u" in *.service|*.socket|*.target|*.timer) ;; *) u="$u.service" ;; esac
+  sim_get "systemd_units.$u" inactive
+}
+
+cmd=""
+props=""
+units=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--property) props="$2"; shift 2 ;;
+    --property=*) props="${1#--property=}"; shift ;;
+    --no-pager|--quiet|-q|--plain|--no-legend|--all|-a|--user|--system|--value) shift ;;
+    --type=*|-t) shift ;;
+    -*) shift ;;
+    *) if [ -z "$cmd" ]; then cmd="$1"; else units+=("$1"); fi; shift ;;
+  esac
+done
+
+case "$cmd" in
+  is-active)
+    rc=0
+    for u in "${units[@]}"; do s="$(state_of "$u")"; echo "$s"; [ "$s" = active ] || rc=3; done
+    exit $rc ;;
+  is-enabled)
+    rc=0
+    for u in "${units[@]}"; do
+      if [ "$(state_of "$u")" = active ]; then echo enabled; else echo disabled; rc=1; fi
+    done
+    exit $rc ;;
+  is-failed)
+    for u in "${units[@]}"; do echo "$(state_of "$u")"; done
+    exit 1 ;;
+  show)
+    for u in "${units[@]}"; do
+      s="$(state_of "$u")"
+      if [ -z "$props" ] || [[ ",$props," == *",ActiveState,"* ]]; then echo "ActiveState=$s"; fi
+      if [ -z "$props" ] || [[ ",$props," == *",SubState,"* ]]; then [ "$s" = active ] && echo "SubState=running" || echo "SubState=dead"; fi
+      if [ -z "$props" ] || [[ ",$props," == *",UnitFileState,"* ]]; then [ "$s" = active ] && echo "UnitFileState=enabled" || echo "UnitFileState=disabled"; fi
+      if [ -z "$props" ] || [[ ",$props," == *",Id,"* ]]; then echo "Id=$u"; fi
+    done
+    exit 0 ;;
+  status)
+    rc=0
+    for u in "${units[@]}"; do
+      s="$(state_of "$u")"
+      if [ "$s" = active ]; then
+        printf '%s - %s\n     Loaded: loaded (/usr/lib/systemd/system/%s; enabled; preset: enabled)\n     Active: active (running)\n' "$u" "$u" "$u"
+      else
+        printf '%s - %s\n     Loaded: loaded (/usr/lib/systemd/system/%s; disabled; preset: disabled)\n     Active: inactive (dead)\n' "$u" "$u" "$u"; rc=3
+      fi
+    done
+    exit $rc ;;
+  list-units|list-unit-files)
+    sim_json systemd_units | sim_py -c '
+import json, sys
+d = json.load(sys.stdin)
+for u, s in sorted(d.items()):
+    print("%-40s loaded %-8s %s" % (u, s, "running" if s == "active" else "dead"))
+'
+    exit 0 ;;
+  start|stop|restart|reload|enable|disable|mask|unmask|edit|daemon-reload|set-property|kill|isolate|suspend|hibernate|poweroff|reboot)
+    sim_refuse systemctl "$cmd" "${units[@]}" ;;
+  *)
+    exit 0 ;;
+esac

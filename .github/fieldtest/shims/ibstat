@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Simulated ibstat: renders the scenario's "cx7_ports" (spec
+# docs/roadmap/spark-support.md 2.1 and 9: ConnectX-7 multi-host twins
+# rocep1s0f0 / roceP2p1s0f0 (cage 0) and rocep1s0f1 / roceP2p1s0f1 (cage 1);
+# healthy = ACTIVE / LinkUp / 200 Gb/s). Supports `ibstat`, `ibstat -l`,
+# `ibstat -s` and `ibstat <CA> [port]`. Firmware version, node and port GUIDs
+# are omitted: the spec has no values and the field kit redacts them anyway.
+# Never calls the real ibstat.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+sim_py - "$@" <<'PY'
+import json, os, sys
+
+args = sys.argv[1:]
+path = os.environ.get("NVC_SIM_SCENARIO")
+if not path or not os.path.exists(path):
+    sys.stderr.write("nvc-sim: NVC_SIM_SCENARIO is not set or does not exist\n"); sys.exit(9)
+sc = json.load(open(path, encoding="utf-8"))
+ports = sc.get("cx7_ports") or []
+if not ports:
+    sys.stderr.write("ibstat: no IB devices found\n"); sys.exit(1)
+
+flags = [a for a in args if a.startswith("-")]
+names = [a for a in args if not a.startswith("-")]
+if "-l" in flags or "--list_of_cas" in flags:
+    for p in ports:
+        print(p["rdma"])
+    sys.exit(0)
+
+sel = ports if not names else [p for p in ports if p["rdma"] == names[0]]
+if names and not sel:
+    sys.stderr.write("ibstat: ibpanic: [%d] main: '%s' IB device can't be found\n" % (os.getpid(), names[0])); sys.exit(255)
+
+
+def word(state):
+    # sysfs "4: ACTIVE" -> "Active" (ibstat capitalises), "5: LinkUp" -> "LinkUp"
+    s = state.split(":", 1)[-1].strip()
+    return s.capitalize() if s.isupper() else s
+
+
+for p in sel:
+    print("CA '%s'" % p["rdma"])
+    print("\tCA type: ")
+    print("\tNumber of ports: 1")
+    if "-s" in flags or "--short" in flags:
+        continue
+    print("\tPort 1:")
+    print("\t\tState: %s" % word(p.get("state", "1: DOWN")))
+    print("\t\tPhysical state: %s" % word(p.get("phys_state", "3: Disabled")))
+    rate = str(p.get("rate", "")).split()[0] if p.get("rate") else "0"
+    print("\t\tRate: %s" % rate)
+    print("\t\tBase lid: 0")
+    print("\t\tLMC: 0")
+    print("\t\tSM lid: 0")
+    print("\t\tCapability mask: 0x00010000")
+    print("\t\tLink layer: Ethernet")
+PY

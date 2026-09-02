@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
-# Simulated lsmod: proprietary NVIDIA stack loaded, nouveau absent.
+# Simulated lsmod. Prints the scenario's "lsmod_lines" ("name size used [by]")
+# in lsmod's column layout when present (gb10: nvidia open modules plus
+# mlx5_core / mlx5_ib, r8127 and mt7925e, spec docs/roadmap/spark-support.md
+# 2.1 and 6); otherwise the built-in rig3 view (proprietary NVIDIA stack
+# loaded, nouveau absent). Never calls the real lsmod.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+echo "Module                  Size  Used by"
+if sim_has lsmod_lines 2>/dev/null; then
+  sim_lines lsmod_lines | while read -r name size used by; do
+    [ -n "$name" ] || continue
+    printf '%-19s %8s  %s%s\n' "$name" "$size" "$used" "${by:+ $by}"
+  done
+  exit 0
+fi
 cat <<'EOF'
-Module                  Size  Used by
 nvidia_uvm           4886528  2
 nvidia_drm            135168  12
 nvidia_modeset       1720320  20 nvidia_drm

@@ -194,6 +194,11 @@ type LinuxInfo struct {
 	XidErrors          []XidError      `json:"xid_errors,omitempty"`
 	LlvmpipeFallback   bool            `json:"llvmpipe_fallback"`
 	GLRenderer         string          `json:"gl_renderer,omitempty"`
+
+	// GSP/SEC2 boot-failure lines from the kernel log (spec 3.2 "GSP failure"),
+	// collected on GB10 by linux.CollectNVRMMessages independently of
+	// --include-logs so dgx-spark-gsp-init-failure can fire without it.
+	GSPFailureLines []string `json:"gsp_failure_lines,omitempty"`
 }
 
 // AIInfo holds AI/CUDA framework info
@@ -448,6 +453,13 @@ type Snapshot struct {
 	Windows  *WindowsInfo   `json:"windows,omitempty"`
 	Linux    *LinuxInfo     `json:"linux,omitempty"`
 	AI       *AIInfo        `json:"ai,omitempty"`
+
+	// Spark / unified-memory additions (docs/roadmap/spark-work-packages.md
+	// WP1 item 13: snapshot Diff on platform.class, ota_version, mem_total_kb,
+	// firmware versions). Omitted from JSON when not collected.
+	Platform      *PlatformInfo      `json:"platform,omitempty"`
+	UnifiedMemory *UnifiedMemoryInfo `json:"unified_memory,omitempty"`
+	DGXOS         *DGXOSInfo         `json:"dgx_os,omitempty"`
 }
 
 // ComparisonResult holds diffs between two snapshots
@@ -512,7 +524,22 @@ type PlatformInfo struct {
 	GDMSleepPolicy      string         `json:"gdm_sleep_policy,omitempty"`
 	SuspendAttempts     int            `json:"suspend_attempts,omitempty"`
 	SuspendFailed       bool           `json:"suspend_failed,omitempty"`
-	UncleanBoots        int            `json:"unclean_boots,omitempty"` // boots in the gb10-logless-hard-poweroff window (14 days) whose journal ended without a clean-shutdown marker; WP2 addition, spec section 5
+	UncleanBoots        int            `json:"unclean_boots,omitempty"` // boots in the journal window that ended without a clean-shutdown marker (gb10-logless-hard-poweroff)
+
+	// RTX Spark adapter facts on Windows on Arm (spec 3.1 row 2, 3.2, section 8).
+	WoA *WoAInfo `json:"woa,omitempty"`
+}
+
+// WoAInfo holds the Windows-on-Arm adapter and toolkit facts that spec
+// section 8 assigns to the Windows collectors (windows.CollectWoA).
+type WoAInfo struct {
+	AdapterName      string `json:"adapter_name,omitempty"`   // Win32_VideoController.Name, e.g. "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+	PNPDeviceID      string `json:"pnp_device_id,omitempty"`  // PCI\VEN_10DE&DEV_2E03&SUBSYS_...
+	DriverVersion    string `json:"driver_version,omitempty"` // WDDM DriverVersion, expected to end in 16.1600 for 616.00
+	InfFilename      string `json:"inf_filename,omitempty"`   // e.g. nv_surface_woa.inf
+	DeveloperPreview bool   `json:"developer_preview"`        // DriverVersion ends 16.1600 or INF nv_surface_woa.inf
+	NvccMachine      string `json:"nvcc_machine,omitempty"`   // PE machine type of nvcc.exe: ARM64 | AMD64 | I386 | 0x....
+	NvccPath         string `json:"nvcc_path,omitempty"`
 }
 
 // DGXOSInfo holds DGX OS release, OTA, package and service state read on
@@ -546,6 +573,10 @@ type DGXOSInfo struct {
 
 	FwupdError       string `json:"fwupd_error,omitempty"`        // last fwupd error line, if any
 	AptSourceCorrupt string `json:"apt_source_corrupt,omitempty"` // apt source that fails to parse (e.g. nvidia-container-toolkit.list)
+	// UnitsQueried is true when systemctl answered for the DGX OS units, so the
+	// *Active booleans are measurements; when false they are unknown and the
+	// analyzer must not report the dashboard/fwupd units as unhealthy (integration contract).
+	UnitsQueried bool `json:"units_queried"`
 }
 
 // UnifiedMemoryInfo is the system-memory picture on unified-memory platforms
@@ -572,6 +603,12 @@ type UnifiedMemoryInfo struct {
 	GPUProcesses int `json:"gpu_processes"`  // processes holding a GPU context (count only)
 	OOMKills     int `json:"oom_kills"`      // kernel OOM-killer events seen in logs
 	NVRMNoMemory int `json:"nvrm_no_memory"` // NVRM out-of-memory class kernel messages
+
+	// /proc/vmstat pswpin (pages swapped in since boot) sampled at the start
+	// and end of the collector; the delta is the swap-in activity the
+	// unified-memory-swap-in-use rule looks for (spark-work-packages.md WP1 item 4).
+	Pswpin      int64 `json:"pswpin,omitempty"`
+	PswpinDelta int64 `json:"pswpin_delta,omitempty"`
 }
 
 // FirmwareComponent is one device row from fwupdmgr get-devices.

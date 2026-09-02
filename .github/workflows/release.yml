@@ -52,10 +52,17 @@ jobs:
             goarch: amd64
             ext: .exe
             name: nvcheckup-windows-amd64.exe
+          # Windows on Arm for RTX Spark (N1X) laptops and the Surface RTX Spark Dev Box
+          # (spec docs/roadmap/spark-support.md section 8: windows/arm64, CGO_ENABLED=0).
+          - goos: windows
+            goarch: arm64
+            ext: .exe
+            name: nvcheckup-windows-arm64.exe
           - goos: linux
             goarch: amd64
             ext: ''
             name: nvcheckup-linux-amd64
+          # linux/arm64 also serves DGX Spark (GB10, aarch64) and Jetson.
           - goos: linux
             goarch: arm64
             ext: ''
@@ -117,6 +124,7 @@ jobs:
         with:
           subject-path: |
             dist/nvcheckup-windows-amd64.exe
+            dist/nvcheckup-windows-arm64.exe
             dist/nvcheckup-linux-amd64
             dist/nvcheckup-linux-arm64
 
@@ -136,8 +144,9 @@ jobs:
             | Platform | Architecture | File |
             |----------|-------------|------|
             | Windows | x86_64 | `nvcheckup-windows-amd64.exe` |
+            | Windows | ARM64 (RTX Spark / Windows on Arm) | `nvcheckup-windows-arm64.exe` |
             | Linux | x86_64 | `nvcheckup-linux-amd64` |
-            | Linux | ARM64 | `nvcheckup-linux-arm64` |
+            | Linux | ARM64 (DGX Spark, Jetson, Grace) | `nvcheckup-linux-arm64` |
 
             ### Provenance
 
@@ -165,18 +174,21 @@ jobs:
 
             ### Windows SmartScreen
 
-            The Windows binary is **not code-signed**, so SmartScreen may show "Windows protected your PC".
+            The Windows binaries are **not code-signed**, so SmartScreen may show "Windows protected your PC".
             After verifying the SHA256 above, click **More info** and then **Run anyway**. If you would
             rather not, build from source: `go install github.com/thatcooperguy/nvcheckup/cmd/nvcheckup@${{ github.ref_name }}`.
+
+            On a Windows on Arm device (RTX Spark) use `nvcheckup-windows-arm64.exe`: the x86_64 build
+            also runs there under emulation, but then NVCheckup reports itself as emulated.
 
             ### Quick Start
 
             ```bash
-            # Linux
+            # Linux (x86_64; use nvcheckup-linux-arm64 on DGX Spark and other arm64 systems)
             chmod +x nvcheckup-linux-amd64
             ./nvcheckup-linux-amd64 run --mode full --zip
 
-            # Windows
+            # Windows (x86_64; use nvcheckup-windows-arm64.exe on Windows on Arm)
             nvcheckup-windows-amd64.exe run --mode full --zip
             ```
 

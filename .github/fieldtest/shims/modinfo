@@ -1,15 +1,47 @@
 #!/usr/bin/env bash
-# Simulated modinfo: the nvidia modules exist for the running kernel; anything
-# else (nouveau included) is "not found", like a machine where nouveau was
-# never built.
-case "${1:-}" in
+# Simulated modinfo: the nvidia modules exist for the running kernel with the
+# scenario's driver version (gb10: 580.159.03 open kernel modules under
+# /lib/modules/6.17.0-1026-nvidia, spec docs/roadmap/spark-support.md 2.1 and
+# 3.2 linux-modules-nvidia-580-open-<kernel>); mlx5 modules exist without a
+# version line; anything else (nouveau, nvidia_peermem which does not work on
+# GB10 per spec 2.1) is "not found", like a machine where it was never built.
+# `-F field` prints just that field. Never calls the real modinfo.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+field=""
+mod=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -F|--field) field="$2"; shift 2 ;;
+    -F*) field="${1#-F}"; shift ;;
+    -k) shift 2 ;;
+    -*) shift ;;
+    *) mod="$1"; shift ;;
+  esac
+done
+
+version="$(sim_get driver 580.65.06 2>/dev/null || echo 580.65.06)"
+kernel="$(sim_get kernel "" 2>/dev/null)"
+if [ -z "$kernel" ]; then kernel="$(sim_py -c 'import platform; print(platform.release())')"; fi
+
+emit() {
+  # emit key value: print "key:  value" or just the value when -F asked for it
+  if [ -n "$field" ]; then [ "$field" = "$1" ] && echo "$2"; else printf '%-16s%s\n' "$1:" "$2"; fi
+}
+
+case "$mod" in
   nvidia|nvidia_drm|nvidia_modeset|nvidia_uvm|nvidia-drm|nvidia-modeset|nvidia-uvm)
-    echo "filename:       /lib/modules/$(uname -r)/updates/dkms/${1//-/_}.ko"
-    echo "version:        580.65.06"
-    echo "license:        NVIDIA"
-    echo "vermagic:       $(uname -r) SMP preempt mod_unload modversions"
+    emit filename "/lib/modules/$kernel/updates/dkms/${mod//-/_}.ko"
+    emit version "$version"
+    emit license "NVIDIA"   # the open kernel modules report "Dual MIT/GPL"; the collectors only read version
+    emit vermagic "$kernel SMP preempt mod_unload modversions"
+    exit 0 ;;
+  mlx5_core|mlx5_ib|mlx5-core|mlx5-ib)
+    emit filename "/lib/modules/$kernel/kernel/drivers/net/ethernet/mellanox/mlx5/core/${mod//-/_}.ko"
+    emit license "Dual BSD/GPL"
+    emit vermagic "$kernel SMP preempt mod_unload modversions"
     exit 0 ;;
   *)
-    echo "modinfo: ERROR: Module ${1:-} not found." >&2
+    echo "modinfo: ERROR: Module ${mod:-} not found." >&2
     exit 1 ;;
 esac

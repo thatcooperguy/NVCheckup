@@ -19,16 +19,17 @@ func TestParseThermalCSV_RealSample(t *testing.T) {
 		t.Fatalf("unexpected errors: %+v", errs)
 	}
 	want := types.ThermalInfo{
-		GPUIndex:        0,
-		TemperatureC:    43,
-		PowerState:      "P8",
-		CurrentClockMHz: 210,
-		MaxClockMHz:     2100,
-		PowerLimitW:     "350.00",
-		PowerDrawW:      "33.62",
-		FanSpeedPct:     0,
-		FanSupported:    true,
-		UtilizationPct:  28,
+		GPUIndex:            0,
+		TemperatureC:        43,
+		PowerState:          "P8",
+		CurrentClockMHz:     210,
+		MaxClockMHz:         2100,
+		PowerLimitW:         "350.00",
+		PowerLimitSupported: true,
+		PowerDrawW:          "33.62",
+		FanSpeedPct:         0,
+		FanSupported:        true,
+		UtilizationPct:      28,
 	}
 	if !reflect.DeepEqual(info, want) {
 		t.Errorf("parseThermalCSV(%q)\n got %+v\nwant %+v", thermalSampleIdle, info, want)
@@ -48,37 +49,37 @@ func TestParseThermalCSV_GPUClasses(t *testing.T) {
 		{
 			name: "GeForce RTX 5090 under load (Blackwell, 575 W)",
 			line: "0, 71, P0, 2865, 3090, 575.00, 561.30, 78, 97",
-			want: types.ThermalInfo{TemperatureC: 71, PowerState: "P0", CurrentClockMHz: 2865, MaxClockMHz: 3090, PowerLimitW: "575.00", PowerDrawW: "561.30", FanSpeedPct: 78, FanSupported: true, UtilizationPct: 97},
+			want: types.ThermalInfo{TemperatureC: 71, PowerState: "P0", CurrentClockMHz: 2865, MaxClockMHz: 3090, PowerLimitW: "575.00", PowerLimitSupported: true, PowerDrawW: "561.30", FanSpeedPct: 78, FanSupported: true, UtilizationPct: 97},
 		},
 		{
 			name: "GeForce RTX 4060 Laptop GPU idle (no fan sensor exposed)",
 			line: "0, 41, P8, 210, 2370, 115.00, 3.21, [N/A], 0",
-			want: types.ThermalInfo{TemperatureC: 41, PowerState: "P8", CurrentClockMHz: 210, MaxClockMHz: 2370, PowerLimitW: "115.00", PowerDrawW: "3.21", FanSupported: false, UtilizationPct: 0},
+			want: types.ThermalInfo{TemperatureC: 41, PowerState: "P8", CurrentClockMHz: 210, MaxClockMHz: 2370, PowerLimitW: "115.00", PowerLimitSupported: true, PowerDrawW: "3.21", FanSupported: false, UtilizationPct: 0},
 		},
 		{
 			name: "GeForce GTX 1060 6GB on an R470 driver (Pascal video P2)",
 			line: "0, 55, P2, 1708, 1911, 120.00, 60.15, 45, 73",
-			want: types.ThermalInfo{TemperatureC: 55, PowerState: "P2", CurrentClockMHz: 1708, MaxClockMHz: 1911, PowerLimitW: "120.00", PowerDrawW: "60.15", FanSpeedPct: 45, FanSupported: true, UtilizationPct: 73},
+			want: types.ThermalInfo{TemperatureC: 55, PowerState: "P2", CurrentClockMHz: 1708, MaxClockMHz: 1911, PowerLimitW: "120.00", PowerLimitSupported: true, PowerDrawW: "60.15", FanSpeedPct: 45, FanSupported: true, UtilizationPct: 73},
 		},
 		{
 			name: "NVIDIA A100-SXM4-80GB (passive, fan [N/A], 100% busy)",
 			line: "0, 61, P0, 1410, 1410, 400.00, 312.55, [N/A], 100",
-			want: types.ThermalInfo{TemperatureC: 61, PowerState: "P0", CurrentClockMHz: 1410, MaxClockMHz: 1410, PowerLimitW: "400.00", PowerDrawW: "312.55", FanSupported: false, UtilizationPct: 100},
+			want: types.ThermalInfo{TemperatureC: 61, PowerState: "P0", CurrentClockMHz: 1410, MaxClockMHz: 1410, PowerLimitW: "400.00", PowerLimitSupported: true, PowerDrawW: "312.55", FanSupported: false, UtilizationPct: 100},
 		},
 		{
 			name: "NVIDIA H100 80GB HBM3 with MIG enabled (utilization [N/A])",
 			line: "0, 38, P0, 1980, 1980, 700.00, 72.11, [N/A], [N/A]",
-			want: types.ThermalInfo{TemperatureC: 38, PowerState: "P0", CurrentClockMHz: 1980, MaxClockMHz: 1980, PowerLimitW: "700.00", PowerDrawW: "72.11", FanSupported: false, UtilizationPct: 0},
+			want: types.ThermalInfo{TemperatureC: 38, PowerState: "P0", CurrentClockMHz: 1980, MaxClockMHz: 1980, PowerLimitW: "700.00", PowerLimitSupported: true, PowerDrawW: "72.11", FanSupported: false, UtilizationPct: 0},
 		},
 		{
 			name: "Tesla T4 passive at idle",
 			line: "0, 46, P8, 300, 1590, 70.00, 12.87, [N/A], 0",
-			want: types.ThermalInfo{TemperatureC: 46, PowerState: "P8", CurrentClockMHz: 300, MaxClockMHz: 1590, PowerLimitW: "70.00", PowerDrawW: "12.87", FanSupported: false, UtilizationPct: 0},
+			want: types.ThermalInfo{TemperatureC: 46, PowerState: "P8", CurrentClockMHz: 300, MaxClockMHz: 1590, PowerLimitW: "70.00", PowerLimitSupported: true, PowerDrawW: "12.87", FanSupported: false, UtilizationPct: 0},
 		},
 		{
 			name: "Quadro RTX 8000 rendering",
 			line: "0, 58, P0, 1770, 2100, 260.00, 190.44, 52, 88",
-			want: types.ThermalInfo{TemperatureC: 58, PowerState: "P0", CurrentClockMHz: 1770, MaxClockMHz: 2100, PowerLimitW: "260.00", PowerDrawW: "190.44", FanSpeedPct: 52, FanSupported: true, UtilizationPct: 88},
+			want: types.ThermalInfo{TemperatureC: 58, PowerState: "P0", CurrentClockMHz: 1770, MaxClockMHz: 2100, PowerLimitW: "260.00", PowerLimitSupported: true, PowerDrawW: "190.44", FanSpeedPct: 52, FanSupported: true, UtilizationPct: 88},
 		},
 		{
 			name: "power limit not supported (some vGPU / laptop firmware)",
@@ -88,7 +89,7 @@ func TestParseThermalCSV_GPUClasses(t *testing.T) {
 		{
 			name: "deep idle P15 is a valid state on newer parts",
 			line: "0, 30, P15, 150, 2100, 200.00, 5.00, 0, 0",
-			want: types.ThermalInfo{TemperatureC: 30, PowerState: "P15", CurrentClockMHz: 150, MaxClockMHz: 2100, PowerLimitW: "200.00", PowerDrawW: "5.00", FanSupported: true},
+			want: types.ThermalInfo{TemperatureC: 30, PowerState: "P15", CurrentClockMHz: 150, MaxClockMHz: 2100, PowerLimitW: "200.00", PowerLimitSupported: true, PowerDrawW: "5.00", FanSupported: true},
 		},
 	}
 	for _, tt := range tests {

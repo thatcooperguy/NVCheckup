@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Scenario lookup helper for the bash shims in this directory (not a tool shim).
+
+The shims answer from the JSON file named by $NVC_SIM_SCENARIO (spec
+docs/roadmap/spark-support.md section 10). Bash cannot parse JSON, so each
+shim sources nvc-sim-lib.sh and calls this helper:
+
+  nvc-sim-scenario get KEY [DEFAULT]   scalar (dotted path ok: dmi.sys_vendor);
+                                       lists print one item per line, dicts as JSON;
+                                       exit 1 when missing and no DEFAULT given
+  nvc-sim-scenario lines KEY           list items one per line; exit 1 when missing
+  nvc-sim-scenario has KEY             exit 0 when present and not null
+  nvc-sim-scenario json KEY            JSON dump of the value; exit 1 when missing
+
+Exit 9 with a message on stderr when NVC_SIM_SCENARIO is unset or unreadable,
+so a shim never silently answers from nothing.
+"""
+import json
+import os
+import sys
+
+
+def load():
+    path = os.environ.get("NVC_SIM_SCENARIO")
+    if not path or not os.path.exists(path):
+        sys.stderr.write("nvc-sim: NVC_SIM_SCENARIO is not set or does not exist\n")
+        sys.exit(9)
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def lookup(doc, key):
+    """Dotted lookup. At each level the whole remaining key is tried first, so
+    keys that themselves contain dots (systemd_units.dgx-dashboard.service)
+    resolve without escaping."""
+    cur = doc
+    rest = key
+    while rest != "":
+        if isinstance(cur, dict) and rest in cur:
+            return cur[rest]
+        part, _, rest = rest.partition(".")
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return None
+    return cur
+
+
+def scalar(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (dict,)):
+        return json.dumps(v)
+    return str(v)
+
+
+def main():
+    if len(sys.argv) < 3:
+        sys.stderr.write(__doc__)
+        sys.exit(2)
+    cmd, key = sys.argv[1], sys.argv[2]
+    doc = load()
+    v = lookup(doc, key)
+    if cmd == "has":
+        sys.exit(0 if v is not None else 1)
+    if v is None:
+        if cmd == "get" and len(sys.argv) > 3:
+            sys.stdout.write(sys.argv[3] + "\n")
+            sys.exit(0)
+        sys.exit(1)
+    if cmd == "json":
+        sys.stdout.write(json.dumps(v) + "\n")
+    elif cmd == "lines":
+        items = v if isinstance(v, list) else [v]
+        for item in items:
+            sys.stdout.write(scalar(item) + "\n")
+    elif cmd == "get":
+        if isinstance(v, list):
+            for item in v:
+                sys.stdout.write(scalar(item) + "\n")
+        else:
+            sys.stdout.write(scalar(v) + "\n")
+    else:
+        sys.stderr.write("nvc-sim-scenario: unknown command %s\n" % cmd)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

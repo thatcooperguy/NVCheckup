@@ -2,28 +2,74 @@
 """Simulated nvidia-smi for the Linux field test.
 
 GitHub's runners have no NVIDIA GPU, so this shim answers the exact queries
-NVCheckup's collectors make (-L, --query-gpu=... with csv output, and the plain
-table) from a scenario file. It lets the GPU-dependent Linux code paths run on
-real Linux hardware: per-GPU thermal/PCIe rows, the analyzer, the report
-writers, self-test's query checks and the fix driver gate.
+NVCheckup's collectors make (-L, --query-gpu=... with csv output, the plain
+table, -q [-d SECTION], --query-compute-apps) from a scenario file. It lets the
+GPU-dependent Linux code paths run on real Linux hardware: per-GPU thermal/PCIe
+rows, the analyzer, the report writers, self-test's query checks and the fix
+driver gate.
 
 Scenario: JSON at $NVC_SIM_SCENARIO with {"driver": "...", "cuda": "...",
-"gpus": [{field: value, ...}, ...]}. Unknown fields print "[N/A]" like the real
-tool does for unsupported queries; a field name the real nvidia-smi would
-reject exits 2 with the real error text so self-test behaves realistically.
+"gpus": [{field: value, ...}, ...]} plus, optionally:
+  "invalid_query_fields": [..]   fields this driver rejects with the real
+                                 'Field "x" is not a valid field to query.'
+                                 message on stdout and exit 2
+  "compute_apps": [{"pid":..,"process_name":..,"used_memory":..,"gpu":..}]
+  "performance_counters_us": {"SW Thermal Slowdown": 0, ...}   -q -d PERFORMANCE
+  "persistence_mode": "On"|"Off"   table column
+  "nvidia_smi_failure": {"stdout": "No devices were found", "exit_code": 6}
+                                 every invocation prints this and exits
+                                 (spec 3.2: GSP init failure variant)
+
+Unified-memory platforms (spec docs/roadmap/spark-support.md 2.1): a field
+whose scenario value is "[N/A]" is printed verbatim in csv output; the plain
+table renders Memory-Usage as "Not Supported" and fan / power cap as "N/A"; -q
+prints every power limit, the memory clock and Supported Clocks as N/A. Unknown
+fields print "[N/A]" like the real tool does for unsupported queries.
 """
 import json
 import os
 import sys
+import time
 
+NA = "[N/A]"
+
+# Fields the real R580 nvidia-smi accepts. A scenario may reference more (any key
+# of a gpu object is accepted) and may reject some via "invalid_query_fields".
 KNOWN_FIELDS = {
-    "index", "name", "uuid", "driver_version", "pci.bus_id", "memory.total", "memory.free",
-    "memory.used", "temperature.gpu", "power.draw", "power.limit", "pstate",
-    "clocks.current.graphics", "clocks.max.graphics", "fan.speed", "utilization.gpu",
-    "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.gen.gpucurrent", "pcie.link.gen.gpumax",
-    "pcie.link.width.current", "pcie.link.width.max", "clocks_event_reasons.active",
-    "clocks_throttle_reasons.active", "compute_mode", "mig.mode.current",
+    "index", "name", "uuid", "serial", "driver_version", "pci.bus_id", "pci.domain", "pci.bus", "pci.device",
+    "pci.device_id", "pci.sub_device_id", "memory.total", "memory.free", "memory.used", "memory.reserved",
+    "temperature.gpu", "temperature.memory", "power.draw", "power.draw.average", "power.draw.instant",
+    "power.limit", "enforced.power.limit", "power.default_limit", "power.min_limit", "power.max_limit",
+    "power.management", "pstate", "clocks.current.graphics", "clocks.current.sm", "clocks.current.memory",
+    "clocks.current.video", "clocks.max.graphics", "clocks.max.sm", "clocks.max.memory", "clocks.gr", "clocks.sm",
+    "clocks.mem", "clocks.max.gr", "clocks.max.mem", "fan.speed", "utilization.gpu",
+    "utilization.memory", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.gen.gpucurrent",
+    "pcie.link.gen.gpumax", "pcie.link.gen.hostmax", "pcie.link.width.current", "pcie.link.width.max",
+    "clocks_event_reasons.active", "clocks_throttle_reasons.active", "clocks_event_reasons.gpu_idle",
+    "clocks_event_reasons.sw_power_cap", "clocks_event_reasons.hw_slowdown", "clocks_event_reasons.sw_thermal_slowdown",
+    "clocks_event_reasons.hw_thermal_slowdown", "clocks_event_reasons.hw_power_brake_slowdown",
+    "compute_mode", "compute_cap", "mig.mode.current", "mig.mode.pending", "persistence_mode", "display_mode",
+    "display_active", "vbios_version", "accounting.mode", "ecc.mode.current", "ecc.mode.pending",
+    "gpu_bus_id", "gpu_uuid", "gpu_name", "gpu_serial", "count", "timestamp", "addressing_mode",
 }
+COMPUTE_APP_FIELDS = {"timestamp", "gpu_name", "gpu_bus_id", "gpu_serial", "gpu_uuid", "pid", "process_name", "used_memory", "name", "used_gpu_memory"}
+
+# Unit suffixes nvidia-smi appends when --format lacks "nounits".
+UNITS = {
+    "memory.total": " MiB", "memory.free": " MiB", "memory.used": " MiB", "memory.reserved": " MiB",
+    "power.draw": " W", "power.draw.average": " W", "power.draw.instant": " W", "power.limit": " W",
+    "enforced.power.limit": " W", "power.default_limit": " W", "power.min_limit": " W", "power.max_limit": " W",
+    "clocks.current.graphics": " MHz", "clocks.current.sm": " MHz", "clocks.current.memory": " MHz",
+    "clocks.current.video": " MHz", "clocks.max.graphics": " MHz", "clocks.max.sm": " MHz", "clocks.max.memory": " MHz",
+    "fan.speed": " %", "utilization.gpu": " %", "utilization.memory": " %", "used_memory": " MiB", "used_gpu_memory": " MiB",
+}
+
+# Clock event reason bits as documented by nvidia-smi (nvml.h NVML_CLOCKS_EVENT_REASON_*).
+EVENT_BITS = [
+    (0x1, "Idle"), (0x2, "Applications Clocks Setting"), (0x4, "SW Power Cap"), (0x8, "HW Slowdown"),
+    (0x40, "HW Thermal Slowdown"), (0x80, "HW Power Brake Slowdown"), (0x10, "Sync Boost"),
+    (0x20, "SW Thermal Slowdown"), (0x100, "Display Clock Setting"),
+]
 
 
 def load():
@@ -36,8 +82,20 @@ def load():
         return json.load(f)
 
 
+def is_na(v):
+    return v is None or str(v) in (NA, "N/A")
+
+
+def na(v, unit=""):
+    """Value for -q / table cells: N/A for unsupported, else value plus unit."""
+    if is_na(v):
+        return "N/A"
+    return "%s%s" % (v, unit)
+
+
 def table(sc):
     drv, cuda = sc.get("driver", "580.65.06"), sc.get("cuda", "13.0")
+    persist = sc.get("persistence_mode", "Off")
     out = []
     out.append("+-----------------------------------------------------------------------------------------+")
     out.append("| NVIDIA-SMI %-15s Driver Version: %-15s CUDA Version: %-8s |" % (drv, drv, cuda))
@@ -46,52 +104,248 @@ def table(sc):
     out.append("| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |")
     out.append("|=========================================+========================+======================|")
     for g in sc["gpus"]:
-        out.append("| %3s  %-20s Off | %s Off | N/A                  |" % (g["index"], g["name"][:20], g["pci.bus_id"]))
-        out.append("| %3s%%  %3sC   %-3s   %6sW / %6sW | %7sMiB / %7sMiB | %5s%%      Default |" % (
-            g.get("fan.speed", "N/A"), g["temperature.gpu"], g["pstate"], g["power.draw"], g["power.limit"],
-            g["memory.used"], g["memory.total"], g.get("utilization.gpu", "N/A")))
+        # Column widths follow the real table (41 / 24 / 22 characters between the pipes); the GB10
+        # rows of spec 2.1 read "|   0  NVIDIA GB10 ... On  |   0000000F:01:00.0 Off |                  N/A |"
+        # and "| N/A   32C    P8              4W /  N/A  | Not Supported          |      0%      Default |".
+        out.append("| %3s  %-28s %-3s |%19s Off |%21s |" % (g["index"], g["name"][:28], persist, g["pci.bus_id"], "N/A"))
+        fan = "N/A " if is_na(g.get("fan.speed")) else "%3s%%" % g.get("fan.speed")
+        draw = "N/A" if is_na(g.get("power.draw")) else "%sW" % str(g.get("power.draw")).split(".")[0]
+        cap = "N/A" if is_na(g.get("power.limit")) else "%sW" % str(g.get("power.limit")).split(".")[0]
+        if is_na(g.get("memory.total")):
+            # spec 2.1: unified-memory GPUs show "Not Supported" here.
+            mem = " %-22s " % "Not Supported"
+        else:
+            mem = " %6sMiB / %7sMiB " % (g.get("memory.used", 0), g.get("memory.total", 0))
+        out.append("| %-4s %4s  %-4s  %13s / %5s  |%s|%7s%%      %-7s |" % (
+            fan, "%sC" % g.get("temperature.gpu", "N/A"), g.get("pstate", "N/A"), draw, cap, mem,
+            g.get("utilization.gpu", "N/A"), g.get("compute_mode", "Default")))
         out.append("+-----------------------------------------+------------------------+----------------------+")
     out.append("")
     out.append("+-----------------------------------------------------------------------------------------+")
     out.append("| Processes:                                                                              |")
     out.append("|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |")
     out.append("|=========================================================================================|")
-    out.append("|    1   N/A  N/A      4242      C   python                                        9000MiB |")
+    apps = sc.get("compute_apps")
+    if apps is None:
+        # Legacy scenarios (rig3) predate compute_apps; keep the historical row.
+        apps = [{"gpu": 1, "pid": 4242, "process_name": "python", "used_memory": 9000}]
+    if not apps:
+        out.append("|  No running processes found                                                             |")
+    for a in apps:
+        out.append("| %4s   N/A  N/A %9s      C   %-40s %8sMiB |" % (a.get("gpu", 0), a.get("pid", ""), str(a.get("process_name", ""))[:40], a.get("used_memory", "N/A")))
     out.append("+-----------------------------------------------------------------------------------------+")
     return "\n".join(out) + "\n"
+
+
+def event_lines(mask_str, indent):
+    try:
+        mask = int(str(mask_str), 16) if str(mask_str).startswith("0x") else int(mask_str)
+    except (TypeError, ValueError):
+        mask = 0
+    lines = []
+    for bit, label in EVENT_BITS:
+        pad = indent + ("    " if label in ("HW Thermal Slowdown", "HW Power Brake Slowdown") else "")
+        lines.append("%s%-*s: %s" % (pad, 42 - len(pad), label, "Active" if mask & bit else "Not Active"))
+    return lines
+
+
+def q_report(sc, sections, only_index):
+    """Minimal `nvidia-smi -q [-d SECTIONS]` in the real tool's layout.
+
+    spec 2.1 (GB10): every power limit N/A, Max Clocks Graphics 3003 MHz,
+    memory clock N/A, Supported Clocks N/A, Shutdown/Slowdown T.Limit N/A,
+    GPU Max Operating T.Limit Temp 0 C. Values come from the scenario; the
+    layout is generic nvidia-smi.
+    """
+    drv, cuda = sc.get("driver", "580.65.06"), sc.get("cuda", "13.0")
+    want = set(s.upper() for s in sections) if sections else None
+
+    def on(name):
+        return want is None or name in want
+
+    def kv(indent, k, v):
+        return "%s%-*s: %s" % (indent, 42 - len(indent), k, v)
+
+    out = ["==============NVSMI LOG==============", ""]
+    out.append(kv("", "Timestamp", time.strftime("%a %b %d %H:%M:%S %Y")))
+    out.append(kv("", "Driver Version", drv))
+    out.append(kv("", "CUDA Version", cuda))
+    out.append("")
+    gpus = [g for g in sc["gpus"] if only_index is None or str(g["index"]) == str(only_index)]
+    out.append(kv("", "Attached GPUs", len(sc["gpus"])))
+    i4, i8, i12 = "    ", "        ", "            "
+    for g in gpus:
+        out.append("GPU %s" % g["pci.bus_id"])
+        out.append(kv(i4, "Product Name", g["name"]))
+        out.append(kv(i4, "Persistence Mode", g.get("persistence_mode", "Disabled")))
+        out.append(kv(i4, "GPU UUID", g.get("uuid", "GPU-00000000-0000-0000-0000-000000000000")))
+        if on("MEMORY"):
+            out.append(i4 + "FB Memory Usage")
+            out.append(kv(i8, "Total", na(g.get("memory.total"), " MiB")))
+            out.append(kv(i8, "Reserved", na(g.get("memory.reserved"), " MiB")))
+            out.append(kv(i8, "Used", na(g.get("memory.used"), " MiB")))
+            out.append(kv(i8, "Free", na(g.get("memory.free"), " MiB")))
+        if on("COMPUTE"):
+            out.append(kv(i4, "Compute Mode", g.get("compute_mode", "Default")))
+        if on("UTILIZATION"):
+            out.append(i4 + "Utilization")
+            out.append(kv(i8, "Gpu", na(g.get("utilization.gpu"), " %")))
+            out.append(kv(i8, "Memory", na(g.get("utilization.memory"), " %")))
+        if on("TEMPERATURE"):
+            out.append(i4 + "Temperature")
+            out.append(kv(i8, "GPU Current Temp", na(g.get("temperature.gpu"), " C")))
+            out.append(kv(i8, "GPU T.Limit Temp", na(g.get("temperature.gpu.tlimit"), " C")))
+            out.append(kv(i8, "GPU Shutdown T.Limit Temp", na(g.get("tlimit_shutdown_c"), " C")))
+            out.append(kv(i8, "GPU Slowdown T.Limit Temp", na(g.get("tlimit_slowdown_c"), " C")))
+            out.append(kv(i8, "GPU Max Operating T.Limit Temp", na(g.get("tlimit_max_operating_c"), " C")))
+        if on("POWER"):
+            out.append(i4 + "GPU Power Readings")
+            out.append(kv(i8, "Power Draw", na(g.get("power.draw"), " W")))
+            out.append(kv(i8, "Current Power Limit", na(g.get("power.limit"), " W")))
+            out.append(kv(i8, "Requested Power Limit", na(g.get("power.limit"), " W")))
+            out.append(kv(i8, "Default Power Limit", na(g.get("power.default_limit"), " W")))
+            out.append(kv(i8, "Min Power Limit", na(g.get("power.min_limit"), " W")))
+            out.append(kv(i8, "Max Power Limit", na(g.get("power.max_limit"), " W")))
+        if on("CLOCK"):
+            out.append(i4 + "Clocks")
+            out.append(kv(i8, "Graphics", na(g.get("clocks.current.graphics"), " MHz")))
+            out.append(kv(i8, "SM", na(g.get("clocks.current.sm", g.get("clocks.current.graphics")), " MHz")))
+            out.append(kv(i8, "Memory", na(g.get("clocks.current.memory"), " MHz")))
+            out.append(i4 + "Max Clocks")
+            out.append(kv(i8, "Graphics", na(g.get("clocks.max.graphics"), " MHz")))
+            out.append(kv(i8, "SM", na(g.get("clocks.max.sm", g.get("clocks.max.graphics")), " MHz")))
+            out.append(kv(i8, "Memory", na(g.get("clocks.max.memory"), " MHz")))
+        if on("PERFORMANCE"):
+            out.append(i4 + "Clocks Event Reasons")
+            out.extend(event_lines(g.get("clocks_event_reasons.active", g.get("clocks_throttle_reasons.active", "0x0")), i8))
+            counters = sc.get("performance_counters_us")
+            if counters is not None:
+                out.append(i4 + "Clocks Event Reasons Counters")
+                for k, v in counters.items():
+                    out.append(kv(i8, k, "%s us" % v))
+        if on("SUPPORTED_CLOCKS"):
+            if is_na(g.get("clocks.max.memory")):
+                out.append(kv(i4, "Supported Clocks", "N/A"))
+            else:
+                out.append(i4 + "Supported Clocks")
+                out.append(kv(i8, "Memory", na(g.get("clocks.max.memory"), " MHz")))
+                out.append(kv(i12, "Graphics", na(g.get("clocks.max.graphics"), " MHz")))
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
+def parse_args(args):
+    """Return (query_gpu, query_apps, fmt, index, q_mode, q_sections, list_mode)."""
+    query_gpu = query_apps = None
+    fmt = ""
+    index = None
+    q_mode = False
+    q_sections = []
+    list_mode = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if a.startswith("--query-gpu="):
+            query_gpu = a.split("=", 1)[1]
+        elif a == "--query-gpu" and nxt is not None:
+            query_gpu = nxt; i += 1
+        elif a.startswith("--query-compute-apps="):
+            query_apps = a.split("=", 1)[1]
+        elif a == "--query-compute-apps" and nxt is not None:
+            query_apps = nxt; i += 1
+        elif a.startswith("--format="):
+            fmt = a.split("=", 1)[1]
+        elif a == "--format" and nxt is not None:
+            fmt = nxt; i += 1
+        elif a in ("-i", "--id") and nxt is not None:
+            index = nxt; i += 1
+        elif a.startswith("--id="):
+            index = a.split("=", 1)[1]
+        elif a.startswith("-i") and len(a) > 2:
+            index = a[2:]
+        elif a in ("-q", "--query"):
+            q_mode = True
+        elif a in ("-d", "--display") and nxt is not None:
+            q_sections = [s for s in nxt.split(",") if s]; i += 1
+        elif a.startswith("--display="):
+            q_sections = [s for s in a.split("=", 1)[1].split(",") if s]
+        elif a in ("-L", "--list-gpus"):
+            list_mode = True
+        else:
+            sys.stderr.write("Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.\n")
+            sys.exit(2)
+        i += 1
+    return query_gpu, query_apps, fmt, index, q_mode, q_sections, list_mode
+
+
+def cell(f, v, fmt):
+    if v is None:
+        return NA
+    if str(v) == NA:
+        return NA  # spec 2.1: printed verbatim
+    s = str(v)
+    if "nounits" not in fmt and f in UNITS:
+        s += UNITS[f]
+    return s
 
 
 def main():
     args = sys.argv[1:]
     sc = load()
+    failure = sc.get("nvidia_smi_failure")
+    if failure:
+        # spec 3.2: nvidia-smi "No devices were found" after a GSP init failure.
+        sys.stdout.write(failure.get("stdout", "No devices were found") + "\n")
+        sys.exit(int(failure.get("exit_code", 6)))
     if not args:
         sys.stdout.write(table(sc))
         return
-    if args[0] == "-L":
-        for g in sc["gpus"]:
+    query_gpu, query_apps, fmt, index, q_mode, q_sections, list_mode = parse_args(args)
+    gpus = [g for g in sc["gpus"] if index is None or str(g["index"]) == str(index)]
+    if list_mode:
+        for g in gpus:
             sys.stdout.write("GPU %s: %s (UUID: %s)\n" % (g["index"], g["name"], g.get("uuid", "GPU-00000000-0000-0000-0000-00000000000%s" % g["index"])))
         return
-    query = None
-    for a in args:
-        if a.startswith("--query-gpu="):
-            query = a[len("--query-gpu="):]
-    if query is None:
-        sys.stderr.write("Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.\n")
-        sys.exit(2)
-    fields = [f.strip() for f in query.split(",") if f.strip()]
-    for f in fields:
-        if f not in KNOWN_FIELDS:
-            # Real nvidia-smi prints this on STDOUT and exits 2.
-            sys.stdout.write('Field "%s" is not a valid field to query.\n' % f)
-            sys.exit(2)
+    if q_mode:
+        sys.stdout.write(q_report(sc, q_sections, index))
+        return
+    invalid = set(sc.get("invalid_query_fields") or [])
+    scenario_fields = set()
     for g in sc["gpus"]:
-        row = []
+        scenario_fields.update(g.keys())
+    if query_gpu is not None:
+        fields = [f.strip() for f in query_gpu.split(",") if f.strip()]
         for f in fields:
-            v = g.get(f)
-            if v is None:
-                v = "[N/A]"
-            row.append(str(v))
-        sys.stdout.write(", ".join(row) + "\n")
+            if f in invalid or (f not in KNOWN_FIELDS and f not in scenario_fields):
+                # Real nvidia-smi prints this on STDOUT and exits 2.
+                sys.stdout.write('Field "%s" is not a valid field to query.\n' % f)
+                sys.exit(2)
+        if "noheader" not in fmt:
+            sys.stdout.write(", ".join(fields) + "\n")
+        for g in gpus:
+            sys.stdout.write(", ".join(cell(f, g.get(f), fmt) for f in fields) + "\n")
+        return
+    if query_apps is not None:
+        fields = [f.strip() for f in query_apps.split(",") if f.strip()]
+        for f in fields:
+            if f not in COMPUTE_APP_FIELDS:
+                sys.stdout.write('Field "%s" is not a valid field to query.\n' % f)
+                sys.exit(2)
+        if "noheader" not in fmt:
+            sys.stdout.write(", ".join(fields) + "\n")
+        for a in sc.get("compute_apps") or []:
+            g = sc["gpus"][int(a.get("gpu", 0))] if sc["gpus"] else {}
+            row = dict(a)
+            row.setdefault("gpu_uuid", g.get("uuid"))
+            row.setdefault("gpu_bus_id", g.get("pci.bus_id"))
+            row.setdefault("gpu_name", g.get("name"))
+            row.setdefault("name", a.get("process_name"))
+            row.setdefault("used_gpu_memory", a.get("used_memory"))
+            sys.stdout.write(", ".join(cell(f, row.get(f), fmt) for f in fields) + "\n")
+        return
+    sys.stderr.write("Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.\n")
+    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,350 @@
+{
+  "description": "DGX Spark Founders Edition (GB10) on DGX OS 7.5.0 / OTA2607, idle and healthy (spec docs/roadmap/spark-support.md section 10). One NVIDIA GB10 at 0000000F:01:00.0 (spec 2.1) with memory.total/free/used, fan.speed and power.limit = [N/A] (spec 2.1); the plain table shows Memory-Usage 'Not Supported' (spec 2.1); PCIe misreported as Gen1 x1 (spec 2.1: the GPU is on-package over NVLink-C2C, so spec 3.1 flag rules A/B must set pcie.on_package and gpus[0].on_package true whichever detection row matched and pcie-width-reduced cannot fire); compute_cap 12.1 (spec 2.1); 128 GB LPDDR5X visible as MemTotal 125513944 kB = 119.7 GiB (spec 2.1). Expected: dgx-spark-detected + unified-memory-nvsmi-expected; platform.class dgx-spark, platform.unified_memory true, gpus[0].memory_reporting not-supported, unified_memory.mem_total_kb 125513944, every finding carries an impact. Forbidden (spec 10): low-vram, pcie-*, fan-not-spinning, gpu-power-cap, gpu-clock-slowdown, no-nvidia-gpu, driver-not-detected, nvidia-smi-missing, jetson-detected, dgx-spark-gsp-init-failure, dgx-spark-ota-torn, dgx-spark-foreign-driver-packages (the dpkg list deliberately includes nvidia-dkms-580-open, a placeholder for the nvidia-driver-580-open metapackage dependency pending field confirmation per spec 3.2, to prove the exclusion), cx7-not-enumerated. PLACEHOLDERS pending a real capture (scripts/spark-capture.sh): idle clocks, clock-event mask, uuid, swap size and /proc/swaps device, ACPI thermal-zone temperature, ConnectX-7 sysfs rate string and cage-0 IPv4 addresses, mgmt-NIC IPv4, systemd unit states, nvidia-container-toolkit / dgx-dashboard / ota-check package versions, fwupdmgr device names, nvidia-smi exit codes and -q layout, and the DGX_SWBUILD_DATE / DGX_SWBUILD_VERSION / DGX_COMMIT_ID / DGX_OTA_DATE values, the fastos-release VERSION and the BIOS release date (inherited from the draft scenario; the spec gives only the key list, and the dgx-spark-ota-outdated rule keys on DGX_OTA_VERSION, which is the spec's 7.5.0). device_tree_model is empty because whether DGX Spark exposes /proc/device-tree/model is unconfirmed (spec 12): an empty string means the file is NOT created under NVC_SIM_ROOT. LEFT OUT because the spec has no value for them (spec 2.1 names only the drivers r8127 / mt7925e and the netdev names): the PCI ids of the enP7s7 mgmt NIC and the wlP9s9 Wi-Fi and their lspci lines, and any PCIe root-port lines; the PCI addresses 0007:01:00.0 / 0009:01:00.0 in other_netdevs are inferred from the P7 / P9 of the spec's interface names (an assumption, not a spec value). All other values are verbatim from the spec; the shims and scripts/make-simroot.sh name the spec section next to each string they consume.",
+  "machine": "aarch64",
+  "driver": "580.159.03",
+  "cuda": "13.0",
+  "persistence_mode": "On",
+  "invalid_query_fields": [],
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GB10",
+      "uuid": "GPU-0f01c2c2-0000-4000-8000-0000000f0100",
+      "driver_version": "580.159.03",
+      "pci.bus_id": "0000000F:01:00.0",
+      "memory.total": "[N/A]",
+      "memory.free": "[N/A]",
+      "memory.used": "[N/A]",
+      "temperature.gpu": 38,
+      "power.draw": "4.00",
+      "power.limit": "[N/A]",
+      "enforced.power.limit": "[N/A]",
+      "power.max_limit": "[N/A]",
+      "power.min_limit": "[N/A]",
+      "power.default_limit": "[N/A]",
+      "pstate": "P8",
+      "clocks.current.graphics": 210,
+      "clocks.current.sm": 210,
+      "clocks.current.memory": "[N/A]",
+      "clocks.max.graphics": 3003,
+      "clocks.max.sm": 3003,
+      "clocks.max.memory": "[N/A]",
+      "fan.speed": "[N/A]",
+      "utilization.gpu": 0,
+      "utilization.memory": 0,
+      "pcie.link.gen.current": 1,
+      "pcie.link.gen.max": 1,
+      "pcie.link.gen.gpucurrent": 1,
+      "pcie.link.gen.gpumax": 1,
+      "pcie.link.width.current": 1,
+      "pcie.link.width.max": 1,
+      "clocks_event_reasons.active": "0x0000000000000001",
+      "clocks_throttle_reasons.active": "0x0000000000000001",
+      "compute_cap": "12.1",
+      "compute_mode": "Default",
+      "persistence_mode": "Enabled",
+      "tlimit_max_operating_c": 0
+    }
+  ],
+  "compute_apps": [],
+  "performance_counters_us": {
+    "SW Thermal Slowdown": 0,
+    "HW Thermal Slowdown": 0,
+    "HW Power Brake Slowdown": 0,
+    "SW Power Cap": 0,
+    "Sync Boost": 0
+  },
+  "dgx_release": "DGX_NAME=\"DGX Spark\"\nDGX_PRETTY_NAME=\"NVIDIA DGX Spark\"\nDGX_SWBUILD_DATE=\"2025-09-10-13-50-03\"\nDGX_SWBUILD_VERSION=\"7.2.3\"\nDGX_COMMIT_ID=\"833b4a7\"\nDGX_PLATFORM=\"DGX Server for KVM\"\nDGX_SERIAL_NUMBER=\"1234567890123\"\nDGX_OTA_VERSION=\"7.5.0\"\nDGX_OTA_DATE=\"Wed Jul 15 09:06:56 AM PDT 2026\"\n",
+  "fastos_release": "NAME=\"DGX SPARK FASTOS\"\nVERSION=\"1.91.51\"\nBUILD_TYPE=\"customer\"\n",
+  "device_tree_model": "",
+  "dmi": {
+    "sys_vendor": "NVIDIA",
+    "product_name": "NVIDIA_DGX_Spark",
+    "product_version": "A.7",
+    "bios_vendor": "American Megatrends International, LLC.",
+    "bios_version": "5.36_0ACUM023",
+    "bios_date": "12/25/2025"
+  },
+  "lscpu_model": "Cortex-X925 / Cortex-A725",
+  "cpu_count": 20,
+  "lscpu_lines": [
+    "Architecture:             aarch64",
+    "CPU op-mode(s):           64-bit",
+    "Byte Order:               Little Endian",
+    "CPU(s):                   20",
+    "On-line CPU(s) list:      0-19",
+    "Vendor ID:                ARM",
+    "  Model name:             Cortex-X925",
+    "    Model:                1",
+    "    Thread(s) per core:   1",
+    "    Core(s) per socket:   10",
+    "    Socket(s):            1",
+    "    Stepping:             r0p1",
+    "    CPU max MHz:          4004.0000",
+    "    CPU min MHz:          1378.0000",
+    "  Model name:             Cortex-A725",
+    "    Model:                1",
+    "    Thread(s) per core:   1",
+    "    Core(s) per socket:   10",
+    "    Socket(s):            1",
+    "    Stepping:             r0p1",
+    "    CPU max MHz:          2860.0000",
+    "    CPU min MHz:          338.0000",
+    "NUMA node(s):             1",
+    "NUMA node0 CPU(s):        0-19"
+  ],
+  "cpuinfo_lines": [
+    "BogoMIPS\t: 2000.00",
+    "Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm ssbs sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh bti ecv afp rpres wfxt",
+    "CPU implementer\t: 0x41",
+    "CPU architecture: 8",
+    "CPU variant\t: 0x0",
+    "CPU part\t: 0xd85",
+    "CPU revision\t: 1"
+  ],
+  "cpu_parts": [
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd85",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87",
+    "0xd87"
+  ],
+  "kernel": "6.17.0-1026-nvidia",
+  "proc_version": "Linux version 6.17.0-1026-nvidia (buildd@bos03-arm64-000) (aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #26-Ubuntu SMP PREEMPT_DYNAMIC Thu Jul  2 10:00:00 UTC 2026",
+  "os_release": "PRETTY_NAME=\"Ubuntu 24.04.4 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.4 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nUBUNTU_CODENAME=noble\n",
+  "meminfo": {
+    "MemTotal": 125513944,
+    "MemFree": 56076940,
+    "MemAvailable": 121519624,
+    "Buffers": 1048576,
+    "Cached": 62914560,
+    "SwapCached": 0,
+    "Active": 4194304,
+    "Inactive": 60817408,
+    "SwapTotal": 16777212,
+    "SwapFree": 16777212,
+    "Dirty": 128,
+    "Shmem": 262144,
+    "HugePages_Total": 0,
+    "HugePages_Free": 0,
+    "HugePages_Rsvd": 0,
+    "HugePages_Surp": 0,
+    "Hugepagesize": 2048
+  },
+  "swaps": [
+    {
+      "filename": "/swap.img",
+      "type": "file",
+      "size_kb": 16777212,
+      "used_kb": 0,
+      "priority": -2
+    }
+  ],
+  "swappiness": 60,
+  "pressure_memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+  "thermal_zones": [
+    {
+      "type": "acpitz",
+      "temp_mc": 45000
+    }
+  ],
+  "listening_tcp_ports": [
+    11000
+  ],
+  "lspci_lines": [
+    "0000:01:00.0 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
+    "0000:01:00.1 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
+    "0002:01:00.0 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
+    "0002:01:00.1 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
+    "000f:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2e12] (rev a1)"
+  ],
+  "dpkg_lines": [
+    "ii  nvidia-driver-580-open  580.159.03-0ubuntu0.24.04.1  arm64  NVIDIA driver (open kernel) metapackage",
+    "ii  nvidia-dkms-580-open  580.159.03-0ubuntu0.24.04.1  arm64  NVIDIA DKMS package (open kernel)",
+    "ii  nvidia-kernel-common-580  580.159.03-0ubuntu0.24.04.1  arm64  Shared files used with the kernel module",
+    "ii  nvidia-firmware-580-580.159.03  580.159.03-0ubuntu0.24.04.1  arm64  Firmware files used by the kernel module",
+    "ii  linux-modules-nvidia-580-open-6.17.0-1026-nvidia  6.17.0-1026.26+3  arm64  Linux kernel nvidia modules",
+    "ii  linux-nvidia-hwe-24.04  6.17.0-1026.26+3  arm64  Complete NVIDIA Linux kernel and headers",
+    "ii  nvidia-persistenced  580.159.03-0ubuntu0.24.04.1  arm64  daemon to maintain GPU application state",
+    "ii  nvidia-container-toolkit  1.18.0-1  arm64  NVIDIA Container toolkit",
+    "ii  dgx-release  7.5.0  all  DGX release information",
+    "ii  dgx-dashboard  0.29.1  arm64  NVIDIA DGX Dashboard",
+    "ii  nvidia-spark-ota-check  1.0.16-1  arm64  NVIDIA Spark OTA Update Checker",
+    "ii  dgx-spark-ota-update-meta  7.5.0  all  DGX Spark OTA update metapackage",
+    "ii  nvidia-dgx-telemetry  1.0.0  arm64  NVIDIA DGX telemetry",
+    "ii  nvidia-spark-mlnx-firmware-manager  1.0.0  arm64  ConnectX-7 firmware manager",
+    "ii  nvidia-system-core  1.0.0  arm64  NVIDIA system core",
+    "ii  dgx-spark-fieldiag  1.0.0  arm64  DGX Spark field diagnostic"
+  ],
+  "lsmod_lines": [
+    "nvidia_uvm 4886528 0",
+    "nvidia_drm 135168 8",
+    "nvidia_modeset 1720320 4 nvidia_drm",
+    "nvidia 97558528 27 nvidia_uvm,nvidia_modeset",
+    "mlx5_ib 507904 0",
+    "mlx5_core 2404352 1 mlx5_ib",
+    "r8127 208896 0",
+    "mt7925e 40960 0"
+  ],
+  "dmesg_lines": [
+    "[    0.000000] Linux version 6.17.0-1026-nvidia (buildd@bos03-arm64-000) (aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #26-Ubuntu SMP PREEMPT_DYNAMIC Thu Jul  2 10:00:00 UTC 2026",
+    "[    3.312611] NVRM: loading NVIDIA Open GPU Kernel Module for aarch64  580.159.03  Release Build",
+    "[    3.400118] [drm] [nvidia-drm] [GPU ID 0x000f0100] Loading driver",
+    "[    6.101234] mlx5_core 0000:01:00.0: mlx5_pcie_event:326:(pid 165): Detected insufficient power on the PCIe slot (27W)."
+  ],
+  "cx7_ports": [
+    {
+      "rdma": "rocep1s0f0",
+      "netdev": "enp1s0f0np0",
+      "pci": "0000:01:00.0",
+      "cage": 0,
+      "state": "4: ACTIVE",
+      "phys_state": "5: LinkUp",
+      "rate": "200 Gb/sec (4X HDR)",
+      "operstate": "up",
+      "carrier": 1,
+      "speed": 200000,
+      "mtu": 9000,
+      "ipv4": [
+        "192.168.100.10/24"
+      ]
+    },
+    {
+      "rdma": "roceP2p1s0f0",
+      "netdev": "enP2p1s0f0np0",
+      "pci": "0002:01:00.0",
+      "cage": 0,
+      "state": "4: ACTIVE",
+      "phys_state": "5: LinkUp",
+      "rate": "200 Gb/sec (4X HDR)",
+      "operstate": "up",
+      "carrier": 1,
+      "speed": 200000,
+      "mtu": 9000,
+      "ipv4": [
+        "192.168.101.10/24"
+      ]
+    },
+    {
+      "rdma": "rocep1s0f1",
+      "netdev": "enp1s0f1np1",
+      "pci": "0000:01:00.1",
+      "cage": 1,
+      "state": "1: DOWN",
+      "phys_state": "3: Disabled",
+      "rate": "200 Gb/sec (4X HDR)",
+      "operstate": "down",
+      "carrier": 0,
+      "speed": -1,
+      "mtu": 9000,
+      "ipv4": []
+    },
+    {
+      "rdma": "roceP2p1s0f1",
+      "netdev": "enP2p1s0f1np1",
+      "pci": "0002:01:00.1",
+      "cage": 1,
+      "state": "1: DOWN",
+      "phys_state": "3: Disabled",
+      "rate": "200 Gb/sec (4X HDR)",
+      "operstate": "down",
+      "carrier": 0,
+      "speed": -1,
+      "mtu": 9000,
+      "ipv4": []
+    }
+  ],
+  "other_netdevs": [
+    {
+      "netdev": "lo",
+      "operstate": "unknown",
+      "carrier": 1,
+      "speed": -1,
+      "mtu": 65536,
+      "ipv4": [
+        "127.0.0.1/8"
+      ]
+    },
+    {
+      "netdev": "enP7s7",
+      "operstate": "up",
+      "carrier": 1,
+      "speed": 10000,
+      "mtu": 1500,
+      "ipv4": [
+        "192.168.1.50/24"
+      ],
+      "gateway": "192.168.1.1",
+      "pci": "0007:01:00.0",
+      "driver": "r8127"
+    },
+    {
+      "netdev": "wlP9s9",
+      "operstate": "down",
+      "carrier": 0,
+      "speed": -1,
+      "mtu": 1500,
+      "ipv4": [],
+      "pci": "0009:01:00.0",
+      "driver": "mt7925e"
+    }
+  ],
+  "systemd_units": {
+    "dgx-dashboard.service": "active",
+    "dgx-dashboard-admin.service": "active",
+    "fwupd.service": "active",
+    "nvidia-persistenced.service": "active",
+    "gb10-clock-cap.service": "inactive",
+    "avahi-daemon.service": "active",
+    "ufw.service": "inactive",
+    "docker.service": "active",
+    "ollama.service": "inactive"
+  },
+  "fwupd_devices": [
+    {
+      "name": "Embedded Controller",
+      "guid": "3d13c989-e6a8-4ead-95ee-921f09868f65",
+      "current_version": "0x03000508",
+      "pending": ""
+    },
+    {
+      "name": "UEFI Device Firmware",
+      "guid": "b488217b-3895-4fc0-b1bf-ab7005a2d45a",
+      "current_version": "0x02009b0b",
+      "pending": ""
+    },
+    {
+      "name": "USB Power Delivery Controller",
+      "guid": "dd1a238a-5f8e-46bd-9401-a88da99c5a96",
+      "current_version": "0x00000516",
+      "pending": ""
+    }
+  ],
+  "fwupd_updates": [],
+  "spark_ota_check_summary": "detected_ota OTA2607, match 100.0%, total_checks 153, passed_checks 153, failed: []",
+  "spark_ota_torn_score": {
+    "name": "OTA2607",
+    "releaseDate": "2026-07-15",
+    "torn": 0
+  },
+  "spark_ota_installed_name": "OTA2607",
+  "spark_ota_is_available": {
+    "available": false,
+    "name": "July 2026"
+  }
+}
