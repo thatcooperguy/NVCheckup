@@ -102,6 +102,9 @@ func CollectThermalAll(timeout int) ([]types.ThermalInfo, []types.CollectorError
 	if !ok {
 		return nil, append(errs, qerr)
 	}
+	if qerr.Error != "" {
+		errs = append(errs, qerr) // partial success: one GPU failed, rows for the others were kept
+	}
 
 	infos, parseErrs := parseThermalRows(rows)
 	errs = append(errs, parseErrs...)

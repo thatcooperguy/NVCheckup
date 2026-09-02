@@ -212,3 +212,39 @@ func TestParseLspciGPUs_HybridLaptop(t *testing.T) {
 		t.Error("shortBusID normalisation wrong")
 	}
 }
+
+// Two physical cards with the same marketing name are two GPUs. WMI emits one
+// Win32_VideoController row per adapter, and when nvidia-smi is unavailable
+// (driver missing, or one card fell off the bus) WMI is the only inventory
+// source, so collapsing identical names would hide half of a multi-GPU rig.
+func TestParseWMIVideoControllers_IdenticalNamesAreSeparateGPUs(t *testing.T) {
+	out := `NVIDIA GeForce RTX 4090|32.0.15.9186|4293918720|PCI\VEN_10DE&DEV_2684&SUBSYS_889D1043&REV_A1\4&1A2B3C4D&0&0008
+NVIDIA GeForce RTX 4090|32.0.15.9186|4293918720|PCI\VEN_10DE&DEV_2684&SUBSYS_889D1043&REV_A1\4&5E6F7A8B&0&0019
+`
+	gpus := parseWMIVideoControllers(out, nil)
+	if len(gpus) != 2 {
+		t.Fatalf("expected 2 GPUs from two identically named adapters, got %d: %+v", len(gpus), gpus)
+	}
+	for i, g := range gpus {
+		if g.Index != i {
+			t.Errorf("gpu %d: index = %d, want %d", i, g.Index, i)
+		}
+		if !g.IsNVIDIA || g.PCIVendorID != "10DE" || g.PCIDeviceID != "2684" {
+			t.Errorf("gpu %d: vendor/device not parsed: %+v", i, g)
+		}
+	}
+
+	// The exact same PNPDeviceID repeated is a duplicate row, not a second card.
+	dup := `NVIDIA GeForce RTX 4090|32.0.15.9186|4293918720|PCI\VEN_10DE&DEV_2684&SUBSYS_889D1043&REV_A1\4&1A2B3C4D&0&0008
+NVIDIA GeForce RTX 4090|32.0.15.9186|4293918720|PCI\VEN_10DE&DEV_2684&SUBSYS_889D1043&REV_A1\4&1A2B3C4D&0&0008
+`
+	if got := parseWMIVideoControllers(dup, nil); len(got) != 1 {
+		t.Fatalf("expected duplicate PNPDeviceID rows to collapse to 1 GPU, got %d", len(got))
+	}
+
+	// Names already reported by nvidia-smi are still skipped.
+	existing := []types.GPUInfo{{Index: 0, Name: "NVIDIA GeForce RTX 4090", IsNVIDIA: true}}
+	if got := parseWMIVideoControllers(out, existing); len(got) != 0 {
+		t.Fatalf("expected WMI rows matching nvidia-smi names to be skipped, got %d", len(got))
+	}
+}

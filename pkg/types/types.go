@@ -390,6 +390,8 @@ type Report struct {
 	AI              *AIInfo          `json:"ai,omitempty"`
 	Thermal         *ThermalInfo     `json:"thermal,omitempty"`
 	PCIe            *PCIeInfo        `json:"pcie,omitempty"`
+	GPUThermal      []ThermalInfo    `json:"gpu_thermal,omitempty"` // one entry per NVIDIA GPU; Thermal points at entry 0
+	GPUPCIe         []PCIeInfo       `json:"gpu_pcie,omitempty"`    // one entry per NVIDIA GPU; PCIe points at entry 0
 	Displays        []DisplayInfo    `json:"displays,omitempty"`
 	Network         *NetworkInfo     `json:"network,omitempty"`
 	Findings        []Finding        `json:"findings"`
@@ -397,8 +399,6 @@ type Report struct {
 	TopIssues       []string         `json:"top_issues"`
 	NextSteps       []string         `json:"next_steps"`
 	SummaryBlock    string           `json:"summary_block"`
-	GPUThermal      []ThermalInfo    `json:"gpu_thermal,omitempty"` // one entry per NVIDIA GPU; Thermal points at entry 0
-	GPUPCIe         []PCIeInfo       `json:"gpu_pcie,omitempty"`    // one entry per NVIDIA GPU; PCIe points at entry 0
 }
 
 // ReportMetadata holds info about the report itself

@@ -129,3 +129,23 @@ func TestMissingNvidiaSmiError(t *testing.T) {
 		}
 	}
 }
+
+// A multi-GPU rig where nvidia-smi exits 0, prints rows for the healthy GPUs
+// and a failure line for one dead GPU must keep the healthy rows and surface
+// the failure as a non-fatal note rather than discarding everything.
+func TestCsvRowsKeepHealthyRowsNextToFailureLine(t *testing.T) {
+	out := `0, 44, P8, 210, 2100, 350.00, 31.99, 0, 11
+Unable to determine the device handle for GPU 0000:41:00.0: Unknown Error
+2, 61, P0, 1980, 2100, 450.00, 402.10, [N/A], 100
+`
+	rows, other := csvRows(out)
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 CSV rows, got %d: %v", len(rows), rows)
+	}
+	if len(other) != 1 {
+		t.Fatalf("expected the failure line to be reported separately, got %v", other)
+	}
+	if _, _, known := describeNvidiaSmiFailure(other[0]); !known {
+		t.Fatalf("expected %q to be a recognised nvidia-smi failure", other[0])
+	}
+}

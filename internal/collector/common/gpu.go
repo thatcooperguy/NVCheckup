@@ -206,10 +206,15 @@ var pnpPCIRe = regexp.MustCompile(`VEN_([0-9A-Fa-f]+)&DEV_([0-9A-Fa-f]+)`)
 // already reported by nvidia-smi are skipped so the NVIDIA dGPU of a hybrid
 // laptop is not listed twice; the iGPU (Intel/AMD) is appended after them.
 func parseWMIVideoControllers(out string, existing []types.GPUInfo) []types.GPUInfo {
+	// Names already reported by nvidia-smi are skipped so the same card is not
+	// listed twice. WMI rows themselves are de-duplicated by PNPDeviceID, never
+	// by name: a rig with two identical cards (2x RTX 4090, 4x A6000) emits two
+	// Win32_VideoController instances with the same Name, and both are real.
 	existingNames := make(map[string]bool)
 	for _, g := range existing {
 		existingNames[g.Name] = true
 	}
+	seenPNP := make(map[string]bool)
 
 	var added []types.GPUInfo
 	for _, line := range strings.Split(out, "\n") {
@@ -225,7 +230,15 @@ func parseWMIVideoControllers(out string, existing []types.GPUInfo) []types.GPUI
 		if name == "" || existingNames[name] {
 			continue // Already have from nvidia-smi
 		}
-		existingNames[name] = true
+		if len(parts) >= 4 {
+			pnp := strings.ToUpper(strings.TrimSpace(parts[3]))
+			if pnp != "" {
+				if seenPNP[pnp] {
+					continue // WMI listed the same physical device twice
+				}
+				seenPNP[pnp] = true
+			}
+		}
 
 		gpu := types.GPUInfo{
 			Index:         len(existing) + len(added),

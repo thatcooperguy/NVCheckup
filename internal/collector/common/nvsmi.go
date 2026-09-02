@@ -97,10 +97,19 @@ func nvidiaSmiRows(timeout int, collector, what, fields string, nounits bool) (r
 	if r.Err != nil {
 		return nil, nvidiaSmiQueryError(collector+".query", what+" query", r), false
 	}
-	if _, _, known := describeNvidiaSmiFailure(r.Stdout + "\n" + r.Stderr); known {
-		return nil, nvidiaSmiQueryError(collector+".query", what+" query", r), false
-	}
 	rows, other := csvRows(r.Stdout)
+	if _, _, known := describeNvidiaSmiFailure(r.Stdout + "\n" + r.Stderr); known {
+		if len(rows) == 0 {
+			return nil, nvidiaSmiQueryError(collector+".query", what+" query", r), false
+		}
+		// nvidia-smi exited 0 and printed rows for the healthy GPUs alongside a
+		// failure line for one dead GPU (multi-GPU rig). Keep the rows and
+		// report the failure as a non-fatal note instead of discarding everything.
+		partial := nvidiaSmiQueryError(collector+".query", what+" query", r)
+		partial.Fatal = false
+		partial.Error = "partial: " + partial.Error
+		return rows, partial, true
+	}
 	if len(rows) == 0 {
 		detail := "nvidia-smi " + what + " query returned no GPU rows"
 		if len(other) > 0 {

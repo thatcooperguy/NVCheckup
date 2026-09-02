@@ -52,6 +52,9 @@ func CollectPCIeAll(timeout int) ([]types.PCIeInfo, []types.CollectorError) {
 	if !ok {
 		return nil, append(errs, qerr)
 	}
+	if qerr.Error != "" {
+		errs = append(errs, qerr) // partial success: one GPU failed, rows for the others were kept
+	}
 
 	infos, parseErrs := parsePCIeRows(rows)
 	return infos, append(errs, parseErrs...)
