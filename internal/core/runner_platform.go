@@ -92,55 +92,11 @@ func syncTorchFacts(r *types.Report) {
 	}
 }
 
-// mergeDGXOS combines the release-file half of DGXOSInfo that
-// common.CollectDGXRelease produced (base, may be nil) with the full
-// linux.CollectDGXOS result (extra). Field by field the non-empty value wins,
-// extra first because it is the more complete collector; the OTA, package,
-// unit and UnitsQueried facts exist only on the extra side and are therefore
-// never lost. The result is never nil: the caller only invokes this when a
-// DGX OS collector actually ran, which is the contract that keeps
-// Report.DGXOS nil (and rule dgx-spark-dashboard-unhealthy silent) when no
-// collector ran (pkg/types DGXOSInfo.UnitsQueried comment).
+// mergeDGXOS is linux.MergeDGXOS: the release-file half of DGXOSInfo from
+// common.CollectDGXRelease (base, may be nil) combined with the full
+// linux.CollectDGXOS result (extra). Shared with internal/snapshot.
 func mergeDGXOS(base *types.DGXOSInfo, extra types.DGXOSInfo) *types.DGXOSInfo {
-	out := extra
-	if base == nil {
-		return &out
-	}
-	pick := func(dst *string, alt string) {
-		if *dst == "" {
-			*dst = alt
-		}
-	}
-	pick(&out.Name, base.Name)
-	pick(&out.PrettyName, base.PrettyName)
-	pick(&out.SWBuildVersion, base.SWBuildVersion)
-	pick(&out.SWBuildDate, base.SWBuildDate)
-	pick(&out.OTAVersion, base.OTAVersion)
-	pick(&out.OTADate, base.OTADate)
-	pick(&out.Platform, base.Platform)
-	pick(&out.CommitID, base.CommitID)
-	pick(&out.SerialNumber, base.SerialNumber)
-	pick(&out.FastOSVersion, base.FastOSVersion)
-	pick(&out.OTAName, base.OTAName)
-	pick(&out.DriverPkgVersion, base.DriverPkgVersion)
-	pick(&out.FirmwarePkgVersion, base.FirmwarePkgVersion)
-	pick(&out.FwupdError, base.FwupdError)
-	pick(&out.AptSourceCorrupt, base.AptSourceCorrupt)
-	if out.OTATorn == nil && base.OTATorn != nil {
-		v := *base.OTATorn
-		out.OTATorn = &v
-	}
-	if len(out.OTAFailed) == 0 && len(base.OTAFailed) > 0 {
-		out.OTAFailed = append([]string(nil), base.OTAFailed...)
-	}
-	out.ModulesForKernel = out.ModulesForKernel || base.ModulesForKernel
-	out.DashboardActive = out.DashboardActive || base.DashboardActive
-	out.DashboardAdminActive = out.DashboardAdminActive || base.DashboardAdminActive
-	out.FwupdActive = out.FwupdActive || base.FwupdActive
-	out.PersistencedActive = out.PersistencedActive || base.PersistencedActive
-	out.DashboardPortOpen = out.DashboardPortOpen || base.DashboardPortOpen
-	out.UnitsQueried = out.UnitsQueried || base.UnitsQueried
-	return &out
+	return linuxCollector.MergeDGXOS(base, extra)
 }
 
 // mergeWoAPlatform folds the result of windows.CollectWoA (woa, run on a copy
