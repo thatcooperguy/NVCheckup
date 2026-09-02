@@ -27,8 +27,30 @@ Diagnostics (`run`, `snapshot`, `compare`, `doctor`, `self-test`) never change s
 | Linux (Ubuntu, Debian, Fedora, RHEL, Arch, and others) | x86_64 | Beta. Builds and unit-tests in CI; needs field reports. |
 | Linux | ARM64 (aarch64) | Beta. Builds and unit-tests in CI; needs field reports. |
 | WSL2 (inside Linux guest) | x86_64 | Limited (GPU passthrough diagnostics) |
+| Jetson / Tegra (L4T, JetPack) | ARM64 | Limited. Detected; `nvidia-smi` does not exist on these boards, so thermal, PCIe and driver checks are skipped and `tegrastats` is suggested. |
 
 Build targets: `windows/amd64`, `linux/amd64`, `linux/arm64`. All produce static binaries of a few megabytes with zero runtime dependencies.
+
+---
+
+## Supported GPUs
+
+NVCheckup contains no GPU-model-specific logic. Every reading comes from the installed NVIDIA driver through `nvidia-smi --query-gpu`, and every rule reasons about the values that come back (temperature, P-state, clock event bits, link generation and width, memory), never about the product name. Any GPU the installed driver exposes through `nvidia-smi` is therefore supported. The development machine happened to be a single RTX 3090 on driver 591.86; nothing in the tool depends on that, and the parser fixtures cover the classes below.
+
+| GPU class | Examples | Status and notes |
+|-----------|----------|------------------|
+| GeForce desktop | GTX 900 series and newer; RTX 20 / 30 / 40 / 50 series | Supported. RTX 50 series cards report a Gen5 link; the PCIe rules compare the current link against the maximum the GPU reports, so Gen5 needs no special case. |
+| GeForce Laptop (Optimus / hybrid) | RTX 4060 Laptop GPU, RTX 3070 Ti Laptop GPU | Supported. Many laptops wire the dGPU with a native x8 link. The tool compares current width against the reported maximum, so x8 of x8 is not flagged. The hybrid iGPU + dGPU finding is informational. |
+| Workstation RTX / Quadro | RTX A4000, RTX 6000 Ada, Quadro RTX 8000, Quadro P4000 | Supported. |
+| Datacenter Tesla | Tesla T4, V100, P100 | Supported. Passively cooled cards report `fan.speed` as `[N/A]` or `[Not Supported]`; the tool records `fan_supported: false` and the fan rules do not fire. |
+| Datacenter A-series | A100 (PCIe and SXM4), A30, A10, A2 | Supported. Same passive-cooling behaviour; SXM modules still report a PCIe link. |
+| Datacenter H-series | H100 (PCIe and SXM5), H200 | Supported. In MIG mode `utilization.gpu` is `[N/A]`, so idle/load inference falls back to the P-state. |
+| Multi-GPU systems | Two or more of any of the above | Supported. Every GPU is collected and analyzed. The report prints one `Thermal:` and one `PCIe:` line per GPU, `report.json` carries `gpu_thermal[]` and `gpu_pcie[]` (one object per GPU, keyed by `gpu_index`), and the summary block adds `GPUs: N NVIDIA (worst temp XX°C on GPU i)`. |
+| Older drivers | Any driver before R535 | Supported. When the driver rejects `clocks_event_reasons.active`, the collector re-queries the legacy `clocks_throttle_reasons.active` field, which carries the same bits. |
+| Jetson / Tegra | Jetson Orin, Xavier, Nano (L4T / JetPack) | Detected, limited. These boards have no `nvidia-smi`. NVCheckup recognises the platform from the L4T release markers, reports `system.is_jetson` and `system.jetson_release`, emits the INFO finding `jetson-detected`, suppresses the no-GPU / no-driver / `nvidia-smi` missing findings that would otherwise be wrong, and suggests `tegrastats` for thermal and load data. |
+| vGPU and cloud instances | GRID / vGPU profiles, cloud GPU VMs | Expected to work wherever `nvidia-smi` works. Untested; fixture contributions are welcome (see `CONTRIBUTING.md`). |
+
+If a GPU you own is not in this table, it still works as long as `nvidia-smi` does. Rows captured from hardware not listed here are the most useful contribution you can make; `CONTRIBUTING.md` explains how to capture them.
 
 ---
 
@@ -206,6 +228,7 @@ NVCheckup collects roughly 60 data points through five collector packages (`comm
 | System uptime | WMI boot time calculation | `uptime -p` |
 | Timezone | Go `time.Now().Location()` | Go `time.Now().Location()` |
 | Hostname | `os.Hostname()` | `os.Hostname()` |
+| Jetson / Tegra detection (`is_jetson`, `jetson_release`) | N/A | L4T release markers (`/etc/nv_tegra_release`, Tegra device-tree model) |
 
 ### GPU & Driver Inventory
 
@@ -214,6 +237,7 @@ NVCheckup collects roughly 60 data points through five collector packages (`comm
 | GPU list (name, vendor, index) | `nvidia-smi -L` + WMI/lspci |
 | PCI vendor/device IDs | WMI PNPDeviceID / `lspci -nn` |
 | PCI bus ID | `nvidia-smi --query-gpu` |
+| GPU index (row attribution on multi-GPU systems) | `nvidia-smi --query-gpu=index` (present in every query) |
 | Driver version | `nvidia-smi --query-gpu=driver_version` |
 | VRAM total/used/free (MB) | `nvidia-smi --query-gpu=memory.*` |
 | GPU temperature (°C) | `nvidia-smi --query-gpu=temperature.gpu` |
@@ -223,13 +247,15 @@ NVCheckup collects roughly 60 data points through five collector packages (`comm
 | WDDM version | Windows registry `HKLM:\SOFTWARE\Microsoft\DirectX` |
 | iGPU detection (Intel/AMD) | WMI `Win32_VideoController` / lspci vendor IDs |
 
-### Thermal & PCIe (all platforms)
+### Thermal & PCIe (all platforms, every NVIDIA GPU)
 
 | Data Point | Source | Notes |
 |------------|--------|-------|
-| Current/max clocks, power draw/limit, fan speed, utilization | `nvidia-smi --query-gpu=...` | Fan reported as unsupported on passively cooled cards |
-| Active throttle reasons | `nvidia-smi --query-gpu=clocks_event_reasons.*` | `gpu_idle` is not treated as a slowdown; only thermal, power, and HW slowdown reasons are |
-| PCIe current/max generation and width, power state | `nvidia-smi --query-gpu=pcie.link.*,pstate` | A Gen1 link at low utilization is reported as expected idle power-saving, not a downshift |
+| GPU index | `nvidia-smi --query-gpu=index,...` | Every thermal and PCIe query carries `index`, so each CSV row is attributed to the right GPU. All rows are parsed, not just the first. `report.json` keeps `thermal` and `pcie` as GPU 0 for compatibility and adds `gpu_thermal[]` / `gpu_pcie[]` with one object per GPU (`gpu_index`) |
+| Current/max clocks, power draw/limit, fan speed, utilization | `nvidia-smi --query-gpu=...` | Fan reported as unsupported on passively cooled cards (`[N/A]`, `[Not Supported]`). Utilization is `[N/A]` on H100 in MIG mode; idle/load inference then uses the P-state |
+| Active throttle reasons | `nvidia-smi --query-gpu=clocks_event_reasons.active` | `gpu_idle` is not treated as a slowdown; only thermal, power, and HW slowdown reasons are. Drivers before R535 reject this field; the collector falls back to the legacy `clocks_throttle_reasons.active` spelling |
+| PCIe current/max generation and width, power state | `nvidia-smi --query-gpu=pcie.link.*,pstate` | A Gen1 link at low utilization is reported as expected idle power-saving, not a downshift. Width is compared against the GPU's own maximum, so a native x8 laptop link is not flagged. Gen5 (RTX 50 series) needs no special case |
+| `nvidia-smi` failure text | `nvidia-smi` stderr/stdout | `No devices were found`, `Unable to determine the device handle` and `Failed to initialize NVML` each produce a specific collector error naming the likely cause instead of a generic query failure |
 
 ### Windows-Specific Collection
 
@@ -331,7 +357,7 @@ The analyzer processes collected data through more than 45 diagnostic rules and 
 
 | Category | Examples |
 |----------|----------|
-| GPU detection and driver basics | No NVIDIA GPU, hybrid iGPU + dGPU, driver version missing, `nvidia-smi` not in PATH |
+| GPU detection and driver basics | No NVIDIA GPU, hybrid iGPU + dGPU, driver version missing, `nvidia-smi` not in PATH, Jetson/Tegra board detected (`jetson-detected`, INFO; on Tegra the no-GPU, no-driver and `nvidia-smi` missing findings are suppressed because the board has no `nvidia-smi` by design) |
 | Windows stability | Event ID 4101 resets, nvlddmkm errors, WHEA uncorrected errors (WARN) and corrected errors (INFO), recent Windows Updates correlated with resets |
 | Windows settings | HAGS enabled, power plan not High Performance, Game Mode |
 | Overlays | NVIDIA App / GeForce Experience, third-party overlay and recording software |
@@ -352,7 +378,7 @@ The authoritative list is `internal/analyzer/analyzer.go`; `knowledge/rules.json
 Every report automatically generates:
 - **Top 5 Issues**: Highest-severity findings (CRIT and WARN only)
 - **Top 5 Next Steps**: Deduplicated actionable steps from top findings
-- **Summary Block**: 4-6 line pasteable summary with OS, GPU, driver, CUDA, and finding counts
+- **Summary Block**: 4-6 line pasteable summary with OS, GPU, driver, CUDA, and finding counts. On systems with two or more NVIDIA GPUs one extra line is added: `GPUs: N NVIDIA (worst temp XX°C on GPU i)`. The single-GPU format is unchanged.
 
 ---
 
@@ -364,7 +390,7 @@ Human-readable, forum-pasteable, 72-character-wide formatting. Sections:
 1. Header (version, disclaimer, timestamp, mode, platform, runtime, redaction status)
 2. Summary block (designed for copy-paste into support threads)
 3. System info table
-4. GPU inventory (per-GPU detail, thermal and PCIe state)
+4. GPU inventory (per-GPU detail, thermal and PCIe state; with one NVIDIA GPU the `Thermal:` and `PCIe:` lines describe GPU 0, with two or more there is one `Thermal:` and one `PCIe:` line per GPU)
 5. Platform-specific details (Windows/Linux/WSL/AI/Network — whichever applies)
 6. Findings with full evidence, explanation, and next steps
 7. Top Issues summary
@@ -375,9 +401,11 @@ Human-readable, forum-pasteable, 72-character-wide formatting. Sections:
 ### report.json (with `--json`)
 
 Complete structured output. The top-level keys are `metadata`, `system`, `gpus`, `driver`,
-`windows` (Windows only), `linux` and `wsl` (Linux only), `ai`, `thermal`, `pcie`, `displays`,
-`network`, `findings`, `collector_errors`, `top_issues`, `next_steps`, and `summary_block`.
-`thermal`, `pcie`, `displays` and `network` are siblings of `gpus`, not nested inside it.
+`windows` (Windows only), `linux` and `wsl` (Linux only), `ai`, `thermal`, `pcie`, `gpu_thermal`,
+`gpu_pcie`, `displays`, `network`, `findings`, `collector_errors`, `top_issues`, `next_steps`, and
+`summary_block`. `thermal`, `pcie`, `gpu_thermal`, `gpu_pcie`, `displays` and `network` are siblings
+of `gpus`, not nested inside it. `thermal` and `pcie` describe GPU 0 (unchanged from 0.2.0);
+`gpu_thermal` and `gpu_pcie` hold one object per NVIDIA GPU, each carrying `gpu_index`.
 Keys marked `omitempty` in `pkg/types` are absent when there is nothing to report; in
 particular `network` appears only when probes ran and `collector_errors` only when a
 collector failed. The example below is abridged from a real Windows `--mode full` run
@@ -489,6 +517,37 @@ collector failed. The example below is abridged from a real Windows `--mode full
     "utilization_pct": 31,
     "idle_likely": true
   },
+  "gpu_thermal": [
+    {
+      "gpu_index": 0,
+      "temperature_c": 41,
+      "thermal_throttle": false,
+      "power_state": "P8",
+      "current_clock_mhz": 210,
+      "max_clock_mhz": 2100,
+      "power_limit_w": "350.00",
+      "power_draw_w": "31.11",
+      "fan_speed_pct": 0,
+      "fan_supported": true,
+      "slowdown_active": false,
+      "slowdown_reason": "0x0000000000000001",
+      "throttle_reasons": [ "gpu_idle" ],
+      "utilization_pct": 14
+    }
+  ],
+  "gpu_pcie": [
+    {
+      "gpu_index": 0,
+      "current_speed": "Gen1",
+      "max_speed": "Gen4",
+      "current_width": "x16",
+      "max_width": "x16",
+      "downshifted": false,
+      "power_state": "P8",
+      "utilization_pct": 31,
+      "idle_likely": true
+    }
+  ],
   "displays": [
     {
       "name": "DEL DELL U2720Q",
@@ -562,7 +621,11 @@ Objects not shown above because they are absent on Windows:
 
 The `network` object was taken from a separate `--network` run (its `metadata.network_probes` is
 `true`); `wifi_band` and `wifi_signal_dbm` appear only on Wi-Fi. `system.kernel_version` appears on
-Linux. `gpus[]` may also carry `pci_vendor_id`, `pci_device_id`, `pcie_link_speed` and
+Linux. On Jetson/Tegra boards `system.is_jetson` is `true` and `system.jetson_release` carries the
+L4T release string; elsewhere `is_jetson` is `false` and `jetson_release` is absent. `gpu_thermal[]`
+and `gpu_pcie[]` have one element per NVIDIA GPU in `index` order (the example above shows a
+single-GPU machine, so each array has one element identical to `thermal` / `pcie` apart from
+`gpu_index`). `gpus[]` may also carry `pci_vendor_id`, `pci_device_id`, `pcie_link_speed` and
 `pcie_link_width` when the collector could read them; `ai` may also carry `cuda_driver_version`,
 `cudnn_version` and `tensorflow_info`. `findings[].references` is present only when a rule supplies
 links, and `findings[].remediation` only when a `fix` action exists for the finding.
@@ -692,7 +755,7 @@ Run `go test ./...`. Packages with tests:
 | `internal/util` | Command execution, timeouts, parsing helpers |
 | `internal/redact` | IP classification, path redaction, disabled passthrough |
 | `internal/analyzer` | Finding rules and ids, sorting, summary generation, idle-PCIe and corrected-WHEA non-firing cases |
-| `internal/collector/common` | Pure parse functions against captured `nvidia-smi`, ping, traceroute, and network output |
+| `internal/collector/common` | Pure parse functions against captured `nvidia-smi`, ping, traceroute, and network output. The `nvidia-smi` fixtures cover RTX 3090 and RTX 4090 (development hardware), RTX 5090 (Gen5 link), RTX 4060 Laptop (native x8), GTX 1060 on a pre-R535 driver (legacy `clocks_throttle_reasons`), A100-SXM4 (no fan), H100 in MIG mode (`[N/A]` utilization), Tesla T4, Quadro RTX 8000, and a 3-GPU rig. `CONTRIBUTING.md` explains how to capture rows from hardware not yet covered |
 | `internal/remediate` | Engine preview/apply/undo with a fake executor, journal read/write, undo validation |
 | `internal/report` | Text structure, JSON output, markdown structure, footers |
 | `pkg/types` | Constants, defaults, exit codes |
