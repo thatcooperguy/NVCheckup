@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Simulated uname: `-r` and `-v` come from the scenario ("kernel",
+# "proc_version"), `-m`/`-p`/`-i` from "machine" (spec
+# docs/roadmap/spark-support.md 2.1: DGX OS 7 kernel 6.17.0-10xx-nvidia on
+# aarch64; 3.1 row 11 matches ^\d+\.\d+\.\d+-\d+-nvidia). Scenarios without
+# those keys (rig3) fall back to python's platform module, never to the real
+# uname. `-n` is always the real node name so the redaction checks in the
+# workflows keep meaning something.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+sim_py - "$@" <<'PY'
+import json, os, platform, sys
+
+args = sys.argv[1:] or ["-s"]
+path = os.environ.get("NVC_SIM_SCENARIO")
+sc = {}
+if path and os.path.exists(path):
+    sc = json.load(open(path, encoding="utf-8"))
+kernel = sc.get("kernel") or platform.release()
+machine = sc.get("machine") or platform.machine()
+pv = sc.get("proc_version") or ""
+version = pv.split(kernel, 1)[1].split(") ", 1)[-1].strip() if kernel in pv and "#" in pv else platform.version()
+if "#" in version:
+    version = version[version.index("#"):]
+
+want = []
+for a in args:
+    if a in ("-a", "--all"):
+        want = ["s", "n", "r", "v", "m", "o"]; break
+    if a.startswith("--"):
+        want.append({"--kernel-name": "s", "--nodename": "n", "--kernel-release": "r", "--kernel-version": "v",
+                     "--machine": "m", "--processor": "p", "--hardware-platform": "i", "--operating-system": "o"}.get(a, ""))
+    elif a.startswith("-"):
+        want.extend(list(a[1:]))
+vals = {"s": "Linux", "n": platform.node(), "r": kernel, "v": version, "m": machine, "p": machine, "i": machine, "o": "GNU/Linux"}
+out = [vals[w] for w in want if w in vals]
+if not out:
+    sys.stderr.write("uname: invalid option\n"); sys.exit(1)
+print(" ".join(out))
+PY

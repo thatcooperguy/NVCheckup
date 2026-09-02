@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Simulated dpkg: `dpkg -l [pattern...]`, `dpkg -s pkg` and
+# `dpkg --print-architecture` from the scenario (spec docs/roadmap/spark-support.md
+# 3.2 package names; 12: `dpkg -l 'nvidia-dkms*' 'nvidia-driver*'`). Query
+# forms are forwarded to the dpkg-query shim next to this file; anything that
+# would install, remove or configure a package is refused. Never calls the
+# real dpkg.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+case "${1:-}" in
+  -l|--list) shift; exec "$SIM_HERE/dpkg-query" -l "$@" ;;
+  -s|--status) shift; exec "$SIM_HERE/dpkg-query" -s "$@" ;;
+  -W|--show) shift; exec "$SIM_HERE/dpkg-query" -W "$@" ;;
+  --print-architecture)
+    m="$(sim_get machine "")"
+    case "$m" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac ;;
+  -i|--install|-r|--remove|-P|--purge|--configure|--unpack|-a) sim_refuse dpkg "$@" ;;
+  --version) echo "Debian 'dpkg' package management program version 1.22.6 (arm64)." ;;
+  *) echo "dpkg: error: need an action option" >&2; exit 2 ;;
+esac

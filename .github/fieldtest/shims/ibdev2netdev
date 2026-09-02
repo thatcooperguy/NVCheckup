@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Simulated ibdev2netdev: "<rdma> port 1 ==> <netdev> (Up|Down)" per entry of
+# the scenario's "cx7_ports" (spec docs/roadmap/spark-support.md 2.1 names:
+# rocep1s0f0 -> enp1s0f0np0, roceP2p1s0f0 -> enP2p1s0f0np0, rocep1s0f1 ->
+# enp1s0f1np1, roceP2p1s0f1 -> enP2p1s0f1np1). `-v` prefixes the PCI address
+# and the port state. Never calls the real tool.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+verbose=0
+for a in "$@"; do [ "$a" = "-v" ] && verbose=1; done
+
+sim_py - "$verbose" <<'PY'
+import json, os, sys
+
+verbose = sys.argv[1] == "1"
+path = os.environ.get("NVC_SIM_SCENARIO")
+if not path or not os.path.exists(path):
+    sys.stderr.write("nvc-sim: NVC_SIM_SCENARIO is not set or does not exist\n"); sys.exit(9)
+sc = json.load(open(path, encoding="utf-8"))
+for p in sc.get("cx7_ports") or []:
+    up = "Up" if p.get("operstate") == "up" else "Down"
+    state = p.get("state", "1: DOWN").split(":", 1)[-1].strip()
+    if verbose:
+        print("%s %s port 1 (%s) ==> %s (%s)" % (p.get("pci", ""), p["rdma"], state, p["netdev"], up))
+    else:
+        print("%s port 1 ==> %s (%s)" % (p["rdma"], p["netdev"], up))
+PY

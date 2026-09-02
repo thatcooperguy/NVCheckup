@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Simulated iproute2 `ip`: addr / link / route in brief (-br), oneline (-o),
+# JSON (-j) and default layouts, built from the scenario's "cx7_ports" and
+# "other_netdevs" (spec docs/roadmap/spark-support.md 2.1: ConnectX-7 twins,
+# mgmt 10GbE enP7s7, Wi-Fi wlP9s9; 9: IPv4 per twin, distinct /24s, MTU 9000).
+# MAC addresses are all-zero placeholders (the spec has none; the field kit
+# redacts real ones). Anything that would change addressing or routes is
+# refused. Never calls the real ip.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+case " $* " in
+  *" add "*|*" del "*|*" set "*|*" flush "*|*" replace "*|*" change "*) sim_refuse ip "$@" ;;
+esac
+
+sim_py - "$@" <<'PY'
+import ipaddress, json, os, sys
+
+args = sys.argv[1:]
+path = os.environ.get("NVC_SIM_SCENARIO")
+if not path or not os.path.exists(path):
+    sys.stderr.write("nvc-sim: NVC_SIM_SCENARIO is not set or does not exist\n"); sys.exit(9)
+sc = json.load(open(path, encoding="utf-8"))
+
+devs = []
+for d in sc.get("other_netdevs") or []:
+    devs.append(dict(d))
+for p in sc.get("cx7_ports") or []:
+    devs.append({"netdev": p["netdev"], "operstate": p.get("operstate", "down"), "carrier": p.get("carrier", 0),
+                 "speed": p.get("speed", -1), "mtu": p.get("mtu", 1500), "ipv4": p.get("ipv4", [])})
+for i, d in enumerate(devs):
+    d["ifindex"] = i + 1
+    d["state"] = {"up": "UP", "down": "DOWN"}.get(d.get("operstate"), "UNKNOWN")
+    d["mac"] = "00:00:00:00:00:00" if d["netdev"] != "lo" else "00:00:00:00:00:00"
+
+brief = oneline = js = False
+family4 = False
+rest = []
+i = 0
+while i < len(args):
+    a = args[i]
+    if a in ("-br", "-brief"): brief = True
+    elif a in ("-o", "-oneline"): oneline = True
+    elif a in ("-j", "-json"): js = True
+    elif a in ("-4", "-f", "-family"):
+        family4 = True
+        if a in ("-f", "-family"): i += 1
+    elif a in ("-6",): family4 = False
+    elif a in ("-s", "-stats", "-d", "-details", "-h", "-human", "-p", "-pretty", "-c", "-color"): pass
+    elif a.startswith("-"): pass
+    else: rest.append(a)
+    i += 1
+
+obj = rest[0] if rest else "addr"
+obj = {"a": "addr", "address": "addr", "l": "link", "r": "route", "ro": "route"}.get(obj, obj)
+sub = rest[1:]
+KEYWORDS = {"show", "list", "ls", "default", "table", "scope", "type", "up", "to", "match", "root", "exact", "label", "primary", "secondary"}
+sel_dev = None
+if "dev" in sub and sub.index("dev") + 1 < len(sub):
+    sel_dev = sub[sub.index("dev") + 1]
+elif obj != "route":
+    words = [w for w in sub if w not in KEYWORDS]
+    if words:
+        sel_dev = words[0]
+sel = [d for d in devs if sel_dev is None or d["netdev"] == sel_dev]
+if sel_dev is not None and not sel:
+    sys.stderr.write('Device "%s" does not exist.\n' % sel_dev); sys.exit(1)
+
+
+def flags(d):
+    f = ["LOOPBACK"] if d["netdev"] == "lo" else ["BROADCAST", "MULTICAST"]
+    if d.get("operstate") in ("up", "unknown"):
+        f.append("UP")
+        if d.get("carrier"):
+            f.append("LOWER_UP")
+    return f
+
+
+def brd(cidr):
+    return str(ipaddress.ip_interface(cidr).network.broadcast_address)
+
+
+if obj in ("addr", "link"):
+    if js:
+        out = []
+        for d in sel:
+            e = {"ifindex": d["ifindex"], "ifname": d["netdev"], "flags": flags(d), "mtu": d["mtu"], "qdisc": "mq",
+                 "operstate": d["state"], "link_type": "loopback" if d["netdev"] == "lo" else "ether", "address": d["mac"]}
+            if obj == "addr":
+                e["addr_info"] = [{"family": "inet", "local": c.split("/")[0], "prefixlen": int(c.split("/")[1]),
+                                   "scope": "host" if d["netdev"] == "lo" else "global", "label": d["netdev"],
+                                   "valid_life_time": 4294967295, "preferred_life_time": 4294967295} for c in d.get("ipv4", [])]
+            out.append(e)
+        print(json.dumps(out))
+        sys.exit(0)
+    for d in sel:
+        if brief:
+            if obj == "link":
+                print("%-16s %-14s %s <%s>" % (d["netdev"], d["state"], d["mac"], ",".join(flags(d))))
+            else:
+                print("%-16s %-14s %s" % (d["netdev"], d["state"], " ".join(d.get("ipv4", []))))
+            continue
+        if oneline:
+            if obj == "link":
+                print("%d: %s: <%s> mtu %d qdisc mq state %s mode DEFAULT group default qlen 1000\\    link/ether %s brd ff:ff:ff:ff:ff:ff" % (
+                    d["ifindex"], d["netdev"], ",".join(flags(d)), d["mtu"], d["state"], d["mac"]))
+            else:
+                for c in d.get("ipv4", []):
+                    scope = "host" if d["netdev"] == "lo" else "global"
+                    print("%d: %s    inet %s brd %s scope %s %s\\       valid_lft forever preferred_lft forever" % (
+                        d["ifindex"], d["netdev"], c, brd(c), scope, d["netdev"]))
+            continue
+        print("%d: %s: <%s> mtu %d qdisc mq state %s group default qlen 1000" % (d["ifindex"], d["netdev"], ",".join(flags(d)), d["mtu"], d["state"]))
+        if d["netdev"] == "lo":
+            print("    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00")
+        else:
+            print("    link/ether %s brd ff:ff:ff:ff:ff:ff" % d["mac"])
+        if obj == "addr":
+            for c in d.get("ipv4", []):
+                scope = "host" if d["netdev"] == "lo" else "global"
+                print("    inet %s brd %s scope %s %s" % (c, brd(c), scope, d["netdev"]))
+                print("       valid_lft forever preferred_lft forever")
+    sys.exit(0)
+
+if obj == "route":
+    want_default = "default" in sub
+    routes = []
+    for d in devs:
+        if d.get("operstate") != "up":
+            continue
+        for c in d.get("ipv4", []):
+            src = c.split("/")[0]
+            if d.get("gateway"):
+                routes.append(("default", "default via %s dev %s proto dhcp src %s metric 100" % (d["gateway"], d["netdev"], src)))
+            net = ipaddress.ip_interface(c).network
+            routes.append(("net", "%s dev %s proto kernel scope link src %s metric 100" % (net, d["netdev"], src)))
+    if js:
+        print(json.dumps([{"dst": r.split()[0], "dev": r.split("dev ")[1].split()[0]} for k, r in routes if not want_default or k == "default"]))
+        sys.exit(0)
+    for k, r in routes:
+        if want_default and k != "default":
+            continue
+        if sel_dev and (" dev %s " % sel_dev) not in r + " ":
+            continue
+        print(r)
+    sys.exit(0)
+
+sys.stderr.write('Object "%s" is unknown, try "ip help".\n' % obj)
+sys.exit(1)
+PY

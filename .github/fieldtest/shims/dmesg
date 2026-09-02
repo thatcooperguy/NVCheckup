@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
-# Simulated dmesg: a normal boot log with two NVIDIA Xid errors for GPU 2
-# (bus 81:00), the classic "fallen off the bus" and an MMU fault, so the Xid
-# collector and its analyzer rule run on real Linux without a GPU.
+# Simulated dmesg. Prints the scenario's "dmesg_lines" when present (gb10: a
+# clean DGX OS boot with the benign mlx5 27W slot-power message of spec
+# docs/roadmap/spark-support.md 3.2; gb10-gsp-fail: the Xid 119 / SEC2 / GSP
+# init failure lines of 3.2). Scenarios without dmesg_lines (rig3) get the
+# built-in log: a normal boot with two NVIDIA Xid errors for GPU 2 (bus 81:00),
+# the classic "fallen off the bus" and an MMU fault, so the Xid collector and
+# its analyzer rule run on real Linux without a GPU. Flags (-T, -k, --level)
+# are accepted and ignored. Never calls the real dmesg.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+if sim_has dmesg_lines 2>/dev/null; then
+  sim_lines dmesg_lines
+  exit 0
+fi
 cat <<'EOF'
 [    0.000000] Linux version 6.8.0-45-generic (buildd@lcy02-amd64-115) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #45-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug 30 12:02:04 UTC 2024
 [    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-6.8.0-45-generic root=UUID=deadbeef ro quiet splash

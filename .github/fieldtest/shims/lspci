@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
-# Simulated lspci for the Linux field test: three NVIDIA cards whose bus ids
-# match .github/fieldtest/scenarios/rig3.json, plus ordinary devices so the
-# parser has to pick the GPUs out of real-looking output.
+# Simulated lspci for the Linux field test. Prints the scenario's "lspci_lines"
+# when present (gb10: the GB10 at 000f:01:00.0 as "[10de:2e12]", spec
+# docs/roadmap/spark-support.md 3.1 row 5, plus the four ConnectX-7 functions
+# "[15b3:1021]" of 2.1 and the Realtek / MediaTek NICs). Scenarios without
+# lspci_lines (rig3) get the built-in three-card rig whose bus ids match
+# .github/fieldtest/scenarios/rig3.json, plus ordinary devices so the parser
+# has to pick the GPUs out of real-looking output.
+#
+# Filters honoured: -d [vendor]:[device], -s slot (with or without domain).
+# -nn / -n / -mm / -D / -k / -v / -vv are accepted; verbose modes print the same
+# single line per device (the spec carries no LnkCap/LnkSta data for GB10).
+# Never calls the real lspci.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+builtin_lines() {
 cat <<'EOF'
 00:00.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Starship/Matisse Root Complex [1022:1480]
 00:01.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Starship/Matisse GPP Bridge [1022:1483]
@@ -13,3 +25,49 @@ cat <<'EOF'
 81:00.1 Audio device [0403]: NVIDIA Corporation AD102 High Definition Audio Controller [10de:22ba] (rev a1)
 c1:00.0 Ethernet controller [0200]: Aquantia Corp. AQC107 NBase-T/IEEE 802.3bz Ethernet Controller [AQtion] [1d6a:07b1] (rev 02)
 EOF
+}
+
+dev_filter=""
+slot_filter=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d) dev_filter="$2"; shift 2 ;;
+    -d*) dev_filter="${1#-d}"; shift ;;
+    -s) slot_filter="$2"; shift 2 ;;
+    -s*) slot_filter="${1#-s}"; shift ;;
+    -*) shift ;;
+    *) shift ;;
+  esac
+done
+
+if sim_has lspci_lines 2>/dev/null; then
+  lines="$(sim_lines lspci_lines)"
+else
+  lines="$(builtin_lines)"
+fi
+
+printf '%s\n' "$lines" | while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  if [ -n "$dev_filter" ]; then
+    # -d [vendor]:[device]; either half may be empty, matching is case-insensitive like lspci's.
+    v="$(printf '%s' "${dev_filter%%:*}" | tr 'A-F' 'a-f')"
+    d="$(printf '%s' "${dev_filter#*:}" | tr 'A-F' 'a-f')"
+    lc="$(printf '%s' "$line" | tr 'A-F' 'a-f')"
+    if [ -n "$v" ] && [ -n "$d" ]; then
+      case "$lc" in *"[$v:$d]"*) ;; *) continue ;; esac
+    elif [ -n "$v" ]; then
+      case "$lc" in *"[$v:"*) ;; *) continue ;; esac
+    elif [ -n "$d" ]; then
+      case "$lc" in *":$d]"*) ;; *) continue ;; esac
+    fi
+  fi
+  if [ -n "$slot_filter" ]; then
+    slot="$(printf '%s' "$line" | cut -d' ' -f1)"
+    s="$(printf '%s' "$slot_filter" | tr 'A-F' 'a-f')"
+    case "$slot" in
+      "$s"|"$s".*|0000:"$s"|0000:"$s".*) ;;
+      *) case "${slot#*:}" in "$s"|"$s".*) ;; *) continue ;; esac ;;
+    esac
+  fi
+  printf '%s\n' "$line"
+done

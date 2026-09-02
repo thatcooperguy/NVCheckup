@@ -16,7 +16,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # ubuntu-24.04-arm is GitHub's free arm64 runner: the same CPU class as
+        # DGX Spark (aarch64) without the GPU, so the arm64 build paths and the
+        # lscpu/MIDR CPU-model code run natively on every push.
+        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm]
         go-version: ['1.22', 'stable']
     runs-on: ${{ matrix.os }}
     steps:
@@ -58,6 +61,66 @@ jobs:
           "$bin" self-test || rc=$?
           if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then exit $rc; fi
 
+  windows-arm64:
+    # Native Windows on Arm (spec docs/roadmap/spark-support.md section 8: runs-on
+    # windows-11-arm, GA and free for public repos, image 10.0.26200, no GPU).
+    # The RTX Spark (N1X) collectors are Windows/arm64 code; this is the only
+    # runner that executes them natively. continue-on-error because the
+    # windows-11-arm pool is newer than the x64 pools and its availability for
+    # this repository has not been confirmed; flip to false once a run has gone
+    # green.
+    timeout-minutes: 20
+    runs-on: windows-11-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Confirm native arm64 toolchain
+        shell: bash
+        run: |
+          go version
+          go env GOOS GOARCH
+          test "$(go env GOARCH)" = "arm64"
+          echo "PROCESSOR_ARCHITECTURE=$PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432=${PROCESSOR_ARCHITEW6432:-}"
+
+      - name: Run tests natively on Windows/arm64
+        shell: bash
+        run: go test ./... -v -timeout 120s
+
+      - name: Build and self-test
+        shell: bash
+        run: |
+          go build -v -o nvcheckup-ci.exe ./cmd/nvcheckup
+          rc=0
+          ./nvcheckup-ci.exe self-test || rc=$?
+          echo "self-test exit=$rc"
+          if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then exit $rc; fi
+          # spec 3.1 row 1: on this runner the process is native arm64, so the report
+          # must say Windows on Arm and must not claim emulation. WP1-dependent:
+          # the keys exist once the platform detector has landed; until then the
+          # assertions below only print what is there.
+          mkdir -p out
+          rc=0; ./nvcheckup-ci.exe run --mode full --json --out out || rc=$?
+          echo "run exit=$rc"; [ "$rc" -ne 3 ]
+          python - <<'PY'
+          import json
+          j = json.load(open("out/report.json", encoding="utf-8"))
+          p = j.get("platform") or {}
+          print("platform:", {k: p.get(k) for k in ("class", "is_windows_on_arm", "process_emulated", "native_machine")})
+          if "is_windows_on_arm" in p:
+              assert p["is_windows_on_arm"] is True, p
+              assert not p.get("process_emulated"), p
+          ids = [f["id"] for f in j["findings"]]
+          print("finding ids:", ids)
+          assert "woa-nvcheckup-emulated" not in ids, ids
+          PY
+
   lint:
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -80,7 +143,28 @@ jobs:
 
       - name: Cross-vet build-tagged files
         # Windows-only and Linux-only files are skipped by the host vet; check both explicitly.
-        run: GOOS=linux go vet ./... && GOOS=windows go vet ./...
+        # windows/arm64 vet is required by spec docs/roadmap/spark-support.md section 8.
+        run: |
+          GOOS=linux go vet ./...
+          GOOS=windows go vet ./...
+          GOOS=windows GOARCH=arm64 go vet ./...
+          GOOS=linux GOARCH=arm64 go vet ./...
+
+      - name: Cross-build every release target
+        # Every target of release.yml plus darwin/arm64 (developer laptops) must keep
+        # compiling from one tree: build tags and runtime.GOOS checks, never per-OS forks.
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/arm64; do
+            export GOOS="${target%/*}" GOARCH="${target#*/}"
+            echo "== $GOOS/$GOARCH"
+            go build ./...
+            ext=""; [ "$GOOS" = windows ] && ext=".exe"
+            go build -ldflags="-s -w" -o "dist/nvcheckup-$GOOS-$GOARCH$ext" ./cmd/nvcheckup
+          done
+          ls -la dist
 
       - name: Set up stable Go for govulncheck
         # govulncheck reports against the standard library of the Go toolchain that runs it.

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Simulated fwupdmgr: `get-devices [--json]` and `get-updates [--json]` from the
+# scenario's "fwupd_devices" ([{name, guid, current_version, pending}]) and
+# "fwupd_updates". The collector reads firmware components from fwupdmgr
+# (spec docs/roadmap/spark-support.md 4 FirmwareComponent, 5
+# dgx-spark-firmware-behind: EC / SoC / USB PD versions compared as byte
+# triplets, hex or dotted). refresh / update / upgrade / install are refused:
+# they change firmware. Never calls the real fwupdmgr.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+json=0
+cmd=""
+for a in "$@"; do
+  case "$a" in
+    --json) json=1 ;;
+    --version) echo "client version:	1.9.30"; echo "daemon version:	1.9.30"; exit 0 ;;
+    -*) ;;
+    *) [ -z "$cmd" ] && cmd="$a" ;;
+  esac
+done
+
+case "$cmd" in
+  get-devices|get-updates|get-upgrades|get-history|get-remotes|get-releases) ;;
+  refresh|update|upgrade|install|downgrade|activate|reinstall|unlock|modify-remote|enable-remote|disable-remote|clear-results|set-approved-firmware) sim_refuse fwupdmgr "$@" ;;
+  "") echo "fwupdmgr: no command specified" >&2; exit 1 ;;
+  *) echo "fwupdmgr: unknown command $cmd" >&2; exit 1 ;;
+esac
+
+sim_py - "$cmd" "$json" <<'PY'
+import hashlib, json, os, sys
+
+# The tree layout uses the same box-drawing characters as the real tool; force UTF-8 so a
+# Windows console running the shim locally does not choke on them.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+cmd, as_json = sys.argv[1], sys.argv[2] == "1"
+path = os.environ.get("NVC_SIM_SCENARIO")
+if not path or not os.path.exists(path):
+    sys.stderr.write("nvc-sim: NVC_SIM_SCENARIO is not set or does not exist\n"); sys.exit(9)
+sc = json.load(open(path, encoding="utf-8"))
+devices = sc.get("fwupd_devices") or []
+updates = sc.get("fwupd_updates") or []
+dmi = sc.get("dmi") or {}
+vendor = dmi.get("sys_vendor", "")
+root = ("%s %s" % (vendor, dmi.get("product_name", ""))).strip() or "Simulated host"
+
+
+def dev_id(d):
+    # fwupd prints a 40-hex device id; derive a stable one from the GUID (placeholder, not a real id).
+    return hashlib.sha1(d.get("guid", d["name"]).encode()).hexdigest()
+
+
+if cmd in ("get-devices",):
+    if as_json:
+        out = {"Devices": []}
+        for d in devices:
+            e = {
+                "Name": d["name"], "DeviceId": dev_id(d), "Guid": [d["guid"]] if d.get("guid") else [],
+                "Vendor": vendor, "Version": d.get("current_version", ""), "VersionFormat": "hex" if str(d.get("current_version", "")).startswith("0x") else "triplet",
+                "Flags": ["internal", "updatable"] + (["needs-reboot"] if d.get("pending") else []),
+                "Plugin": "uefi_capsule",
+            }
+            if d.get("pending"):
+                e["Releases"] = [{"Version": d["pending"], "Flags": ["is-upgrade"]}]
+            out["Devices"].append(e)
+        print(json.dumps(out, indent=2))
+    else:
+        print(root)
+        print("│")
+        for i, d in enumerate(devices):
+            last = i == len(devices) - 1
+            branch, cont = ("└─", "  ") if last else ("├─", "│ ")
+            print("%s%s:" % (branch, d["name"]))
+            rows = [("Device ID", dev_id(d)), ("Current version", d.get("current_version", ""))]
+            if d.get("pending"):
+                rows.append(("Update State", "Pending"))
+                rows.append(("Update Version", d["pending"]))
+            if vendor:
+                rows.append(("Vendor", vendor))
+            if d.get("guid"):
+                rows.append(("GUID", d["guid"]))
+            for k, v in rows:
+                print("%s    %-20s%s" % (cont, k + ":", v))
+            print("%s    %-20s• Internal device" % (cont, "Device Flags:"))
+            print("%s    %-20s• Updatable" % (cont, ""))
+            if not last:
+                print("│")
+    sys.exit(0)
+
+if cmd in ("get-updates", "get-upgrades"):
+    if as_json:
+        print(json.dumps({"Devices": [{"Name": u.get("name", ""), "Releases": [{"Version": u.get("version", "")}]} for u in updates]}, indent=2))
+        sys.exit(0 if updates else 2)
+    if not updates:
+        print("Devices with no available firmware updates: ")
+        for d in devices:
+            print(" • %s" % d["name"])
+        # fwupd exits 2 (EXIT_NOTHING_TO_DO) when there is nothing to update; tool behaviour, not a spec value.
+        print("No updates available")
+        sys.exit(2)
+    for u in updates:
+        print("%s has firmware updates:" % u.get("name", ""))
+        print("  New version: %s" % u.get("version", ""))
+    sys.exit(0)
+
+# get-history / get-remotes / get-releases: nothing recorded in the scenario.
+if as_json:
+    print(json.dumps({"Devices": []}))
+else:
+    print("No history")
+sys.exit(0)
+PY
