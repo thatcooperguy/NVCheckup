@@ -162,6 +162,7 @@ func TestApplyToReport(t *testing.T) {
 			Monitors:          []types.MonitorInfo{{Name: "ALICE-PC display"}},
 			DriverResetEvents: []types.EventLogEntry{{Message: `Fault in C:\Users\alice\game.exe`}},
 		},
+		Displays: []types.DisplayInfo{{Name: "ALICE-PC display", Resolution: "3840x2160"}},
 		Network: &types.NetworkInfo{
 			InterfaceName: "alice-wifi",
 			Hops:          []types.HopInfo{{Address: "192.168.0.1"}, {Address: "8.8.4.4"}},
@@ -176,6 +177,7 @@ func TestApplyToReport(t *testing.T) {
 		"summary":        rep.SummaryBlock,
 		"smi path":       rep.Driver.NvidiaSmiPath,
 		"monitor":        rep.Windows.Monitors[0].Name,
+		"display":        rep.Displays[0].Name,
 		"event message":  rep.Windows.DriverResetEvents[0].Message,
 		"interface":      rep.Network.InterfaceName,
 		"evidence":       rep.Findings[0].Evidence,

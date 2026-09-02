@@ -117,11 +117,76 @@ func TestGenerateText_PCIeIdleLine(t *testing.T) {
 		t.Errorf("idle PCIe line missing:\n%s", out)
 	}
 
+	// DOWNSHIFTED follows the analyzer's WARN, not the collector flag.
 	report.PCIe.Downshifted = true
 	report.PCIe.IdleLikely = false
+	report.Findings = []types.Finding{{ID: "pcie-downshift", Severity: types.SeverityWarn, Title: "PCIe Link Speed Downshifted Under Load"}}
 	out = GenerateText(report)
 	if !strings.Contains(out, "Gen1 x16 (DOWNSHIFTED, max Gen4 x16)") {
 		t.Errorf("downshift PCIe line missing:\n%s", out)
+	}
+	md := GenerateMarkdown(report)
+	if !strings.Contains(md, "**PCIe:** Gen1 x16 (DOWNSHIFTED, max Gen4 x16)") {
+		t.Errorf("markdown downshift PCIe line missing:\n%s", md)
+	}
+}
+
+func TestGenerateText_PCIeDownshiftedFlagWithoutFindingIsIdle(t *testing.T) {
+	// The collector's Downshifted flag can contradict the analyzer, which
+	// emits the idle INFO when pstate/utilization are unknown. The renderers
+	// must follow the findings, exactly like the summary block.
+	report := createTestReport()
+	report.PCIe = &types.PCIeInfo{
+		CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16",
+		Downshifted: true,
+	}
+	report.Findings = []types.Finding{{ID: "pcie-idle-power-saving", Severity: types.SeverityInfo, Title: "PCIe Link Power-Saving at Idle (expected)"}}
+	for name, out := range map[string]string{"text": GenerateText(report), "markdown": GenerateMarkdown(report)} {
+		if strings.Contains(out, "DOWNSHIFTED") {
+			t.Errorf("%s: Downshifted flag without a PCIe WARN must not print DOWNSHIFTED:\n%s", name, out)
+		}
+		if !strings.Contains(out, "Gen1 x16 (idle, max Gen4)") {
+			t.Errorf("%s: idle PCIe line missing:\n%s", name, out)
+		}
+	}
+
+	// At maximum generation there is nothing to annotate.
+	report.PCIe = &types.PCIeInfo{CurrentSpeed: "Gen4", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", Downshifted: true}
+	report.Findings = nil
+	if out := GenerateText(report); !strings.Contains(out, "PCIe:          Gen4 x16\n") || strings.Contains(out, "DOWNSHIFTED") {
+		t.Errorf("at-max PCIe line should be bare:\n%s", out)
+	}
+}
+
+func TestGenerateText_EventLogNotReadable(t *testing.T) {
+	report := createTestReport()
+	report.Windows = &types.WindowsInfo{WHEAErrors: []types.EventLogEntry{{EventID: 17}}}
+	report.CollectorErrors = []types.CollectorError{
+		{Collector: "windows.event4101", Error: "requires Administrator to read the System log"},
+		{Collector: "windows.nvlddmkm", Error: "could not read the System log: timed out"},
+	}
+	out := GenerateText(report)
+	for _, want := range []string{
+		"Driver Resets (4101):  not readable (see Collector Notes)",
+		"nvlddmkm Errors:       not readable (see Collector Notes)",
+		"WHEA Errors:           1 event(s)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Driver Resets (4101):  0 event(s)") {
+		t.Error("failed query must not be reported as 0 events")
+	}
+	md := GenerateMarkdown(report)
+	for _, want := range []string{
+		"| Driver resets (4101) | not readable (see Collector Notes) |",
+		"| nvlddmkm errors | not readable (see Collector Notes) |",
+		"| WHEA errors | 1 in last 30 days |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown missing %q:\n%s", want, md)
+		}
 	}
 }
 
@@ -188,7 +253,7 @@ func TestGenerateMarkdown_Structure(t *testing.T) {
 		"# NVCheckup Diagnostic Report", "## Summary", "## GPUs", "## Findings",
 		"## Windows", "| HAGS | Enabled |", "| Overlays | Discord |",
 		"## AI / CUDA Environment", "| PyTorch | 2.4.0 (CUDA 12.4, available=true, device=RTX 4090) |", "| numpy | 2.0 |",
-		"**PCIe:** Gen4 x16 (max Gen4 x16)",
+		"**PCIe:** Gen4 x16\n",
 		"## Network", "| Interface | Ethernet (ethernet) |",
 		"## Collector Notes", "- **dxdiag:** timed out",
 	} {

@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -69,7 +71,7 @@ func runCmd(args []string) {
 	timeout := fs.Int("timeout", 30, "Timeout in seconds for each system command")
 	redactFlag := fs.Bool("redact", true, "Enable PII redaction (default: true)")
 	noRedact := fs.Bool("no-redact", false, "Disable PII redaction (not recommended for sharing)")
-	includeLogs := fs.Bool("include-logs", false, "Include extended logs in the report/bundle")
+	includeLogs := fs.Bool("include-logs", false, "Linux only: include journalctl/dmesg snippets in the report")
 
 	fs.Parse(args)
 	if fs.NArg() > 0 {
@@ -180,8 +182,8 @@ func compareCmd(args []string) {
 		fmt.Fprintln(os.Stderr, compareUsage)
 		fs.PrintDefaults()
 	}
-	outDir := fs.String("out", ".", "Output directory for comparison.txt / comparison.md")
-	doMD := fs.Bool("md", false, "Output as markdown")
+	outDir := fs.String("out", ".", "Directory for comparison.txt / comparison.md; the file is written when --md or --out is given (default: current directory)")
+	doMD := fs.Bool("md", false, "Output as markdown and write comparison.md into --out")
 	fs.Parse(args)
 
 	remaining := fs.Args()
@@ -193,11 +195,32 @@ func compareCmd(args []string) {
 		os.Exit(types.ExitError)
 	}
 
+	outSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "out" {
+			outSet = true
+		}
+	})
+
 	printBanner()
-	if err := snapshot.Compare(remaining[0], remaining[1], *outDir, *doMD); err != nil {
+	if err := snapshot.Compare(remaining[0], remaining[1], compareWriteDir(*outDir, *doMD, outSet), *doMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(types.ExitError)
 	}
+}
+
+// compareWriteDir decides where "compare" writes its comparison file. The
+// console output is always printed; a file is written only when the user asked
+// for markdown or named an output directory, and "." (the flag default) means
+// the current directory rather than "write nothing".
+func compareWriteDir(outDir string, markdown, outSet bool) string {
+	if !markdown && !outSet {
+		return ""
+	}
+	if outDir == "" {
+		return "."
+	}
+	return outDir
 }
 
 func doctorCmd(args []string) {
@@ -213,12 +236,45 @@ func selfTestCmd(args []string) {
 // defaultJournalDir is <UserConfigDir>/nvcheckup, e.g. %APPDATA%\nvcheckup on
 // Windows or ~/.config/nvcheckup on Linux. It is per-user and survives the
 // report directory being deleted, which is what an undo journal needs.
+//
+// On Linux/macOS a fix usually runs as "sudo nvcheckup fix", where
+// os.UserConfigDir resolves to root's home. The journal is derived from
+// SUDO_USER's home instead so that a later "nvcheckup undo" (or "undo" list)
+// by the same user finds the entry. Plain root without SUDO_USER keeps
+// os.UserConfigDir. Windows is unchanged.
 func defaultJournalDir() string {
+	if dir, ok := sudoUserJournalDir(runtime.GOOS, os.Geteuid(), os.Getenv("SUDO_USER"), user.Lookup); ok {
+		return dir
+	}
 	base, err := os.UserConfigDir()
 	if err != nil || base == "" {
 		base, _ = os.Getwd()
 	}
 	return filepath.Join(base, "nvcheckup")
+}
+
+// sudoUserJournalDir returns the journal directory for the invoking sudo user
+// when the process is root via sudo on Linux/macOS. ok is false whenever the
+// default os.UserConfigDir behaviour should be used instead.
+func sudoUserJournalDir(goos string, euid int, sudoUser string, lookup func(string) (*user.User, error)) (string, bool) {
+	if goos == "windows" || euid != 0 || sudoUser == "" || sudoUser == "root" {
+		return "", false
+	}
+	u, err := lookup(sudoUser)
+	if err != nil || u == nil || u.HomeDir == "" {
+		return "", false
+	}
+	return journalDirForHome(goos, u.HomeDir), true
+}
+
+// journalDirForHome mirrors os.UserConfigDir for a given home directory:
+// $HOME/.config on Linux (and other Unix) and Library/Application Support on
+// macOS.
+func journalDirForHome(goos, home string) string {
+	if goos == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "nvcheckup")
+	}
+	return filepath.Join(home, ".config", "nvcheckup")
 }
 
 // resolveJournalDir applies precedence --journal > --out (deprecated alias) >
@@ -248,22 +304,48 @@ func ensureJournalDir(dir string) {
 	}
 }
 
-// isElevationError recognises the engine's "needs Administrator/root" failure
-// and the raw "Access is denied" text that reg.exe and powercfg print when run
-// from a non-elevated terminal, so the CLI can give a one-line hint instead of
-// a raw error.
+// elevationPhrases are the exact phrases that identify an elevation failure:
+// the engine's own errNotElevated text, the "Access is denied" that reg.exe and
+// powercfg print from a non-elevated terminal, and the POSIX "permission
+// denied". Matching is deliberately narrow: a bare "root" or "administrator"
+// also appears in ordinary paths such as /root/.config and must not trigger
+// the hint.
+var elevationPhrases = []string{
+	"elevated privileges",
+	"access is denied",
+	"access denied",
+	"permission denied",
+	"requires administrator",
+	"run as root",
+}
+
+// isElevationError recognises an elevation failure so the CLI can give a
+// one-line hint instead of a raw error.
 func isElevationError(msg string) bool {
 	l := strings.ToLower(msg)
-	return strings.Contains(l, "elevat") ||
-		strings.Contains(l, "administrator") ||
-		strings.Contains(l, "root") ||
-		strings.Contains(l, "access is denied") ||
-		strings.Contains(l, "access denied")
+	for _, p := range elevationPhrases {
+		if strings.Contains(l, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// elevationHint is the platform-specific "how to elevate" line.
+func elevationHint(goos, command string) string {
+	if goos == "windows" {
+		return "Hint: Re-run from an elevated (Administrator) terminal."
+	}
+	return fmt.Sprintf("Hint: Re-run with sudo (e.g. sudo nvcheckup %s).", command)
 }
 
 func printElevationHint(msg string) {
+	printElevationHintFor(msg, "fix --id ...")
+}
+
+func printElevationHintFor(msg, command string) {
 	fmt.Fprintf(os.Stderr, "Error: %s\n", msg)
-	fmt.Fprintln(os.Stderr, "Hint: Re-run from an elevated (Administrator) terminal.")
+	fmt.Fprintln(os.Stderr, elevationHint(runtime.GOOS, command))
 }
 
 func fixCmd(args []string) {
@@ -419,7 +501,7 @@ func undoCmd(args []string) {
 				if e.UndoSuccess {
 					status = "undone"
 				} else {
-					status = "undo FAILED"
+					status = "undo FAILED (retryable)"
 				}
 			}
 			fmt.Printf("  %d. [%s] %-25s %s (%s)\n", i+1, status, e.ActionID, e.Title, e.AppliedAt.Format("2006-01-02 15:04:05"))
@@ -437,6 +519,14 @@ func undoCmd(args []string) {
 	}
 
 	fmt.Printf("Undoing: %s (applied %s)\n", target.Title, target.AppliedAt.Format("2006-01-02 15:04:05"))
+
+	// Check elevation BEFORE asking, exactly like fixCmd, so the user is not
+	// prompted for an undo that is guaranteed to fail.
+	if def, ok := remediate.ActionByID(target.ActionID); ok && def.NeedsAdmin && !remediate.IsElevated() {
+		printElevationHintFor(fmt.Sprintf("undoing %q requires elevated (Administrator/root) privileges", target.ActionID), "undo --id "+target.ActionID)
+		os.Exit(types.ExitError)
+	}
+
 	fmt.Print("Proceed? (yes/no): ")
 	var answer string
 	fmt.Scanln(&answer)
@@ -449,7 +539,7 @@ func undoCmd(args []string) {
 	ensureJournalDir(dir)
 	if err := engine.Undo(*target); err != nil {
 		if isElevationError(err.Error()) {
-			printElevationHint(err.Error())
+			printElevationHintFor(err.Error(), "undo --id "+target.ActionID)
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
@@ -457,15 +547,19 @@ func undoCmd(args []string) {
 	}
 
 	fmt.Println("Successfully undone.")
+	fmt.Printf("Journal: %s\n", journal.Path())
 }
 
-// newestUndoable returns the most recent successful, not-yet-undone journal
-// entry for id. Iterating from the end matters when the same fix was applied,
-// undone and applied again: the old (already undone) entry must not win.
+// newestUndoable returns the most recent successful journal entry for id
+// that has not been successfully undone. Engine.Undo stamps UndoneAt on every
+// attempt, so an entry whose undo FAILED still qualifies and can be retried
+// (all undo operations are idempotent). Iterating from the end matters when
+// the same fix was applied, undone and applied again: the old (already
+// undone) entry must not win.
 func newestUndoable(entries []types.ChangeJournalEntry, id string) *types.ChangeJournalEntry {
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
-		if e.ActionID == id && e.Success && e.UndoneAt.IsZero() {
+		if e.ActionID == id && e.Success && (e.UndoneAt.IsZero() || !e.UndoSuccess) {
 			return &entries[i]
 		}
 	}
@@ -520,23 +614,46 @@ func networkTestCmd(args []string) {
 
 	fmt.Println()
 
-	if netInfo.PacketLossPct > 5 {
-		fmt.Println("  CRITICAL: High packet loss detected.")
-	} else if netInfo.PacketLossPct > 1 {
-		fmt.Println("  WARNING: Packet loss detected.")
+	for _, l := range networkVerdictLines(&netInfo) {
+		fmt.Println("  " + l)
 	}
-	if netInfo.JitterMs > 15 {
-		fmt.Println("  WARNING: High jitter may cause lag in games/streaming.")
+}
+
+// networkPingSampled reports whether ping produced any samples. Hops alone
+// (traceroute worked, ping did not) are not evidence about latency or loss.
+func networkPingSampled(n *types.NetworkInfo) bool {
+	return n.LatencyMs > 0 || n.PacketLossPct > 0
+}
+
+// networkVerdictLines turns the probe results into the one-line verdicts the
+// network-test command prints. "Network appears healthy" requires real ping
+// samples; when only traceroute produced data the command says so instead of
+// declaring 0.0 ms latency healthy.
+func networkVerdictLines(n *types.NetworkInfo) []string {
+	var lines []string
+	pinged := networkPingSampled(n)
+	if pinged {
+		if n.PacketLossPct > 5 {
+			lines = append(lines, "CRITICAL: High packet loss detected.")
+		} else if n.PacketLossPct > 1 {
+			lines = append(lines, "WARNING: Packet loss detected.")
+		}
+		if n.JitterMs > 15 {
+			lines = append(lines, "WARNING: High jitter may cause lag in games/streaming.")
+		}
+		if n.LatencyMs > 100 {
+			lines = append(lines, "WARNING: High latency detected.")
+		}
+	} else if len(n.Hops) > 0 {
+		lines = append(lines, "INFO: Ping produced no samples; latency, jitter and loss could not be measured.")
 	}
-	if netInfo.LatencyMs > 100 {
-		fmt.Println("  WARNING: High latency detected.")
+	if n.DNSTimeMs > 100 {
+		lines = append(lines, "INFO: DNS resolution is slow. Consider using 1.1.1.1 or 8.8.8.8.")
 	}
-	if netInfo.DNSTimeMs > 100 {
-		fmt.Println("  INFO: DNS resolution is slow. Consider using 1.1.1.1 or 8.8.8.8.")
+	if pinged && n.PacketLossPct == 0 && n.JitterMs < 15 && n.LatencyMs < 100 {
+		lines = append(lines, "Network appears healthy.")
 	}
-	if netInfo.PacketLossPct == 0 && netInfo.JitterMs < 15 && netInfo.LatencyMs < 100 {
-		fmt.Println("  Network appears healthy.")
-	}
+	return lines
 }
 
 func cliValueOrNA(s string) string {
@@ -584,7 +701,7 @@ run [flags]
   --timeout N      Per-command timeout in seconds (default: 30)
   --redact         Enable PII redaction (default: true)
   --no-redact      Disable PII redaction (not recommended for sharing)
-  --include-logs   Include extended system logs in the report/bundle
+  --include-logs   Linux only: include journalctl/dmesg snippets in the report
 
 snapshot [flags]
   --out DIR        Output directory (default: current directory)
@@ -592,9 +709,10 @@ snapshot [flags]
   --no-redact      Disable PII redaction
 
 compare [--out DIR] [--md] <a.json> <b.json>
-  Flags must come before the two snapshot paths.
-  --out DIR        Write comparison.txt / comparison.md to DIR
-  --md             Output as markdown
+  Flags must come before the two snapshot paths. The comparison is always
+  printed; a file is written when --md or --out is given.
+  --out DIR        Write comparison.txt / comparison.md to DIR (default: current directory)
+  --md             Output as markdown and write comparison.md
 
 fix [flags]
   (no flags)       List available fixes
@@ -606,7 +724,7 @@ fix [flags]
 
 undo [flags]
   (no flags)       List change journal entries
-  --id ID          Undo the newest successful, not-yet-undone entry for ID
+  --id ID          Undo the newest successful entry for ID (a failed undo can be retried)
   --journal DIR    Change journal directory (default: <UserConfigDir>/nvcheckup)
   --out DIR        Deprecated alias for --journal
 

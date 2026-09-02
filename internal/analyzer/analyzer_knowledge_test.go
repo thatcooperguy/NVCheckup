@@ -115,13 +115,14 @@ func ruleCorpus() []struct {
 		// WSL with dxg but nvidia-smi failing
 		full(&types.Report{GPUs: nv, Driver: drv, WSL: &types.WSLInfo{IsWSL: true, DevDxgExists: true, NvidiaSmiOK: false}}),
 		// thermal: real thermal bit; hot without bits; fan stopped
-		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 95, SlowdownReason: "0x40", FanSupported: true, FanSpeedPct: 0}}),
+		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 95, ThermalThrottle: true, SlowdownActive: true, SlowdownReason: "0x40", ThrottleReasons: []string{"hw_thermal_slowdown"}, FanSupported: true, FanSpeedPct: 0}}),
 		full(&types.Report{GPUs: nv, Driver: drv, Thermal: &types.ThermalInfo{TemperatureC: 95}}),
 		// PCIe: idle Gen1 (expected) and Gen1 under load (fault)
 		full(&types.Report{GPUs: nv, Driver: drv, PCIe: &types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", IdleLikely: true}}),
 		full(&types.Report{GPUs: nv, Driver: drv, PCIe: &types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P0", UtilizationPct: 99}}),
-		// network healthy
+		// network healthy; traceroute without ping
 		full(&types.Report{GPUs: nv, Driver: drv, Network: &types.NetworkInfo{LatencyMs: 10}}),
+		full(&types.Report{GPUs: nv, Driver: drv, Network: &types.NetworkInfo{Hops: []types.HopInfo{{Number: 1, LatencyMs: 2}}}}),
 		// GeForce Experience rather than NVIDIA App
 		full(&types.Report{GPUs: nv, Driver: drv, Windows: &types.WindowsInfo{GFEVersion: "3.28"}}),
 	)
@@ -337,14 +338,14 @@ func TestThermalState_FallbackNeedsThermalReason(t *testing.T) {
 		thermal     types.ThermalInfo
 		wantThermal bool
 	}{
-		{"flag alone without mask is not trusted", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true}, false},
-		{"flag with unparseable mask is not trusted", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true, SlowdownReason: "garbage"}, false},
+		{"flag alone without reasons is not trusted", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true}, false},
+		{"flag with an undecoded raw mask is not trusted", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true, SlowdownReason: "garbage"}, false},
 		{"flag with a non-thermal reason is not trusted", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true, ThrottleReasons: []string{"sw_power_cap"}}, false},
 		{"flag with sw_thermal_slowdown reason is trusted", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true, ThrottleReasons: []string{"sw_thermal_slowdown"}}, true},
 		{"flag with hw_thermal_slowdown reason is trusted", types.ThermalInfo{TemperatureC: 70, ThermalThrottle: true, ThrottleReasons: []string{"sw_power_cap", "HW_Thermal_Slowdown"}}, true},
 		{"thermal reason without the flag is not thermal", types.ThermalInfo{TemperatureC: 86, ThrottleReasons: []string{"sw_thermal_slowdown"}}, false},
-		{"mask wins over flag and reasons: no thermal bits", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true, ThrottleReasons: []string{"sw_thermal_slowdown"}, SlowdownReason: "0x4"}, false},
-		{"mask wins over flag: thermal bit set", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: false, SlowdownReason: "0x20"}, true},
+		{"raw mask is not re-parsed: thermal bit in raw string alone", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: false, SlowdownReason: "0x20"}, false},
+		{"raw mask is not re-parsed: collector fields win", types.ThermalInfo{TemperatureC: 86, ThermalThrottle: true, ThrottleReasons: []string{"sw_thermal_slowdown"}, SlowdownReason: "0x4"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

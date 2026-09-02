@@ -4,6 +4,7 @@ package report
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
@@ -33,19 +34,64 @@ func footerLines(meta types.ReportMetadata) []string {
 	return lines
 }
 
-// pcieSummary renders the PCIe link state on one line. A GPU sitting at P8
-// with Gen1 negotiated is normal power saving, not a downshift, so the idle
-// case is labelled explicitly to stop forum readers from chasing it.
-func pcieSummary(p *types.PCIeInfo) string {
+// pcieSummary renders the PCIe link state on one line, deciding from the
+// analyzer's findings exactly like the summary block does: "DOWNSHIFTED" is
+// printed only when a pcie-downshift or pcie-width-reduced WARN fired.
+// Otherwise a link below its maximum generation is labelled idle (a GPU at P8
+// with Gen1 negotiated is normal power saving) and a link at maximum gets no
+// annotation. PCIeInfo.Downshifted is deliberately not consulted: the
+// collector sets it without knowing whether the sample was taken at idle.
+func pcieSummary(report *types.Report) string {
+	p := report.PCIe
 	cur := strings.TrimSpace(valueOrNA(p.CurrentSpeed) + " " + p.CurrentWidth)
 	switch {
-	case p.Downshifted:
+	case pcieWarned(report.Findings):
 		return fmt.Sprintf("%s (DOWNSHIFTED, max %s %s)", cur, valueOrNA(p.MaxSpeed), p.MaxWidth)
-	case p.IdleLikely:
+	case pcieGen(p.CurrentSpeed) > 0 && pcieGen(p.CurrentSpeed) < pcieGen(p.MaxSpeed):
 		return fmt.Sprintf("%s (idle, max %s)", cur, valueOrNA(p.MaxSpeed))
 	default:
-		return fmt.Sprintf("%s (max %s %s)", cur, valueOrNA(p.MaxSpeed), p.MaxWidth)
+		return cur
 	}
+}
+
+// pcieWarned reports whether the analyzer raised a PCIe link WARN.
+func pcieWarned(findings []types.Finding) bool {
+	for _, f := range findings {
+		if (f.ID == "pcie-downshift" || f.ID == "pcie-width-reduced") && f.Severity == types.SeverityWarn {
+			return true
+		}
+	}
+	return false
+}
+
+// pcieGen parses "Gen4" (or "4") into 4; 0 when unknown.
+func pcieGen(s string) int {
+	s = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(s), "gen"))
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// collectorFailed reports whether the named collector recorded an error, i.e.
+// its data is missing rather than verified empty.
+func collectorFailed(errs []types.CollectorError, name string) bool {
+	for _, e := range errs {
+		if e.Collector == name {
+			return true
+		}
+	}
+	return false
+}
+
+// eventCount renders an event-log count, or explains that the log could not
+// be read so "0 event(s)" is never shown for a failed query.
+func eventCount(errs []types.CollectorError, collector string, n int) string {
+	if collectorFailed(errs, collector) {
+		return "not readable (see Collector Notes)"
+	}
+	return fmt.Sprintf("%d event(s)", n)
 }
 
 // thermalSummary renders temperature, pstate and fan on one line.
@@ -147,7 +193,7 @@ func GenerateText(report *types.Report) string {
 	w("  NVIDIA Driver: %s\n", valueOrNA(report.Driver.Version))
 	w("  CUDA (driver): %s\n", valueOrNA(report.Driver.CUDAVersion))
 	if report.PCIe != nil {
-		w("  PCIe:          %s\n", pcieSummary(report.PCIe))
+		w("  PCIe:          %s\n", pcieSummary(report))
 	}
 	if report.Thermal != nil {
 		w("  Thermal:       %s\n", thermalSummary(report.Thermal))
@@ -156,7 +202,7 @@ func GenerateText(report *types.Report) string {
 
 	// Platform-specific sections
 	if report.Windows != nil {
-		writeWindowsSection(&sb, report.Windows)
+		writeWindowsSection(&sb, report.Windows, report.CollectorErrors)
 		line()
 	}
 
@@ -256,7 +302,7 @@ func GenerateText(report *types.Report) string {
 	return sb.String()
 }
 
-func writeWindowsSection(sb *strings.Builder, w *types.WindowsInfo) {
+func writeWindowsSection(sb *strings.Builder, w *types.WindowsInfo, errs []types.CollectorError) {
 	fmt.Fprintf(sb, "\n== WINDOWS DETAILS ==\n\n")
 	fmt.Fprintf(sb, "  HAGS:           %s\n", valueOrNA(w.HAGSEnabled))
 	fmt.Fprintf(sb, "  Game Mode:      %s\n", valueOrNA(w.GameMode))
@@ -287,9 +333,9 @@ func writeWindowsSection(sb *strings.Builder, w *types.WindowsInfo) {
 	}
 
 	fmt.Fprintf(sb, "\n  Event Log Summary (last 30 days):\n")
-	fmt.Fprintf(sb, "    Driver Resets (4101):  %d event(s)\n", len(w.DriverResetEvents))
-	fmt.Fprintf(sb, "    nvlddmkm Errors:       %d event(s)\n", len(w.NvlddmkmErrors))
-	fmt.Fprintf(sb, "    WHEA Errors:           %d event(s)\n", len(w.WHEAErrors))
+	fmt.Fprintf(sb, "    Driver Resets (4101):  %s\n", eventCount(errs, "windows.event4101", len(w.DriverResetEvents)))
+	fmt.Fprintf(sb, "    nvlddmkm Errors:       %s\n", eventCount(errs, "windows.nvlddmkm", len(w.NvlddmkmErrors)))
+	fmt.Fprintf(sb, "    WHEA Errors:           %s\n", eventCount(errs, "windows.whea", len(w.WHEAErrors)))
 
 	if len(w.RecentKBs) > 0 {
 		fmt.Fprintf(sb, "\n  Recent Windows Updates (last 60 days):\n")

@@ -228,3 +228,34 @@ func keys(m map[string]types.Difference) []string {
 	}
 	return out
 }
+
+// TestCompare_DotWritesToCurrentDir guards the "compare --md a b" case: the
+// CLI's default --out is ".", which used to be treated as "write nothing".
+func TestCompare_DotWritesToCurrentDir(t *testing.T) {
+	dir := t.TempDir()
+	pa := writeFixture(t, dir, "a.json", fixtureA)
+	pb := writeFixture(t, dir, "b.json", fixtureB)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+
+	if err := Compare(pa, pb, ".", false); err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "comparison.txt")); err != nil {
+		t.Errorf("comparison.txt not written to the current directory: %v", err)
+	}
+	// Console-only mode writes nothing.
+	if err := Compare(pa, pb, "", true); err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "comparison.md")); err == nil {
+		t.Error("empty outDir must not write a file")
+	}
+}

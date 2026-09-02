@@ -52,18 +52,16 @@ const (
 
 // RunConfig holds all CLI flags and options for a run
 type RunConfig struct {
-	Mode          RunMode
-	OutDir        string
-	Zip           bool
-	JSON          bool
-	Markdown      bool
-	Verbose       bool
-	NoAdmin       bool
-	Timeout       int // seconds
-	Redact        bool
-	IncludeLogs   bool
-	NetworkTest   bool   // run network diagnostics
-	KnowledgePath string // optional path to override embedded knowledge pack
+	Mode        RunMode
+	OutDir      string
+	Zip         bool
+	JSON        bool
+	Markdown    bool
+	Verbose     bool
+	Timeout     int // seconds
+	Redact      bool
+	IncludeLogs bool // Linux only: include journalctl/dmesg snippets
+	NetworkTest bool // run network diagnostics
 }
 
 // DefaultRunConfig returns a RunConfig with safe defaults
@@ -75,7 +73,6 @@ func DefaultRunConfig() RunConfig {
 		JSON:        false,
 		Markdown:    false,
 		Verbose:     false,
-		NoAdmin:     false,
 		Timeout:     30,
 		Redact:      true,
 		IncludeLogs: false,
