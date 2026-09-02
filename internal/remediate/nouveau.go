@@ -1,6 +1,7 @@
 package remediate
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -49,6 +50,22 @@ func detectInitramfsTool(look func(string) (string, error)) (initramfsTool, bool
 		}
 	}
 	return initramfsTool{}, false
+}
+
+// checkNouveauRestorable reports whether an existing blacklist file's content
+// can be recorded as undo information and written back verbatim by Undo. It
+// must pass validateNouveauContent (so undo never writes arbitrary directives
+// into /etc/modprobe.d) and fit within maxUndoInfoBytes (so validateUndoInfo
+// accepts the journal entry later). Apply refuses and Preview says so when
+// this fails; nothing is ever overwritten that cannot be put back.
+func checkNouveauRestorable(existing string) error {
+	if err := validateNouveauContent(existing); err != nil {
+		return err
+	}
+	if len(existing) > maxUndoInfoBytes {
+		return fmt.Errorf("content is %d bytes, larger than the %d-byte undo limit", len(existing), maxUndoInfoBytes)
+	}
+	return nil
 }
 
 // normalizeNouveauUndoInfo maps the legacy undo marker written by nvcheckup

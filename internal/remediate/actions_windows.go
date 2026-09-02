@@ -4,14 +4,10 @@ package remediate
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
-
-// highPerformanceGUID is the well-known GUID of the Windows "High performance" power plan.
-const highPerformanceGUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
 
 // regDword identifies a REG_DWORD registry value that an action toggles.
 type regDword struct {
@@ -397,107 +393,8 @@ func (e *Engine) inspectAction(id string) (inspection, error) {
 	}
 }
 
-// getAvailableActions returns the list of remediation actions available on Windows.
-// Risk labels and descriptions must stay in sync with knowledge/remediations.json.
+// getAvailableActions returns the remediation actions available on Windows:
+// the catalog entries (see catalog.go) whose Platform is "windows".
 func getAvailableActions() []types.RemediationAction {
-	return []types.RemediationAction{
-		{
-			ID:          "set-high-performance",
-			Title:       "Switch to High Performance power plan",
-			Description: "Sets the active Windows power plan to 'High performance' with powercfg. Balanced and power-saver plans can hold CPU clocks down and starve the GPU.",
-			DryRunDesc:  "Would run: powercfg /setactive " + highPerformanceGUID + " (after capturing the current plan with powercfg /getactivescheme)",
-			UndoDesc:    "Restore the previously active plan: powercfg /setactive <captured GUID>",
-			Risk:        types.RiskLow,
-			NeedsAdmin:  true,
-			NeedsReboot: false,
-			Platform:    "windows",
-			Category:    "power",
-			RelatedFind: "Power plan is not set to High performance",
-		},
-		{
-			ID:          "disable-hags",
-			Title:       "Disable Hardware-Accelerated GPU Scheduling (HAGS)",
-			Description: "Sets " + hagsValue.String() + " to 1 (off). HAGS can cause stutter or instability with some games and driver versions. Takes effect after a reboot.",
-			DryRunDesc:  "Would run: " + cmdString("reg", hagsValue.addArgs("1")...) + " (after capturing the current value with reg query)",
-			UndoDesc:    "Restore the captured HwSchMode value with reg add, or delete the value with reg delete if it did not exist before (removing the key too if apply had to create it and it is otherwise empty). Reboot required.",
-			Risk:        types.RiskMedium,
-			NeedsAdmin:  true,
-			NeedsReboot: true,
-			Platform:    "windows",
-			Category:    "registry",
-			RelatedFind: "HAGS is enabled",
-		},
-		{
-			ID:          "disable-game-mode",
-			Title:       "Disable Windows Game Mode",
-			Description: "Sets " + gameModeValue.String() + " to 0. Game Mode can cause frame pacing issues in some titles.",
-			DryRunDesc:  "Would run: " + cmdString("reg", gameModeValue.addArgs("0")...) + " (after capturing the current value with reg query)",
-			UndoDesc:    "Restore the captured AutoGameModeEnabled value with reg add, or delete the value with reg delete if it did not exist before (removing the key too if apply had to create it and it is otherwise empty).",
-			Risk:        types.RiskLow,
-			NeedsAdmin:  false,
-			NeedsReboot: false,
-			Platform:    "windows",
-			Category:    "registry",
-			RelatedFind: "Game Mode is enabled",
-		},
-	}
-}
-
-// parsePowerSchemeGUID extracts the power scheme GUID from the output of
-// "powercfg /getactivescheme". Expected format:
-//
-//	Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)
-func parsePowerSchemeGUID(output string) string {
-	marker := "GUID: "
-	idx := strings.Index(output, marker)
-	if idx == -1 {
-		return ""
-	}
-	fields := strings.Fields(output[idx+len(marker):])
-	if len(fields) == 0 || !guidPattern.MatchString(fields[0]) {
-		return ""
-	}
-	return strings.ToLower(fields[0])
-}
-
-// parsePowerSchemeName extracts the parenthesised plan name, e.g. "(Balanced)",
-// from "powercfg /getactivescheme" output. Returns "" when absent.
-func parsePowerSchemeName(output string) string {
-	start := strings.Index(output, "(")
-	end := strings.LastIndex(output, ")")
-	if start == -1 || end <= start {
-		return ""
-	}
-	return output[start : end+1]
-}
-
-// parseRegDwordValue extracts a DWORD value from "reg query" output and returns
-// it as a decimal string. Expected format:
-//
-//	HwSchMode    REG_DWORD    0x2
-//
-// reg.exe prints DWORDs in hex; converting to decimal keeps the recorded value
-// unambiguous ("0x10" must not be replayed as decimal 10).
-func parseRegDwordValue(output, valueName string) string {
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 || fields[0] != valueName {
-			continue
-		}
-		raw := fields[len(fields)-1]
-		var (
-			v   uint64
-			err error
-		)
-		if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
-			v, err = strconv.ParseUint(raw[2:], 16, 32)
-		} else {
-			v, err = strconv.ParseUint(raw, 10, 32)
-		}
-		if err != nil {
-			return ""
-		}
-		return strconv.FormatUint(v, 10)
-	}
-	return ""
+	return catalogForPlatform("windows")
 }

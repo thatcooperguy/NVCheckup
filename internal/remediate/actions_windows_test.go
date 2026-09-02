@@ -389,38 +389,6 @@ func TestPreview_SetHighPerformance_ShowsCapturedGUID(t *testing.T) {
 	}
 }
 
-func TestParseRegDwordValue(t *testing.T) {
-	cases := map[string]string{
-		hagsQueryOutput:                            "2",
-		"    HwSchMode    REG_DWORD    0x10":       "16",
-		"    HwSchMode    REG_DWORD    0xffffffff": "4294967295",
-		"    HwSchMode    REG_DWORD    7":          "7",
-		"    HwSchModeX   REG_DWORD    0x2":        "",
-		"    HwSchMode    REG_DWORD    0xZZ":       "",
-		"":                                         "",
-	}
-	for in, want := range cases {
-		if got := parseRegDwordValue(in, "HwSchMode"); got != want {
-			t.Errorf("parseRegDwordValue(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestParsePowerScheme(t *testing.T) {
-	if got := parsePowerSchemeGUID(balancedSchemeOutput); got != "381b4222-f694-41f0-9685-ff5bb260df2e" {
-		t.Errorf("GUID = %q", got)
-	}
-	if got := parsePowerSchemeGUID("Power Scheme GUID: 8C5E7FDA-E8BF-4A96-9A85-A6E23A8C635C  (High performance)"); got != highPerformanceGUID {
-		t.Errorf("GUID should be lower-cased, got %q", got)
-	}
-	if got := parsePowerSchemeGUID("Power Scheme GUID: not-a-guid (x)"); got != "" {
-		t.Errorf("invalid GUID should be rejected, got %q", got)
-	}
-	if got := parsePowerSchemeName(balancedSchemeOutput); got != "(Balanced)" {
-		t.Errorf("name = %q", got)
-	}
-}
-
 func TestRegListingParsers(t *testing.T) {
 	if !regListingHasValue(hagsKeyListingWithValue, "HwSchMode") {
 		t.Error("listing with HwSchMode should report the value")

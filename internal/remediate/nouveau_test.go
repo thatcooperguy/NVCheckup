@@ -2,6 +2,7 @@ package remediate
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -166,5 +167,38 @@ func TestIsNvidiaDriverPackage(t *testing.T) {
 		if isNvidiaDriverPackage(n) {
 			t.Errorf("isNvidiaDriverPackage(%q) should be false", n)
 		}
+	}
+}
+
+func TestCheckNouveauRestorable(t *testing.T) {
+	if err := checkNouveauRestorable(nouveauBlacklistContent); err != nil {
+		t.Errorf("our own content must be restorable, got %v", err)
+	}
+	if err := checkNouveauRestorable("blacklist nouveau\n"); err != nil {
+		t.Errorf("a plain blacklist line must be restorable, got %v", err)
+	}
+	if err := checkNouveauRestorable("install nouveau /bin/true\n"); err == nil {
+		t.Error("foreign directives must not be restorable")
+	}
+	if err := checkNouveauRestorable(""); err == nil {
+		t.Error("empty content must not be restorable")
+	}
+
+	// Valid line by line, but too large for the journal's undo limit.
+	var b strings.Builder
+	for b.Len() <= maxUndoInfoBytes {
+		b.WriteString("# padding comment line that is perfectly valid on its own\n")
+	}
+	err := checkNouveauRestorable(b.String())
+	if err == nil {
+		t.Fatalf("%d bytes of content must exceed the %d-byte undo limit", b.Len(), maxUndoInfoBytes)
+	}
+	if !strings.Contains(err.Error(), "undo limit") {
+		t.Errorf("error should name the undo limit, got %v", err)
+	}
+	// The same content must be rejected by the journal gate, so apply can
+	// never record something undo would later refuse.
+	if validateUndoInfo("blacklist-nouveau", b.String()) == nil {
+		t.Error("validateUndoInfo must reject oversized content too")
 	}
 }
