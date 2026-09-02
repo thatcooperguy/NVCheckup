@@ -68,8 +68,11 @@ func Run() int {
 		results = append(results, checkModinfo())
 	}
 
-	// Print results
-	okCount, warnCount, failCount := 0, 0, 0
+	// Print results. INFO rows are context only: they are rendered but do not
+	// count towards the exit code, so a healthy machine that simply is not
+	// running as Administrator still exits 0.
+	okCount, infoCount, warnCount, failCount := 0, 0, 0, 0
+	toolMissing := false
 	for _, r := range results {
 		icon := "  "
 		switch r.Status {
@@ -78,33 +81,60 @@ func Run() int {
 			okCount++
 		case "INFO":
 			icon = "INFO"
+			infoCount++
 		case "WARN":
 			icon = "WARN"
 			warnCount++
+			if concernsTool(r) {
+				toolMissing = true
+			}
 		case "FAIL":
 			icon = "FAIL"
 			failCount++
+			if concernsTool(r) {
+				toolMissing = true
+			}
 		}
 		fmt.Printf("  [%s] %-30s %s\n", icon, r.Name, r.Detail)
 	}
 
 	fmt.Println()
 	fmt.Println(strings.Repeat("─", 50))
-	fmt.Printf("  Results: %d OK, %d WARN, %d FAIL\n", okCount, warnCount, failCount)
+	fmt.Printf("  Results: %d OK, %d INFO, %d WARN, %d FAIL\n", okCount, infoCount, warnCount, failCount)
 	fmt.Println()
 
-	if failCount > 0 {
+	switch {
+	case failCount > 0:
 		fmt.Println("  Some checks failed. NVCheckup will still run but may produce")
 		fmt.Println("  incomplete results. See details above.")
 		return types.ExitCritical
-	}
-	if warnCount > 0 {
-		fmt.Println("  Some optional tools are missing. NVCheckup will work but some")
-		fmt.Println("  checks may be skipped.")
+	case warnCount > 0 && toolMissing:
+		fmt.Println("  Some optional tools are missing or not working. NVCheckup will")
+		fmt.Println("  run but the checks that depend on them will be skipped.")
+		return types.ExitWarnings
+	case warnCount > 0:
+		fmt.Println("  Some checks reported warnings. NVCheckup will run but the")
+		fmt.Println("  affected data may be incomplete. See details above.")
 		return types.ExitWarnings
 	}
 	fmt.Println("  All checks passed. NVCheckup is ready to run.")
 	return types.ExitOK
+}
+
+// toolChecks names the checks that verify an external tool is present and
+// usable, so the footer only talks about "missing tools" when one of them
+// actually warned or failed.
+var toolChecks = map[string]bool{
+	"nvidia-smi": true,
+	"Python":     true,
+	"PowerShell": true,
+	"lspci":      true,
+	"modinfo":    true,
+}
+
+// concernsTool reports whether a check result is about an external tool.
+func concernsTool(r CheckResult) bool {
+	return toolChecks[r.Name]
 }
 
 func checkOS() CheckResult {
@@ -156,7 +186,7 @@ func checkNvidiaSmi() CheckResult {
 }
 
 // checkNvidiaSmiQueries runs every --query-gpu field list the collectors use
-// and reports the driver stderr when one is rejected.
+// and reports the driver's reason when one is rejected.
 func checkNvidiaSmiQueries() []CheckResult {
 	checks := []queryCheck{
 		{"nvidia-smi gpu query", common.GPUQueryFields},
@@ -175,14 +205,10 @@ func checkNvidiaSmiQueries() []CheckResult {
 func runQueryCheck(name, fields string) CheckResult {
 	r := util.RunCommand(10, "nvidia-smi", "--query-gpu="+fields, "--format=csv,noheader,nounits")
 	if r.Err != nil {
-		detail := strings.TrimSpace(r.Stderr)
-		if detail == "" {
-			detail = r.Err.Error()
-		}
 		return CheckResult{
 			Name:   name,
 			Status: "WARN",
-			Detail: fmt.Sprintf("Rejected (exit %d): %s", r.ExitCode, firstLine(detail)),
+			Detail: fmt.Sprintf("Rejected (exit %d): %s", r.ExitCode, failureDetail(r)),
 		}
 	}
 	return CheckResult{
@@ -200,7 +226,7 @@ func checkClockEventQuery() CheckResult {
 	if r.Err == nil {
 		return CheckResult{Name: name, Status: "OK", Detail: common.ThermalEventQueryFields + " accepted"}
 	}
-	modernErr := firstLine(strings.TrimSpace(r.Stderr))
+	modernErr := failureDetail(r)
 	r = util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ThermalEventQueryFieldsLegacy, "--format=csv,noheader")
 	if r.Err == nil {
 		return CheckResult{
@@ -209,20 +235,35 @@ func checkClockEventQuery() CheckResult {
 			Detail: fmt.Sprintf("Legacy field %s in use (%s rejected: %s)", common.ThermalEventQueryFieldsLegacy, common.ThermalEventQueryFields, modernErr),
 		}
 	}
-	detail := strings.TrimSpace(r.Stderr)
-	if detail == "" {
-		detail = r.Err.Error()
-	}
 	return CheckResult{
 		Name:   name,
 		Status: "WARN",
-		Detail: fmt.Sprintf("Both field names rejected (exit %d): %s", r.ExitCode, firstLine(detail)),
+		Detail: fmt.Sprintf("Both field names rejected (exit %d): %s", r.ExitCode, failureDetail(r)),
 	}
 }
 
+// failureDetail returns a one-line reason for a failed command: the first
+// non-empty of trimmed stderr, the first line of stdout, and the Go error.
+// nvidia-smi prints 'Field "x" is not a valid field to query.' to STDOUT with
+// exit 2 and an empty stderr, so looking at stderr alone loses the reason.
+func failureDetail(r util.CommandResult) string {
+	if s := firstLine(strings.TrimSpace(r.Stderr)); s != "" {
+		return s
+	}
+	if s := firstLine(strings.TrimSpace(r.Stdout)); s != "" {
+		return s
+	}
+	if r.Err != nil {
+		return r.Err.Error()
+	}
+	return fmt.Sprintf("exit %d", r.ExitCode)
+}
+
 // checkElevation reports whether the process is elevated and which checks
-// degrade otherwise. Elevated is INFO (nothing to act on); not elevated is WARN
-// because several Windows collectors return partial data without it.
+// degrade otherwise. Both outcomes are INFO: running unelevated is the normal
+// state for most users and nothing is broken, it just means a few collectors
+// return partial data. Reporting it as WARN made self-test exit 1 on every
+// healthy non-admin machine.
 func checkElevation() CheckResult {
 	const name = "Elevation"
 	if isElevated() {
@@ -236,8 +277,8 @@ func checkElevation() CheckResult {
 	}
 	return CheckResult{
 		Name:   name,
-		Status: "WARN",
-		Detail: "Not elevated: " + degraded,
+		Status: "INFO",
+		Detail: "Not elevated: " + degraded + " (re-run as Administrator/root for full coverage)",
 	}
 }
 

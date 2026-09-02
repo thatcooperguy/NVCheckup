@@ -193,19 +193,21 @@ func screenRefresh(s screenInfo, adapter wmiVideoController) int {
 }
 
 // pickAdapter chooses the adapter that supplies GPUIndex and the fallback
-// refresh rate: the first NVIDIA adapter, else the first adapter with a mode set.
-// Win32_VideoController has no link to \\.\DISPLAYn, so on multi-GPU systems
-// every monitor is attributed to the first NVIDIA GPU (gpuIndex 0), which
-// matches nvidia-smi ordering for the single-vendor case.
+// refresh rate: the first NVIDIA adapter, else the first adapter with a mode
+// set, else the first adapter at all. The returned index is the ordinal of the
+// controller actually chosen in ctls (Win32_VideoController order), so a
+// monitor driven by a non-NVIDIA adapter at position 1 is not mis-attributed
+// to GPU 0. Win32_VideoController has no link to \\.\DISPLAYn, so on
+// multi-GPU systems every monitor is attributed to that one adapter.
 func pickAdapter(ctls []wmiVideoController) (wmiVideoController, int) {
-	for _, ctl := range ctls {
+	for i, ctl := range ctls {
 		if isNvidiaAdapter(ctl) {
-			return ctl, 0
+			return ctl, i
 		}
 	}
-	for _, ctl := range ctls {
+	for i, ctl := range ctls {
 		if ctl.CurrentRefreshRate > 0 {
-			return ctl, 0
+			return ctl, i
 		}
 	}
 	if len(ctls) > 0 {

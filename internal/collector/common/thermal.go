@@ -86,7 +86,7 @@ func CollectThermalInfo(timeout int) (types.ThermalInfo, []types.CollectorError)
 	if r.Err != nil {
 		errs = append(errs, types.CollectorError{
 			Collector: "thermal.query",
-			Error:     fmt.Sprintf("nvidia-smi thermal query failed: %v (%s)", r.Err, strings.TrimSpace(r.Stderr)),
+			Error:     "nvidia-smi thermal query failed: " + commandFailureDetail(r),
 			Fatal:     true,
 		})
 		return info, errs
@@ -134,7 +134,7 @@ func queryThrottleMask(timeout int, errs *[]types.CollectorError) (string, bool)
 		if r.Err == nil {
 			return firstLine(r.Stdout), true
 		}
-		lastErr = fmt.Sprintf("%s: %v (%s)", f, r.Err, strings.TrimSpace(r.Stderr))
+		lastErr = f + ": " + commandFailureDetail(r)
 		if r.TimedOut {
 			break
 		}
@@ -278,6 +278,23 @@ func firstLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// commandFailureDetail returns a one-line reason for a failed command: the
+// first non-empty of trimmed stderr, the first line of stdout, and the Go
+// error. nvidia-smi prints 'Field "x" is not a valid field to query.' to
+// STDOUT with exit 2 and an empty stderr, so stderr alone loses the reason.
+func commandFailureDetail(r util.CommandResult) string {
+	if s := firstLine(r.Stderr); s != "" {
+		return s
+	}
+	if s := firstLine(r.Stdout); s != "" {
+		return s
+	}
+	if r.Err != nil {
+		return r.Err.Error()
+	}
+	return fmt.Sprintf("exit %d", r.ExitCode)
 }
 
 // isNotAvailable reports whether an nvidia-smi field is a placeholder such as

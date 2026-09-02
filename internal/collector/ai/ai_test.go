@@ -1,6 +1,12 @@
 package ai
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
+)
 
 const cudnn9Header = `/*
  * Copyright 2014-2024 NVIDIA Corporation.
@@ -52,4 +58,51 @@ func TestLastLine(t *testing.T) {
 	if got := lastLine("  \n"); got != "" {
 		t.Errorf("lastLine(blank) = %q", got)
 	}
+}
+
+func TestSelectPython(t *testing.T) {
+	// Store stub "python3" exists but fails the probe; "python" is absent;
+	// "py" works. The stub must be reported as tried, the absent one not.
+	probe := func(cmd string) (bool, bool) {
+		switch cmd {
+		case "python3":
+			return true, false
+		case "py":
+			return true, true
+		}
+		return false, false
+	}
+	python, tried := selectPython([]string{"python", "python3", "py"}, probe)
+	if python != "py" {
+		t.Errorf("selectPython = %q, want py", python)
+	}
+	if !reflect.DeepEqual(tried, []string{"python3"}) {
+		t.Errorf("tried = %v, want [python3]", tried)
+	}
+
+	// Nothing on PATH at all: no interpreter and nothing tried, so no error.
+	python, tried = selectPython([]string{"python3", "python"}, func(string) (bool, bool) { return false, false })
+	if python != "" || len(tried) != 0 {
+		t.Errorf("absent candidates: got %q / %v", python, tried)
+	}
+
+	// Candidates exist but none works (Python 2 only): all are reported.
+	python, tried = selectPython([]string{"python3", "python"}, func(string) (bool, bool) { return true, false })
+	if python != "" || !reflect.DeepEqual(tried, []string{"python3", "python"}) {
+		t.Errorf("broken candidates: got %q / %v", python, tried)
+	}
+}
+
+func TestNoWorkingPythonError(t *testing.T) {
+	err := noWorkingPythonError([]string{"python3", "py"})
+	if err.Collector != "ai.python" {
+		t.Errorf("Collector = %q, want ai.python", err.Collector)
+	}
+	if !strings.Contains(err.Error, "no working Python 3 interpreter (tried: python3, py)") {
+		t.Errorf("Error = %q", err.Error)
+	}
+	if err.Fatal {
+		t.Errorf("a missing Python must not be fatal for the ai collector")
+	}
+	var _ types.CollectorError = err
 }

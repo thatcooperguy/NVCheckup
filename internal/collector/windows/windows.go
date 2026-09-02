@@ -294,12 +294,15 @@ const noMatchingEventsFQID = "NoMatchingEventsFound"
 // 300 characters, which keeps the WHEA "Component:" and "Primary Device Name:"
 // fields the analyzer needs. TimeCreated is emitted in round-trip ("o") UTC
 // form so it parses unambiguously; the culture-formatted local string used
-// before was read as UTC and landed hours off.
+// before was read as UTC and landed hours off. Both the numeric Level and the
+// localized LevelDisplayName are emitted: the analyzer matches on the English
+// level names, so parseEventLines maps the number to canonical English and
+// only falls back to the display name when the number is missing.
 func eventQueryScript(filter string, maxEvents int) string {
 	return `$ErrorActionPreference = 'SilentlyContinue'; ` +
 		`$e = @(Get-WinEvent -FilterHashtable @{LogName='System'; ` + filter + `; StartTime=(Get-Date).AddDays(-` + strconv.Itoa(eventLookbackDays) + `)} -MaxEvents ` + strconv.Itoa(maxEvents) + `); ` +
 		`$e | ForEach-Object { $m = ([string]$_.Message) -replace '\r?\n', ' | '; if ($m.Length -gt 300) { $m = $m.Substring(0, 300) }; ` +
-		`"$($_.TimeCreated.ToUniversalTime().ToString('o'))|$($_.Id)|$($_.LevelDisplayName)|$m" }; ` +
+		`"$($_.TimeCreated.ToUniversalTime().ToString('o'))|$($_.Id)|$($_.Level)|$($_.LevelDisplayName)|$m" }; ` +
 		`$Error | Where-Object { $_.FullyQualifiedErrorId -notmatch '^` + noMatchingEventsFQID + `' -and $_.Exception.Message -notmatch 'No events were found' } | ForEach-Object { [Console]::Error.WriteLine($_.Exception.Message) }; ` +
 		`exit 0`
 }
@@ -355,9 +358,46 @@ func collectWHEAErrors(info *types.WindowsInfo, errs *[]types.CollectorError, ti
 	}
 }
 
-// parseEventLines parses "2026-09-01T18:33:15.9783373Z|17|Warning|message"
-// lines. The message may itself contain "|" (collapsed newlines), so the
-// split is limited to four fields.
+// eventLevelNames maps the numeric Windows event level to its canonical
+// English name. LevelDisplayName is localized ("Warnung", "Avertissement"),
+// which would defeat the analyzer's level matching on non-English Windows.
+var eventLevelNames = map[int64]string{
+	1: "Critical",
+	2: "Error",
+	3: "Warning",
+	4: "Information",
+	5: "Verbose",
+}
+
+// eventLevelName returns the canonical English level for a numeric level,
+// falling back to the (possibly localized) display name when the number is
+// absent or unknown.
+func eventLevelName(numeric, display string) string {
+	numeric = strings.TrimSpace(numeric)
+	if numeric != "" {
+		if name, ok := eventLevelNames[parseIntSafe(numeric)]; ok {
+			return name
+		}
+	}
+	return strings.TrimSpace(display)
+}
+
+// repeatedEventSeparatorRe matches two or more adjacent " | " separators,
+// which eventQueryScript produces from blank lines inside a message.
+var repeatedEventSeparatorRe = regexp.MustCompile(`( \| ){2,}`)
+
+// cleanEventMessage collapses repeated separators (" |  | " -> " | ") and
+// trims leading/trailing separators and whitespace, so a WHEA message reads
+// "A corrected hardware error has occurred. | Component: PCI Express Endpoint | ...".
+func cleanEventMessage(m string) string {
+	m = repeatedEventSeparatorRe.ReplaceAllString(m, " | ")
+	return strings.Trim(m, " |\t\r")
+}
+
+// parseEventLines parses "2026-09-01T18:33:15.9783373Z|17|3|Warning|message"
+// lines (time, id, numeric level, level display name, message). The message
+// may itself contain "|" (collapsed newlines), so the split is limited to five
+// fields.
 func parseEventLines(output string) []types.EventLogEntry {
 	var events []types.EventLogEntry
 	for _, line := range strings.Split(output, "\n") {
@@ -365,7 +405,7 @@ func parseEventLines(output string) []types.EventLogEntry {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 4)
+		parts := strings.SplitN(line, "|", 5)
 		if len(parts) < 2 {
 			continue
 		}
@@ -374,11 +414,16 @@ func parseEventLines(output string) []types.EventLogEntry {
 			Time:    parseEventTime(parts[0]),
 			EventID: int(parseIntSafe(parts[1])),
 		}
+		var numeric, display string
 		if len(parts) >= 3 {
-			entry.Level = strings.TrimSpace(parts[2])
+			numeric = parts[2]
 		}
 		if len(parts) >= 4 {
-			entry.Message = strings.TrimSpace(parts[3])
+			display = parts[3]
+		}
+		entry.Level = eventLevelName(numeric, display)
+		if len(parts) >= 5 {
+			entry.Message = cleanEventMessage(parts[4])
 		}
 		events = append(events, entry)
 	}

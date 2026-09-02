@@ -38,7 +38,7 @@ func CollectPCIeInfo(timeout int) (types.PCIeInfo, []types.CollectorError) {
 	if r.Err != nil {
 		errs = append(errs, types.CollectorError{
 			Collector: "pcie.query",
-			Error:     fmt.Sprintf("nvidia-smi PCIe query failed: %v (%s)", r.Err, strings.TrimSpace(r.Stderr)),
+			Error:     "nvidia-smi PCIe query failed: " + commandFailureDetail(r),
 			Fatal:     true,
 		})
 		return info, errs

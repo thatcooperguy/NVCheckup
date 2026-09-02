@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestParsePingTimesWindows(t *testing.T) {
@@ -295,9 +296,12 @@ func TestJitterFloat(t *testing.T) {
 }
 
 // fakeResolver returns an error for the first failures calls, then succeeds.
+// Each successful call sleeps delays[call] (when set) so the caller can check
+// which sample is picked as the reported figure.
 type fakeResolver struct {
 	failures int
 	calls    int
+	delays   []time.Duration
 }
 
 func (f *fakeResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -305,7 +309,48 @@ func (f *fakeResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPA
 	if f.calls <= f.failures {
 		return nil, errors.New("simulated SERVFAIL")
 	}
+	if i := f.calls - 1; i < len(f.delays) {
+		time.Sleep(f.delays[i])
+	}
 	return []net.IPAddr{{IP: net.IPv4(142, 250, 80, 46)}}, nil
+}
+
+func TestMaxFloat(t *testing.T) {
+	cases := []struct {
+		in   []float64
+		want float64
+	}{
+		{nil, 0},
+		{[]float64{0.5}, 0.5},
+		{[]float64{58.2, 0.5, 0.4}, 58.2},
+		{[]float64{0.4, 0.5, 58.2}, 58.2},
+	}
+	for _, c := range cases {
+		if got := maxFloat(c.in); got != c.want {
+			t.Errorf("maxFloat(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestMeasureDNSReportsWorstSample models the Windows cache pattern: the first
+// lookup is slow (uncached) and the next two are near-instant cache hits. The
+// reported figure must be the slow one, not the median of the cache hits.
+func TestMeasureDNSReportsWorstSample(t *testing.T) {
+	r := &fakeResolver{delays: []time.Duration{40 * time.Millisecond, 0, 0}}
+	samples, lastErr := measureDNS(context.Background(), r, "google.com", 3)
+	if lastErr != nil || len(samples) != 3 {
+		t.Fatalf("expected 3 clean samples, got %v / %v", samples, lastErr)
+	}
+	worst := maxFloat(samples)
+	if worst != samples[0] {
+		t.Errorf("worst sample should be the first (uncached) lookup: samples=%v", samples)
+	}
+	if worst < 30 {
+		t.Errorf("worst sample %.2f ms is below the 40 ms delay of the uncached lookup", worst)
+	}
+	if med := medianFloat(samples); med >= worst {
+		t.Errorf("median %.2f should be below the worst sample %.2f in this scenario", med, worst)
+	}
 }
 
 func TestMeasureDNS(t *testing.T) {
