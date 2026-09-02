@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Simulated dmidecode: answers `-s <keyword>` (several -s allowed) and `-t
+# system|bios|1|0` / no arguments from the scenario's "dmi" object
+# (spec docs/roadmap/spark-support.md 3.1 row 10: sys_vendor, product_name,
+# product_version, bios_version identify a Founders Edition vs OEM GB10).
+# Scenarios without "dmi" (rig3, Jetson-like) fail the way the real tool does
+# when SMBIOS is absent. Never calls the real dmidecode and needs no root.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+if ! sim_has dmi; then
+  echo "/sys/firmware/dmi/tables/smbios_entry_point: No such file or directory" >&2
+  echo "/dev/mem: No such file or directory" >&2
+  exit 1
+fi
+
+# dmidecode -s keyword -> scenario dmi.* key (spec 12 lists the keywords the field kit runs).
+key_for() {
+  case "$1" in
+    system-manufacturer|baseboard-manufacturer|chassis-manufacturer) echo sys_vendor ;;
+    system-product-name|baseboard-product-name) echo product_name ;;
+    system-version|baseboard-version) echo product_version ;;
+    bios-vendor) echo bios_vendor ;;
+    bios-version) echo bios_version ;;
+    bios-release-date) echo bios_date ;;
+    system-serial-number|baseboard-serial-number|chassis-serial-number|system-uuid|system-sku-number|system-family|processor-*|bios-revision|firmware-revision|chassis-*) echo none ;;
+    *) echo invalid ;;
+  esac
+}
+
+strings=()
+types=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -s|--string) strings+=("$2"); shift 2 ;;
+    --string=*) strings+=("${1#--string=}"); shift ;;
+    -t|--type) types+=("$2"); shift 2 ;;
+    --type=*) types+=("${1#--type=}"); shift ;;
+    -q|--quiet|-u|--dump) shift ;;
+    *) echo "dmidecode: unrecognized option '$1'" >&2; exit 2 ;;
+  esac
+done
+
+if [ ${#strings[@]} -gt 0 ]; then
+  for s in "${strings[@]}"; do
+    k="$(key_for "$s")"
+    case "$k" in
+      invalid) echo "Invalid string keyword: $s" >&2; exit 1 ;;
+      none) echo "Not Specified" ;;   # the scenario carries no serials or UUIDs (spec 12: capture on hardware, redacted)
+      *) sim_get "dmi.$k" "" ;;
+    esac
+  done
+  exit 0
+fi
+
+want_bios=1; want_sys=1
+if [ ${#types[@]} -gt 0 ]; then
+  want_bios=0; want_sys=0
+  for t in "${types[@]}"; do
+    case "$t" in bios|0) want_bios=1 ;; system|1) want_sys=1 ;; esac
+  done
+fi
+echo "# dmidecode 3.5"
+echo "Getting SMBIOS data from sysfs."
+echo "SMBIOS 3.6.0 present."
+echo
+if [ "$want_bios" = 1 ]; then
+  printf 'Handle 0x0000, DMI type 0, 26 bytes\nBIOS Information\n'
+  printf '\tVendor: %s\n' "$(sim_get dmi.bios_vendor "")"
+  printf '\tVersion: %s\n' "$(sim_get dmi.bios_version "")"
+  printf '\tRelease Date: %s\n\n' "$(sim_get dmi.bios_date "")"
+fi
+if [ "$want_sys" = 1 ]; then
+  printf 'Handle 0x0001, DMI type 1, 27 bytes\nSystem Information\n'
+  printf '\tManufacturer: %s\n' "$(sim_get dmi.sys_vendor "")"
+  printf '\tProduct Name: %s\n' "$(sim_get dmi.product_name "")"
+  printf '\tVersion: %s\n' "$(sim_get dmi.product_version "")"
+  printf '\tSerial Number: Not Specified\n\n'
+fi

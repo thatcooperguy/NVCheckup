@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Simulated lscpu: prints the scenario's "lscpu_lines" verbatim (spec
+# docs/roadmap/spark-support.md 3.1, last paragraph: on arm64 /proc/cpuinfo has
+# no "model name", so the CPU model comes from lscpu "Model name:" lines;
+# GB10 = Cortex-X925 + Cortex-A725, Vendor ID ARM, Stepping r0p1, CPU(s) 20).
+# Scenarios without lscpu_lines get a minimal block so the caller still parses
+# something; the real lscpu is never called. Flags are accepted and ignored.
+. "$(dirname "$0")/nvc-sim-lib.sh"
+
+if sim_has lscpu_lines; then
+  sim_lines lscpu_lines
+  exit 0
+fi
+sim_py - <<'PY'
+import os, platform
+print("Architecture:             %s" % (platform.machine() or "unknown"))
+print("CPU(s):                   %s" % (os.cpu_count() or 1))
+print("Model name:               simulated CPU (scenario has no lscpu_lines)")
+PY
