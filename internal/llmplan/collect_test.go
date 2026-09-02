@@ -3,6 +3,7 @@ package llmplan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestSimRoot_ReadMeminfoAndPorts(t *testing.T) {
 
 	// DerivePool without a unified-memory struct falls back to the sim meminfo.
 	r := &types.Report{GPUs: []types.GPUInfo{{Name: "NVIDIA GB10", IsNVIDIA: true, MemoryReporting: "not-supported"}}}
-	pool, _ := DerivePool(r, "linux", 5, 0)
+	pool, _ := DerivePool(r, "linux", 5, 0, false)
 	if !pool.Unified || !strings.Contains(pool.Source, "/proc/meminfo") {
 		t.Errorf("pool from sim meminfo = %+v", pool)
 	}
@@ -114,7 +115,7 @@ func TestDerivePool_Sources(t *testing.T) {
 	t.Setenv("NVC_SIM_ROOT", "")
 	// 1. report.UnifiedMemory wins.
 	r := gb10Report()
-	pool, _ := DerivePool(r, "linux", 5, 0)
+	pool, _ := DerivePool(r, "linux", 5, 0, false)
 	if !pool.Unified || !strings.Contains(pool.Source, "report.unified_memory") {
 		t.Errorf("unified source = %+v", pool.Source)
 	}
@@ -125,7 +126,7 @@ func TestDerivePool_Sources(t *testing.T) {
 		System: types.SystemInfo{RAMTotalMB: 65536},
 		GPUs:   []types.GPUInfo{{Name: "NVIDIA GeForce RTX 4090", IsNVIDIA: true, VRAMTotalMB: 24564, VRAMFreeMB: 23000, MemoryReporting: "dedicated"}},
 	}
-	pool, notes := DerivePool(d, "windows", 5, 0)
+	pool, notes := DerivePool(d, "windows", 5, 0, false)
 	if !pool.Discrete || pool.Unified || !strings.Contains(pool.Source, "RTX 4090") || pool.TotalBytes != 24564*1024*1024 {
 		t.Errorf("discrete pool = %+v", pool)
 	}
@@ -138,7 +139,7 @@ func TestDerivePool_Sources(t *testing.T) {
 		System: types.SystemInfo{RAMTotalMB: 130000},
 		GPUs:   []types.GPUInfo{{Name: "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)", IsNVIDIA: true}},
 	}
-	pool, _ = DerivePool(w, "darwin", 5, 0) // darwin: neither /proc/meminfo nor CIM is tried
+	pool, _ = DerivePool(w, "darwin", 5, 0, false) // darwin: neither /proc/meminfo nor CIM is tried
 	if !pool.Unified || !strings.Contains(pool.Source, "ram_total_mb") {
 		t.Errorf("fallback pool = %+v", pool)
 	}
@@ -147,9 +148,33 @@ func TestDerivePool_Sources(t *testing.T) {
 	}
 
 	// 4. --memory-gib overrides the total and labels the source.
-	pool, _ = DerivePool(r, "linux", 5, 64)
+	pool, _ = DerivePool(r, "linux", 5, 64, false)
 	if GiBf(pool.TotalBytes) != 64 || !strings.Contains(pool.Source, "--memory-gib") {
 		t.Errorf("override pool = %+v", pool)
+	}
+
+	// 5. Offline (--report) with no memory figure: this host is never queried,
+	// whatever OS it runs, and the note asks for --memory-gib.
+	pool, notes = DerivePool(&types.Report{}, runtime.GOOS, 5, 0, true)
+	if pool.TotalBytes != 0 || pool.Source != "" {
+		t.Errorf("offline pool must stay empty, got %+v", pool)
+	}
+	if joined := strings.Join(notes, " "); !strings.Contains(joined, "--memory-gib") || !strings.Contains(joined, "saved report") {
+		t.Errorf("offline notes = %v", notes)
+	}
+	// The saved report's own RAM figure is still used offline.
+	pool, _ = DerivePool(&types.Report{System: types.SystemInfo{RAMTotalMB: 65536}}, runtime.GOOS, 5, 0, true)
+	if !strings.Contains(pool.Source, "ram_total_mb") {
+		t.Errorf("offline pool must use the report's ram_total_mb, got %+v", pool)
+	}
+}
+
+func TestPlatformLabel_Empty(t *testing.T) {
+	if l := PlatformLabel(&types.Report{}); l != "unknown" {
+		t.Errorf("empty report label = %q, want unknown", l)
+	}
+	if l := PlatformLabel(nil); l != "unknown" {
+		t.Errorf("nil report label = %q, want unknown", l)
 	}
 }
 

@@ -35,6 +35,7 @@ type Options struct {
 	Nodes       int
 	Timeout     int
 	GOOS        string // defaults to runtime.GOOS
+	Offline     bool   // --report: size the saved report, never query this host for memory
 }
 
 // Profiles and their design defaults (spec 7.1 profiles; agent contexts of

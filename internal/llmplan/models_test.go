@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -149,6 +150,9 @@ func TestParseHFConfig(t *testing.T) {
 	}
 	if m.HeadDim != 128 || m.KVHeads != 8 || m.Layers != 32 || m.KVBytesPerToken(2) != 131072 {
 		t.Errorf("shape from config.json = %+v", m)
+	}
+	if strings.Contains(m.Name, filepath.Dir(path)) || !strings.Contains(m.Name, "config.json") {
+		t.Errorf("model name must carry only the base name of --hf-config, got %q", m.Name)
 	}
 	if m.DefaultQuant != "fp8" || m.OllamaArch != "llama" || m.Vocab != 128256 {
 		t.Errorf("quant/arch/vocab from config.json = %s %s %d", m.DefaultQuant, m.OllamaArch, m.Vocab)

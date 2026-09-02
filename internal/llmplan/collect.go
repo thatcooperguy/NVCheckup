@@ -270,6 +270,9 @@ func PlatformLabel(r *types.Report) string {
 			return g.Name
 		}
 	}
+	if r.System.OSName == "" {
+		return "unknown"
+	}
 	return r.System.OSName
 }
 
@@ -278,7 +281,9 @@ func PlatformLabel(r *types.Report) string {
 // NVC_SIM_ROOT), then TotalVisibleMemorySize on Windows, then the system
 // collector's RAM total. It never reads nvidia-smi memory on unified
 // platforms (spec 7.9). memoryGiB > 0 overrides the total (--memory-gib).
-func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64) (MemoryPool, []string) {
+// offline (--report) means the plan is for the machine the report was taken
+// on: the live /proc/meminfo and CIM fallbacks of this host are skipped.
+func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, offline bool) (MemoryPool, []string) {
 	var notes []string
 	unified := IsUnified(r)
 	var pool MemoryPool
@@ -304,7 +309,7 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64) (M
 			}
 		}
 	}
-	if !found && (goos == "linux" || os.Getenv("NVC_SIM_ROOT") != "") {
+	if !found && !offline && (goos == "linux" || os.Getenv("NVC_SIM_ROOT") != "") {
 		if p, err := readMeminfo(); err == nil {
 			pool = p
 			found = true
@@ -312,7 +317,7 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64) (M
 			notes = append(notes, "could not read /proc/meminfo: "+err.Error())
 		}
 	}
-	if !found && goos == "windows" {
+	if !found && !offline && goos == "windows" {
 		if p, err := windowsPool(timeout); err == nil {
 			pool = p
 			found = true
@@ -333,6 +338,8 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64) (M
 		if !found {
 			notes = append(notes, "MemAvailable unknown: only the design fit (W + KV + R + F <= pool) is evaluated.")
 		}
+	} else if !found && offline {
+		notes = append(notes, "the report has no memory figure and the live host is not queried for a saved report; pass --memory-gib N to size against a pool.")
 	} else if !found {
 		notes = append(notes, "no memory source available; pass --memory-gib N to size against a pool.")
 	}

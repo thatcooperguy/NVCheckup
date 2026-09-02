@@ -36,6 +36,25 @@ func TestParseLLMPlanFlags(t *testing.T) {
 	if _, _, err = parseLLMPlanFlags([]string{"--model", "8b", "extra"}, &stderr); err == nil {
 		t.Error("positional arguments must be rejected")
 	}
+	// Out-of-range numbers are errors, not silently ignored.
+	for _, bad := range [][]string{
+		{"--model", "8b", "--memory-gib", "-5"},
+		{"--model", "8b", "--memory-gib", "0"},
+		{"--model", "8b", "--headroom-gib", "-3"},
+		{"--model", "8b", "--headroom-gib", "-1"},
+		{"--model", "8b", "--concurrency", "-1"},
+		{"--model", "8b", "--nodes", "0"},
+		{"--model", "8b", "--nodes", "3"},
+		{"--model", "8b", "--timeout", "0"},
+	} {
+		if _, _, err := parseLLMPlanFlags(bad, &stderr); err == nil {
+			t.Errorf("%v must be rejected", bad)
+		}
+	}
+	o, _, err = parseLLMPlanFlags([]string{"--model", "8b", "--memory-gib", "64", "--headroom-gib", "0"}, &stderr)
+	if err != nil || o.MemoryGiB != 64 || o.HeadroomGiB != 0 {
+		t.Errorf("valid --memory-gib/--headroom-gib rejected: %v %+v", err, o)
+	}
 }
 
 func TestRunLLMPlan_NonInteractiveNeedsModel(t *testing.T) {

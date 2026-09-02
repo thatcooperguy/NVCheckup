@@ -98,15 +98,22 @@ func Prompt(r *bufio.Reader, w io.Writer, o *Options) error {
 		o.Quant = ans
 	}
 
-	// 3. Profile -> defaults for context and concurrency
+	// 3. Profile -> defaults for context and concurrency. A blank answer keeps
+	// the profile already set (--profile), else chat.
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "3. Workload profile?")
-	fmt.Fprintln(w, "   a) chat  (8K context, 1 stream; default)")
+	if o.Profile == "" {
+		o.Profile = "chat"
+	}
+	fmt.Fprintf(w, "3. Workload profile? (default %s)\n", o.Profile)
+	fmt.Fprintln(w, "   a) chat  (8K context, 1 stream)")
 	fmt.Fprintln(w, "   b) agent (32K context, 4 streams = 1 + 3 subagents)")
 	fmt.Fprintln(w, "   c) batch (4K context, 8 streams)")
 	fmt.Fprintln(w, "   d) rag   (32K context, 1 stream)")
 	fmt.Fprint(w, "   > ")
-	switch strings.ToLower(readLine(r)) {
+	switch ans = strings.ToLower(readLine(r)); ans {
+	case "":
+	case "a", "chat":
+		o.Profile = "chat"
 	case "b", "agent":
 		o.Profile = "agent"
 	case "c", "batch":
@@ -114,9 +121,12 @@ func Prompt(r *bufio.Reader, w io.Writer, o *Options) error {
 	case "d", "rag":
 		o.Profile = "rag"
 	default:
-		o.Profile = "chat"
+		return fmt.Errorf("unknown profile %q", ans)
 	}
-	def := profileDefaults[o.Profile]
+	def, ok := profileDefaults[o.Profile]
+	if !ok {
+		return fmt.Errorf("unknown profile %q", o.Profile)
+	}
 
 	// 4. Context
 	fmt.Fprintln(w)
@@ -153,20 +163,31 @@ func Prompt(r *bufio.Reader, w io.Writer, o *Options) error {
 		o.Runtime = ans
 	}
 
-	// 7. Target
+	// 7. Target. A blank answer keeps the node count already set (--nodes).
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "7. Target?")
-	fmt.Fprintln(w, "   a) this single node (default)")
-	fmt.Fprintln(w, "   b) a cluster of two Sparks over ConnectX-7")
+	fmt.Fprintf(w, "   a) this single node%s\n", defaultMark(o.Nodes != 2))
+	fmt.Fprintf(w, "   b) a cluster of two Sparks over ConnectX-7%s\n", defaultMark(o.Nodes == 2))
 	fmt.Fprint(w, "   > ")
-	switch strings.ToLower(readLine(r)) {
+	switch ans = strings.ToLower(readLine(r)); ans {
+	case "":
+	case "a", "1", "single", "node":
+		o.Nodes = 1
 	case "b", "2", "cluster":
 		o.Nodes = 2
 	default:
-		o.Nodes = 1
+		return fmt.Errorf("unknown target %q", ans)
 	}
 	fmt.Fprintln(w)
 	return nil
+}
+
+// defaultMark labels the option a blank answer keeps.
+func defaultMark(isDefault bool) string {
+	if isDefault {
+		return " (default)"
+	}
+	return ""
 }
 
 func promptCustom(r *bufio.Reader, w io.Writer, o *Options) error {
@@ -216,7 +237,7 @@ func RunWithReport(r *bufio.Reader, w io.Writer, report *types.Report, goos stri
 		fmt.Fprintf(w, "Error: %v\n", err)
 		return types.ExitError
 	}
-	pool, notes := DerivePool(report, goos, o.Timeout, o.MemoryGiB)
+	pool, notes := DerivePool(report, goos, o.Timeout, o.MemoryGiB, o.Offline)
 	ports, known := ListeningPorts(report, goos)
 	p, err := Build(report, pool, ports, known, o)
 	if err != nil {

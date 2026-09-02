@@ -164,7 +164,7 @@ type ClusterFacts struct {
 // image,command,env}).
 type Command struct {
 	Runtime     Runtime  `json:"name"`
-	Image       string   `json:"image,omitempty"`
+	Image       string   `json:"image"`                 // "" for llama.cpp / Ollama; the key is always present (spec 7.8)
 	Build       string   `json:"build,omitempty"`       // llama.cpp cmake line
 	Command     string   `json:"command"`               // the exact command to run (one line)
 	Extra       []string `json:"extra,omitempty"`       // additional files/lines (cfg.yaml content, systemctl edit body)

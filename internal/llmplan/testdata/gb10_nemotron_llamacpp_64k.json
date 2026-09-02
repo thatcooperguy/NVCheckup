@@ -68,6 +68,7 @@
   },
   "runtime": {
     "name": "llamacpp",
+    "image": "",
     "build": "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real",
     "command": "llama-server -hf {repo}:{quant} --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 65536 -np 2 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja",
     "env": [],

@@ -115,7 +115,14 @@ func TestRender_Order(t *testing.T) {
 }
 
 func TestRenderJSON_Schema(t *testing.T) {
-	p := buildGolden(t, goldenCases()[0])
+	// Case 0 is vLLM (container image), case 3 llama.cpp (no image): every
+	// spec 7.8 key must be present in both, image included.
+	for _, idx := range []int{0, 3} {
+		testRenderJSONSchema(t, buildGolden(t, goldenCases()[idx]))
+	}
+}
+
+func testRenderJSONSchema(t *testing.T, p *Plan) {
 	js, err := RenderJSON(p)
 	if err != nil {
 		t.Fatal(err)

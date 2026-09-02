@@ -77,11 +77,33 @@ func parseLLMPlanFlags(args []string, stderr io.Writer) (llmplan.Options, llmPla
 		}
 		o.Context = n
 	}
+	var memorySet, headroomSet bool
 	fs.Visit(func(fl *flag.Flag) {
-		if fl.Name == "out" {
+		switch fl.Name {
+		case "out":
 			f.outSet = true
+		case "memory-gib":
+			memorySet = true
+		case "headroom-gib":
+			headroomSet = true
 		}
 	})
+	// Out-of-range numbers are errors (exit 3), never silently ignored.
+	if memorySet && o.MemoryGiB <= 0 {
+		return o, f, fmt.Errorf("--memory-gib must be > 0 (got %g)", o.MemoryGiB)
+	}
+	if headroomSet && o.HeadroomGiB < 0 {
+		return o, f, fmt.Errorf("--headroom-gib must be >= 0 (got %g)", o.HeadroomGiB)
+	}
+	if o.Concurrency < 0 {
+		return o, f, fmt.Errorf("--concurrency must be > 0 (got %d)", o.Concurrency)
+	}
+	if o.Nodes < 1 || o.Nodes > 2 {
+		return o, f, fmt.Errorf("--nodes must be 1 or 2 (got %d)", o.Nodes)
+	}
+	if o.Timeout <= 0 {
+		return o, f, fmt.Errorf("--timeout must be > 0 (got %d)", o.Timeout)
+	}
 	return o, f, nil
 }
 
@@ -134,6 +156,7 @@ func runLLMPlan(args []string, stdin io.Reader, stdout, stderr io.Writer, intera
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return types.ExitError
 		}
+		o.Offline = true // size the saved report, never the machine running llm-plan
 		switch report.Metadata.Platform {
 		case "linux", "wsl":
 			o.GOOS = "linux"
@@ -150,7 +173,7 @@ func runLLMPlan(args []string, stdin io.Reader, stdout, stderr io.Writer, intera
 		fmt.Fprintln(stdout)
 	}
 
-	pool, notes := llmplan.DerivePool(report, o.GOOS, o.Timeout, o.MemoryGiB)
+	pool, notes := llmplan.DerivePool(report, o.GOOS, o.Timeout, o.MemoryGiB, o.Offline)
 	ports, known := llmplan.ListeningPorts(report, o.GOOS)
 	plan, err := llmplan.Build(report, pool, ports, known, o)
 	if err != nil {

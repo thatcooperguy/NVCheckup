@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -376,8 +377,10 @@ func ParseHFConfig(path string, paramsB, activeB float64) (ModelShape, error) {
 	if len(c.Architectures) > 0 {
 		name = c.Architectures[0]
 	}
+	// Only the base name goes into the plan: the full path usually contains the
+	// home directory / user name and plan.* is not passed through internal/redact.
 	m := ModelShape{
-		ID: "hf-config", Name: fmt.Sprintf("%s (%s)", name, path),
+		ID: "hf-config", Name: fmt.Sprintf("%s (%s)", name, filepath.Base(path)),
 		ParamsB: paramsB, ActiveParamsB: activeB,
 		Layers: c.NumHiddenLayers, HiddenSize: c.HiddenSize, Heads: c.NumAttentionHeads,
 		KVHeads: kvHeads, HeadDim: headDim, Vocab: c.VocabSize,

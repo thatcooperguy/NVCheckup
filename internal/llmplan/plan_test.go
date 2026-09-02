@@ -173,6 +173,32 @@ func TestPrompt_DefaultsAndAnswers(t *testing.T) {
 	if o.Model != "llama-3.1-8b-instruct" || o.Profile != "chat" || o.Nodes != 1 || o.Quant != "" {
 		t.Errorf("default options = %+v", o)
 	}
+	// Flags given on the command line survive blank answers (--profile agent --nodes 2).
+	o = DefaultOptions()
+	o.Profile, o.Nodes = "agent", 2
+	if err := Prompt(bufio.NewReader(strings.NewReader("")), &out, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Profile != "agent" || o.Nodes != 2 || o.Model != "llama-3.1-8b-instruct" {
+		t.Errorf("blank answers must keep --profile/--nodes: %+v", o)
+	}
+	// An explicit answer still overrides them.
+	o = DefaultOptions()
+	o.Profile, o.Nodes = "agent", 2
+	if err := Prompt(bufio.NewReader(strings.NewReader("\n\na\n\n\n\na\n")), &out, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Profile != "chat" || o.Nodes != 1 {
+		t.Errorf("explicit answers must override --profile/--nodes: %+v", o)
+	}
+	o = DefaultOptions()
+	if err := Prompt(bufio.NewReader(strings.NewReader("\n\nz\n")), &out, &o); err == nil {
+		t.Error("unknown profile answer must fail")
+	}
+	o = DefaultOptions()
+	if err := Prompt(bufio.NewReader(strings.NewReader("\n\n\n\n\n\n3\n")), &out, &o); err == nil {
+		t.Error("unknown target answer must fail")
+	}
 	// Custom shape path.
 	o = DefaultOptions()
 	if err := Prompt(bufio.NewReader(strings.NewReader("c\n8.03\n\n32\n8\n128\n")), &out, &o); err != nil {
