@@ -239,6 +239,57 @@ func collectLinuxSystem(info *types.SystemInfo, errs *[]types.CollectorError, ti
 		info.BootMode = "Legacy/BIOS"
 		info.SecureBoot = "N/A"
 	}
+
+	// Jetson / Tegra: the GPU is integrated, not on PCIe, and nvidia-smi does
+	// not ship with JetPack, so the rest of the pipeline needs to know this is
+	// a healthy board rather than a desktop with a missing driver.
+	info.IsJetson, info.JetsonRelease = DetectJetson()
+}
+
+// tegraReleasePath is written by JetPack / L4T on every Jetson board.
+const tegraReleasePath = "/etc/nv_tegra_release"
+
+// deviceTreeModelPath holds the board model string on ARM device-tree
+// systems, e.g. "NVIDIA Jetson AGX Orin Developer Kit".
+const deviceTreeModelPath = "/proc/device-tree/model"
+
+// DetectJetson reports whether this host is an NVIDIA Jetson / Tegra board
+// and, when available, the L4T release line from /etc/nv_tegra_release. It
+// only reads two files, so it is safe to call from any collector on any OS
+// (both files are absent everywhere but Jetson).
+func DetectJetson() (isJetson bool, release string) {
+	return detectJetsonFrom(tegraReleasePath, deviceTreeModelPath)
+}
+
+// detectJetsonFrom is DetectJetson with injectable paths for tests.
+func detectJetsonFrom(releasePath, modelPath string) (isJetson bool, release string) {
+	if data, err := os.ReadFile(releasePath); err == nil {
+		isJetson = true
+		release = parseTegraRelease(string(data))
+	}
+	if data, err := os.ReadFile(modelPath); err == nil && isJetsonModel(data) {
+		isJetson = true
+	}
+	return isJetson, release
+}
+
+// parseTegraRelease returns the first non-empty line of /etc/nv_tegra_release,
+// trimmed, e.g. "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic,
+// EABI: aarch64, DATE: Wed Jan 8 01:49:37 UTC 2025".
+func parseTegraRelease(content string) string {
+	for _, l := range strings.Split(content, "\n") {
+		if t := strings.TrimSpace(strings.Trim(l, "\x00")); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// isJetsonModel reports whether a /proc/device-tree/model value (NUL
+// terminated) names an NVIDIA Jetson board.
+func isJetsonModel(model []byte) bool {
+	s := strings.TrimSpace(strings.Trim(string(model), "\x00"))
+	return strings.Contains(s, "NVIDIA Jetson")
 }
 
 func parseIntSafe(s string) int64 {

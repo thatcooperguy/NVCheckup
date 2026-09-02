@@ -53,6 +53,7 @@ func GenerateMarkdown(report *types.Report) string {
 	if len(report.GPUs) == 0 {
 		w("No GPUs detected.\n\n")
 	}
+	perGPU := perGPULines(report)
 	for _, gpu := range report.GPUs {
 		w("### GPU %d: %s\n\n", gpu.Index, mdCell(gpu.Name))
 		table()
@@ -67,14 +68,36 @@ func GenerateMarkdown(report *types.Report) string {
 		if gpu.WDDMVersion != "" {
 			row("WDDM", gpu.WDDMVersion)
 		}
+		if perGPU {
+			if p := pcieFor(report.GPUPCIe, gpu); p != nil {
+				row("PCIe", pcieSummaryFor(report.Findings, p))
+			}
+			if t := thermalFor(report.GPUThermal, gpu); t != nil {
+				row("Thermal", thermalSummary(t))
+			}
+		}
 		w("\n")
+	}
+	// Samples for indexes the inventory does not know are still shown.
+	if perGPU {
+		for _, idx := range unmatchedSampleIndexes(report) {
+			w("### GPU %d: (not in inventory)\n\n", idx)
+			table()
+			if p := pcieAt(report.GPUPCIe, idx); p != nil {
+				row("PCIe", pcieSummaryFor(report.Findings, p))
+			}
+			if t := thermalAt(report.GPUThermal, idx); t != nil {
+				row("Thermal", thermalSummary(t))
+			}
+			w("\n")
+		}
 	}
 
 	w("**NVIDIA Driver:** %s | **CUDA (driver):** %s\n\n", valueOrNA(report.Driver.Version), valueOrNA(report.Driver.CUDAVersion))
-	if report.PCIe != nil {
+	if !perGPU && report.PCIe != nil {
 		w("**PCIe:** %s\n\n", pcieSummary(report))
 	}
-	if report.Thermal != nil {
+	if !perGPU && report.Thermal != nil {
 		w("**Thermal:** %s\n\n", thermalSummary(report.Thermal))
 	}
 

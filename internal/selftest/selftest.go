@@ -4,6 +4,7 @@ package selftest
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -161,8 +162,22 @@ func checkArch() CheckResult {
 	}
 }
 
+// gpuListLineRe matches one "GPU N: name" line of nvidia-smi -L. MIG
+// instance lines on A100/H100 are indented and start with "MIG", so counting
+// only these keeps the GPU count honest on MIG-enabled boards.
+var gpuListLineRe = regexp.MustCompile(`(?m)^GPU \d+:`)
+
 func checkNvidiaSmi() CheckResult {
 	if !util.CommandExists("nvidia-smi") {
+		// JetPack does not ship nvidia-smi; on a Jetson its absence is the
+		// healthy state, not a missing driver.
+		if jetson, release := common.DetectJetson(); jetson {
+			detail := "Not available on NVIDIA Jetson / Tegra (expected; use tegrastats)"
+			if release != "" {
+				detail += " - " + release
+			}
+			return CheckResult{Name: "nvidia-smi", Status: "INFO", Detail: detail}
+		}
 		return CheckResult{
 			Name:   "nvidia-smi",
 			Status: "WARN",
@@ -174,15 +189,19 @@ func checkNvidiaSmi() CheckResult {
 		return CheckResult{
 			Name:   "nvidia-smi",
 			Status: "WARN",
-			Detail: fmt.Sprintf("Found but failed: %s", r.Err.Error()),
+			Detail: fmt.Sprintf("Found but failed: %s", failureDetail(r)),
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(r.Stdout), "\n")
 	return CheckResult{
 		Name:   "nvidia-smi",
 		Status: "OK",
-		Detail: fmt.Sprintf("Found, %d GPU(s) detected", len(lines)),
+		Detail: fmt.Sprintf("Found, %d GPU(s) detected", countGPUListLines(r.Stdout)),
 	}
+}
+
+// countGPUListLines counts the "GPU N:" lines in nvidia-smi -L output.
+func countGPUListLines(out string) int {
+	return len(gpuListLineRe.FindAllStringIndex(out, -1))
 }
 
 // checkNvidiaSmiQueries runs every --query-gpu field list the collectors use
@@ -222,12 +241,12 @@ func runQueryCheck(name, fields string) CheckResult {
 // legacy spelling on older drivers (the thermal collector falls back the same way).
 func checkClockEventQuery() CheckResult {
 	const name = "nvidia-smi clock events"
-	r := util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ThermalEventQueryFields, "--format=csv,noheader")
+	r := util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ClockEventQuery(common.ThermalEventQueryFields), "--format=csv,noheader")
 	if r.Err == nil {
 		return CheckResult{Name: name, Status: "OK", Detail: common.ThermalEventQueryFields + " accepted"}
 	}
 	modernErr := failureDetail(r)
-	r = util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ThermalEventQueryFieldsLegacy, "--format=csv,noheader")
+	r = util.RunCommand(10, "nvidia-smi", "--query-gpu="+common.ClockEventQuery(common.ThermalEventQueryFieldsLegacy), "--format=csv,noheader")
 	if r.Err == nil {
 		return CheckResult{
 			Name:   name,

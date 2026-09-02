@@ -95,3 +95,18 @@ func TestCheckWritePermissionsUsesUniqueProbe(t *testing.T) {
 		}
 	}
 }
+
+func TestCountGPUListLines(t *testing.T) {
+	three := "GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-a)\nGPU 1: NVIDIA GeForce RTX 4090 (UUID: GPU-b)\nGPU 2: NVIDIA GeForce RTX 4090 (UUID: GPU-c)\n"
+	if got := countGPUListLines(three); got != 3 {
+		t.Errorf("three GPUs counted as %d", got)
+	}
+	// MIG instances are listed under the GPU and must not be counted.
+	mig := "GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-d)\n  MIG 1g.10gb     Device  0: (UUID: MIG-e)\n  MIG 1g.10gb     Device  1: (UUID: MIG-f)\n"
+	if got := countGPUListLines(mig); got != 1 {
+		t.Errorf("MIG-enabled H100 counted as %d GPUs, want 1", got)
+	}
+	if got := countGPUListLines("No devices were found\n"); got != 0 {
+		t.Errorf("failure text counted as %d GPUs", got)
+	}
+}

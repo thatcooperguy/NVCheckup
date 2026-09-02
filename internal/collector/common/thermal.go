@@ -9,17 +9,25 @@ import (
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// ThermalQueryFields is the exact --query-gpu field list used by CollectThermalInfo.
-// It is exported so self-test can verify the driver accepts it. Note that the
-// power-state field is named "pstate" (the older "power.state" spelling is
-// rejected by nvidia-smi and made this collector fail on every machine).
-const ThermalQueryFields = "temperature.gpu,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,power.draw,fan.speed,utilization.gpu"
+// ThermalQueryFields is the exact --query-gpu field list used by the thermal
+// collector. It is exported so self-test can verify the driver accepts it.
+// The leading "index" makes every CSV row self-identifying so multi-GPU rigs
+// map each row to the right GPU. Note that the power-state field is named
+// "pstate" (the older "power.state" spelling is rejected by nvidia-smi and
+// made this collector fail on every machine).
+const ThermalQueryFields = "index,temperature.gpu,pstate,clocks.current.graphics,clocks.max.graphics,power.limit,power.draw,fan.speed,utilization.gpu"
 
 // ThermalEventQueryFields is the clock-event bitmask field on R535+ drivers.
 const ThermalEventQueryFields = "clocks_event_reasons.active"
 
 // ThermalEventQueryFieldsLegacy is the pre-R535 spelling of the same bitmask.
 const ThermalEventQueryFieldsLegacy = "clocks_throttle_reasons.active"
+
+// ClockEventQuery returns the --query-gpu list the collector uses for a clock
+// event field: the GPU index followed by the field, so rows are per-GPU.
+func ClockEventQuery(field string) string {
+	return "index," + field
+}
 
 // NVML clock event reason bits (nvmlClocksEventReasons / nvmlClocksThrottleReasons).
 const (
@@ -66,73 +74,98 @@ const thermalBits = throttleSWThermalSlowdown | throttleHWThermalSlowdown
 // brake and external events, so it is only thermal when the die is hot.
 const hwSlowdownThermalTempC = 83
 
-// CollectThermalInfo gathers GPU thermal, power state, and clock data via nvidia-smi.
+// CollectThermalInfo gathers GPU thermal, power state, and clock data for the
+// first NVIDIA GPU via nvidia-smi. It is a thin wrapper over CollectThermalAll
+// kept for callers that only understand a single GPU; the zero value is
+// returned when no GPU row was parsed.
 func CollectThermalInfo(timeout int) (types.ThermalInfo, []types.CollectorError) {
-	var info types.ThermalInfo
+	all, errs := CollectThermalAll(timeout)
+	if len(all) == 0 {
+		return types.ThermalInfo{}, errs
+	}
+	return all[0], errs
+}
+
+// CollectThermalAll gathers thermal, power state and clock data for every
+// NVIDIA GPU nvidia-smi reports, one entry per GPU in nvidia-smi index order.
+func CollectThermalAll(timeout int) ([]types.ThermalInfo, []types.CollectorError) {
 	var errs []types.CollectorError
 
 	if !util.CommandExists("nvidia-smi") {
-		errs = append(errs, types.CollectorError{
-			Collector: "thermal",
-			Error:     "nvidia-smi not found in PATH",
-			Fatal:     true,
-		})
-		return info, errs
+		if e := missingNvidiaSmiError("thermal", isJetsonHost()); e != nil {
+			errs = append(errs, *e)
+		}
+		return nil, errs
 	}
 
-	r := util.RunCommand(timeout, "nvidia-smi",
-		"--query-gpu="+ThermalQueryFields,
-		"--format=csv,noheader,nounits")
-	if r.Err != nil {
-		errs = append(errs, types.CollectorError{
-			Collector: "thermal.query",
-			Error:     "nvidia-smi thermal query failed: " + commandFailureDetail(r),
-			Fatal:     true,
-		})
-		return info, errs
+	rows, qerr, ok := nvidiaSmiRows(timeout, "thermal", "thermal", ThermalQueryFields, true)
+	if !ok {
+		return nil, append(errs, qerr)
+	}
+	if qerr.Error != "" {
+		errs = append(errs, qerr) // partial success: one GPU failed, rows for the others were kept
 	}
 
-	line := firstLine(r.Stdout)
-	if line == "" {
-		errs = append(errs, types.CollectorError{
-			Collector: "thermal.parse",
-			Error:     "nvidia-smi thermal query returned empty output",
-			Fatal:     true,
-		})
-		return info, errs
-	}
-
-	info, parseErrs := parseThermalCSV(line)
+	infos, parseErrs := parseThermalRows(rows)
 	errs = append(errs, parseErrs...)
+	if len(infos) == 0 {
+		return nil, errs
+	}
 
 	// Clock event reasons: try the current field name first, then the legacy
-	// spelling used by drivers older than R535.
-	raw, ok := queryThrottleMask(timeout, &errs)
+	// spelling used by drivers older than R535. Rows are keyed by GPU index.
+	masks, ok := queryThrottleMasks(timeout, &errs)
 	if ok {
-		info.SlowdownReason = raw
-		mask, err := parseThrottleMask(raw)
-		if err != nil {
-			errs = append(errs, types.CollectorError{
-				Collector: "thermal.slowdown",
-				Error:     fmt.Sprintf("could not decode clock event reasons %q: %v", raw, err),
-			})
-		} else {
-			applyThrottleMask(&info, mask)
-		}
+		applyThrottleMasks(infos, masks, &errs)
 	}
 
-	return info, errs
+	return infos, errs
 }
 
-// queryThrottleMask returns the raw first-GPU clock event reason value, falling
-// back to the legacy field name when the driver rejects the modern one.
-func queryThrottleMask(timeout int, errs *[]types.CollectorError) (string, bool) {
+// applyThrottleMasks decodes each GPU's raw clock event mask into its
+// ThermalInfo entry, matching rows by GPU index.
+func applyThrottleMasks(infos []types.ThermalInfo, masks map[int]string, errs *[]types.CollectorError) {
+	for i := range infos {
+		raw, have := masks[infos[i].GPUIndex]
+		if !have {
+			continue
+		}
+		infos[i].SlowdownReason = raw
+		mask, err := parseThrottleMask(raw)
+		if err != nil {
+			*errs = append(*errs, types.CollectorError{
+				Collector: "thermal.slowdown",
+				Error:     fmt.Sprintf("GPU %d: could not decode clock event reasons %q: %v", infos[i].GPUIndex, raw, err),
+			})
+			continue
+		}
+		applyThrottleMask(&infos[i], mask)
+	}
+}
+
+// parseThermalRows parses every CSV row produced by ThermalQueryFields into
+// one ThermalInfo per GPU. Rows that carry no usable index fall back to their
+// ordinal position.
+func parseThermalRows(rows []string) ([]types.ThermalInfo, []types.CollectorError) {
+	var infos []types.ThermalInfo
+	var errs []types.CollectorError
+	for i, row := range rows {
+		info, rowErrs := parseThermalRow(row, i)
+		infos = append(infos, info)
+		errs = append(errs, rowErrs...)
+	}
+	return infos, errs
+}
+
+// queryThrottleMasks returns the raw clock event reason value per GPU index,
+// falling back to the legacy field name when the driver rejects the modern one.
+func queryThrottleMasks(timeout int, errs *[]types.CollectorError) (map[int]string, bool) {
 	fields := []string{ThermalEventQueryFields, ThermalEventQueryFieldsLegacy}
 	var lastErr string
 	for _, f := range fields {
-		r := util.RunCommand(timeout, "nvidia-smi", "--query-gpu="+f, "--format=csv,noheader")
+		r := util.RunCommand(timeout, "nvidia-smi", "--query-gpu="+ClockEventQuery(f), "--format=csv,noheader")
 		if r.Err == nil {
-			return firstLine(r.Stdout), true
+			return parseThrottleRows(r.Stdout), true
 		}
 		lastErr = f + ": " + commandFailureDetail(r)
 		if r.TimedOut {
@@ -143,17 +176,46 @@ func queryThrottleMask(timeout int, errs *[]types.CollectorError) (string, bool)
 		Collector: "thermal.slowdown",
 		Error:     "nvidia-smi clock event reasons query failed: " + lastErr,
 	})
-	return "", false
+	return nil, false
+}
+
+// parseThrottleRows maps "index, mask" CSV rows to raw mask strings keyed by
+// GPU index. Output without a comma (a single mask column, as produced when
+// the query is run without "index") is keyed by ordinal position instead.
+func parseThrottleRows(out string) map[int]string {
+	masks := map[int]string{}
+	rows, other := csvRows(out)
+	if len(rows) == 0 {
+		for i, t := range other {
+			masks[i] = t
+		}
+		return masks
+	}
+	for i, row := range rows {
+		idx, rest := parseRowIndex(splitCSV(row), i)
+		if len(rest) > 0 {
+			masks[idx] = rest[0]
+		}
+	}
+	return masks
 }
 
 // parseThermalCSV parses one nvidia-smi CSV line produced by ThermalQueryFields
-// (temperature, pstate, current clock, max clock, power limit, power draw, fan,
-// utilization). It is a pure function so it can be unit-tested with captured output.
+// (index, temperature, pstate, current clock, max clock, power limit, power
+// draw, fan, utilization). It is a pure function so it can be unit-tested with
+// captured output. A row without a parsable index is assigned index 0.
 func parseThermalCSV(line string) (types.ThermalInfo, []types.CollectorError) {
+	return parseThermalRow(line, 0)
+}
+
+// parseThermalRow is parseThermalCSV with an explicit fallback index for rows
+// whose leading index field is missing or unreadable.
+func parseThermalRow(line string, ordinal int) (types.ThermalInfo, []types.CollectorError) {
 	var info types.ThermalInfo
 	var errs []types.CollectorError
 
-	fields := splitCSV(line)
+	idx, fields := parseRowIndex(splitCSV(line), ordinal)
+	info.GPUIndex = idx
 	get := func(i int) string {
 		if i < len(fields) {
 			return fields[i]
@@ -171,7 +233,7 @@ func parseThermalCSV(line string) (types.ThermalInfo, []types.CollectorError) {
 		if err != nil {
 			errs = append(errs, types.CollectorError{
 				Collector: collector,
-				Error:     fmt.Sprintf("failed to parse %s: %s", label, s),
+				Error:     fmt.Sprintf("GPU %d: failed to parse %s: %s", idx, label, s),
 			})
 			return 0, false
 		}
@@ -197,9 +259,10 @@ func parseThermalCSV(line string) (types.ThermalInfo, []types.CollectorError) {
 		info.PowerDrawW = s
 	}
 
-	// Fan: passive, water-cooled, and most laptop GPUs report "[N/A]" or
-	// "[Not Supported]". Storing 0 there would look like a stalled fan, so we
-	// record FanSupported=false and leave the percentage untouched.
+	// Fan: passive (data-center and Tesla), water-cooled, and most laptop GPUs
+	// report "[N/A]" or "[Not Supported]". Storing 0 there would look like a
+	// stalled fan, so we record FanSupported=false and leave the percentage
+	// untouched.
 	if fan := get(6); fan != "" {
 		if isNotAvailable(fan) {
 			info.FanSupported = false
@@ -209,11 +272,13 @@ func parseThermalCSV(line string) (types.ThermalInfo, []types.CollectorError) {
 		} else {
 			errs = append(errs, types.CollectorError{
 				Collector: "thermal.fan_speed",
-				Error:     fmt.Sprintf("failed to parse fan speed: %s", fan),
+				Error:     fmt.Sprintf("GPU %d: failed to parse fan speed: %s", idx, fan),
 			})
 		}
 	}
 
+	// Utilization is "[N/A]" on MIG-enabled GPUs and some virtual GPUs; it
+	// stays 0 there and the analyzer treats 0 as "no load evidence".
 	if v, ok := parseInt(7, "thermal.utilization", "utilization"); ok {
 		info.UtilizationPct = v
 	}
@@ -269,8 +334,7 @@ func splitCSV(line string) []string {
 	return parts
 }
 
-// firstLine returns the first non-empty line of s, trimmed. nvidia-smi prints
-// one CSV row per GPU; the collectors report the first GPU only.
+// firstLine returns the first non-empty line of s, trimmed.
 func firstLine(s string) string {
 	for _, l := range strings.Split(s, "\n") {
 		if t := strings.TrimSpace(l); t != "" {
@@ -282,7 +346,7 @@ func firstLine(s string) string {
 
 // commandFailureDetail returns a one-line reason for a failed command: the
 // first non-empty of trimmed stderr, the first line of stdout, and the Go
-// error. nvidia-smi prints 'Field "x" is not a valid field to query.' to
+// error. nvidia-smi prints the "not a valid field to query" message to
 // STDOUT with exit 2 and an empty stderr, so stderr alone loses the reason.
 func commandFailureDetail(r util.CommandResult) string {
 	if s := firstLine(r.Stderr); s != "" {

@@ -9,8 +9,17 @@ import (
 )
 
 // GPUQueryFields is the exact --query-gpu field list used by CollectGPUInfo.
-// Exported so self-test can verify the driver accepts it.
-const GPUQueryFields = "driver_version,pci.bus_id,memory.total,memory.free,memory.used,temperature.gpu,power.draw"
+// Exported so self-test can verify the driver accepts it. The leading "index"
+// lets each row be matched to the GPU nvidia-smi -L listed under that index.
+const GPUQueryFields = "index,driver_version,pci.bus_id,memory.total,memory.free,memory.used,temperature.gpu,power.draw"
+
+// gpuListRe matches one GPU line of "nvidia-smi -L":
+//
+//	GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-xxxxx)
+//
+// MIG instance lines ("  MIG 1g.10gb Device 0: (UUID: MIG-...)") on H100/A100
+// with MIG enabled do not start with "GPU N:" and are skipped on purpose.
+var gpuListRe = regexp.MustCompile(`^GPU (\d+): (.+?)(?:\s*\(UUID:.*\))?$`)
 
 // CollectGPUInfo gathers GPU and NVIDIA driver information.
 func CollectGPUInfo(timeout int) ([]types.GPUInfo, types.DriverInfo, []types.CollectorError) {
@@ -40,67 +49,35 @@ func CollectGPUInfo(timeout int) ([]types.GPUInfo, types.DriverInfo, []types.Col
 }
 
 func collectFromNvidiaSmi(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs *[]types.CollectorError, timeout int) {
-	// nvidia-smi -L for GPU list
+	// nvidia-smi -L for GPU list. On an Optimus laptop with the dGPU powered
+	// down or in a container without the GPU mapped this fails with a
+	// recognisable message even though the driver itself is fine; surface
+	// that text once instead of a bare exit status.
 	r := util.RunCommand(timeout, "nvidia-smi", "-L")
 	if r.Err != nil {
-		*errs = append(*errs, types.CollectorError{
-			Collector: "gpu.nvidia-smi-L",
-			Error:     "nvidia-smi -L failed: " + r.Err.Error(),
-		})
+		e := nvidiaSmiQueryError("gpu.nvidia-smi-L", "-L", r)
+		e.Fatal = false
+		*errs = append(*errs, e)
 		return
 	}
-
-	// Parse GPU list: "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-xxxxx)"
-	gpuRe := regexp.MustCompile(`GPU (\d+): (.+?)(?:\s*\(UUID:.*\))?$`)
-	for _, line := range strings.Split(r.Stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if m := gpuRe.FindStringSubmatch(line); m != nil {
-			idx := int(parseIntSafe(m[1]))
-			gpu := types.GPUInfo{
-				Index:    idx,
-				Name:     strings.TrimSpace(m[2]),
-				Vendor:   "NVIDIA",
-				IsNVIDIA: true,
-			}
-			*gpus = append(*gpus, gpu)
-		}
+	if _, _, known := describeNvidiaSmiFailure(r.Stdout + "\n" + r.Stderr); known {
+		e := nvidiaSmiQueryError("gpu.nvidia-smi-L", "-L", r)
+		e.Fatal = false
+		*errs = append(*errs, e)
+		return
 	}
+	*gpus = append(*gpus, parseGPUList(r.Stdout)...)
 
-	// nvidia-smi summary for driver version, CUDA version, memory
+	// nvidia-smi summary for driver version, bus id, memory
 	r = util.RunCommand(timeout, "nvidia-smi",
 		"--query-gpu="+GPUQueryFields,
 		"--format=csv,noheader,nounits")
 	if r.Err == nil {
-		lines := strings.Split(r.Stdout, "\n")
-		for i, line := range lines {
-			fields := strings.Split(line, ", ")
-			if len(fields) >= 2 {
-				if i == 0 && len(fields) >= 1 {
-					driver.Version = strings.TrimSpace(fields[0])
-				}
-				if i < len(*gpus) {
-					if len(fields) >= 2 {
-						(*gpus)[i].PCIBusID = strings.TrimSpace(fields[1])
-						(*gpus)[i].DriverVersion = driver.Version
-					}
-					if len(fields) >= 3 {
-						(*gpus)[i].VRAMTotalMB = parseIntSafe(fields[2])
-					}
-					if len(fields) >= 4 {
-						(*gpus)[i].VRAMFreeMB = parseIntSafe(fields[3])
-					}
-					if len(fields) >= 5 {
-						(*gpus)[i].VRAMUsedMB = parseIntSafe(fields[4])
-					}
-					if len(fields) >= 6 {
-						(*gpus)[i].Temperature = int(parseIntSafe(fields[5]))
-					}
-					if len(fields) >= 7 {
-						(*gpus)[i].PowerDraw = strings.TrimSpace(fields[6])
-					}
-				}
-			}
-		}
+		applyGPUQueryRows(*gpus, driver, r.Stdout)
+	} else {
+		e := nvidiaSmiQueryError("gpu.query", "GPU query", r)
+		e.Fatal = false
+		*errs = append(*errs, e)
 	}
 
 	// Get CUDA version from nvidia-smi header
@@ -116,6 +93,86 @@ func collectFromNvidiaSmi(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs 
 	}
 }
 
+// parseGPUList parses "nvidia-smi -L" output into one GPUInfo per GPU line.
+// It is a pure function so it can be unit-tested with captured output.
+func parseGPUList(out string) []types.GPUInfo {
+	var gpus []types.GPUInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		m := gpuListRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		gpus = append(gpus, types.GPUInfo{
+			Index:    int(parseIntSafe(m[1])),
+			Name:     strings.TrimSpace(m[2]),
+			Vendor:   "NVIDIA",
+			IsNVIDIA: true,
+		})
+	}
+	return gpus
+}
+
+// applyGPUQueryRows fills driver version, bus id, memory, temperature and
+// power from the CSV rows produced by GPUQueryFields. Rows are matched to
+// GPUs by the leading index field (falling back to row order), so a rig
+// whose -L order and query order differ still lands each row on the right
+// GPU. "[N/A]" fields (MIG, some virtual GPUs) are left at their zero value.
+func applyGPUQueryRows(gpus []types.GPUInfo, driver *types.DriverInfo, out string) {
+	rows, _ := csvRows(out)
+	for i, row := range rows {
+		idx, fields := parseRowIndex(splitCSV(row), i)
+		get := func(n int) string {
+			if n < len(fields) {
+				return fields[n]
+			}
+			return ""
+		}
+		version := get(0)
+		if isNotAvailable(version) {
+			version = ""
+		}
+		if driver.Version == "" && version != "" {
+			driver.Version = version
+		}
+		g := gpuByIndex(gpus, idx)
+		if g == nil {
+			continue
+		}
+		if version != "" {
+			g.DriverVersion = version
+		}
+		if s := get(1); s != "" && !isNotAvailable(s) {
+			g.PCIBusID = s
+		}
+		if s := get(2); s != "" && !isNotAvailable(s) {
+			g.VRAMTotalMB = parseIntSafe(s)
+		}
+		if s := get(3); s != "" && !isNotAvailable(s) {
+			g.VRAMFreeMB = parseIntSafe(s)
+		}
+		if s := get(4); s != "" && !isNotAvailable(s) {
+			g.VRAMUsedMB = parseIntSafe(s)
+		}
+		if s := get(5); s != "" && !isNotAvailable(s) {
+			g.Temperature = int(parseIntSafe(s))
+		}
+		if s := get(6); s != "" && !isNotAvailable(s) {
+			g.PowerDraw = s
+		}
+	}
+}
+
+// gpuByIndex returns the NVIDIA GPU with the given nvidia-smi index, or nil.
+func gpuByIndex(gpus []types.GPUInfo, idx int) *types.GPUInfo {
+	for i := range gpus {
+		if gpus[i].IsNVIDIA && gpus[i].Index == idx {
+			return &gpus[i]
+		}
+	}
+	return nil
+}
+
 func collectGPUsWindows(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs *[]types.CollectorError, timeout int) {
 	// Use WMI to enumerate all display adapters (includes iGPU)
 	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
@@ -128,54 +185,7 @@ func collectGPUsWindows(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs *[
 		return
 	}
 
-	existingNames := make(map[string]bool)
-	for _, g := range *gpus {
-		existingNames[g.Name] = true
-	}
-
-	for _, line := range strings.Split(r.Stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) < 2 {
-			continue
-		}
-		name := strings.TrimSpace(parts[0])
-		if existingNames[name] {
-			continue // Already have from nvidia-smi
-		}
-
-		gpu := types.GPUInfo{
-			Index:         len(*gpus),
-			Name:          name,
-			DriverVersion: strings.TrimSpace(parts[1]),
-		}
-
-		if strings.Contains(strings.ToLower(name), "nvidia") {
-			gpu.Vendor = "NVIDIA"
-			gpu.IsNVIDIA = true
-		} else if strings.Contains(strings.ToLower(name), "intel") {
-			gpu.Vendor = "Intel"
-		} else if strings.Contains(strings.ToLower(name), "amd") || strings.Contains(strings.ToLower(name), "radeon") {
-			gpu.Vendor = "AMD"
-		} else {
-			gpu.Vendor = "Unknown"
-		}
-
-		// Parse PCI IDs from PNP Device ID
-		if len(parts) >= 4 {
-			pnp := parts[3]
-			pciRe := regexp.MustCompile(`VEN_([0-9A-Fa-f]+)&DEV_([0-9A-Fa-f]+)`)
-			if m := pciRe.FindStringSubmatch(pnp); m != nil {
-				gpu.PCIVendorID = m[1]
-				gpu.PCIDeviceID = m[2]
-			}
-		}
-
-		*gpus = append(*gpus, gpu)
-	}
+	*gpus = append(*gpus, parseWMIVideoControllers(r.Stdout, *gpus)...)
 
 	// Try to get WDDM version
 	r = util.RunCommand(timeout, "powershell", "-NoProfile", "-Command",
@@ -186,6 +196,83 @@ func collectGPUsWindows(gpus *[]types.GPUInfo, driver *types.DriverInfo, errs *[
 				(*gpus)[i].WDDMVersion = strings.TrimSpace(r.Stdout)
 			}
 		}
+	}
+}
+
+var pnpPCIRe = regexp.MustCompile(`VEN_([0-9A-Fa-f]+)&DEV_([0-9A-Fa-f]+)`)
+
+// parseWMIVideoControllers parses the "Name|DriverVersion|AdapterRAM|PNPDeviceID"
+// lines printed by the Win32_VideoController query. Adapters whose name was
+// already reported by nvidia-smi are skipped so the NVIDIA dGPU of a hybrid
+// laptop is not listed twice; the iGPU (Intel/AMD) is appended after them.
+func parseWMIVideoControllers(out string, existing []types.GPUInfo) []types.GPUInfo {
+	// Names already reported by nvidia-smi are skipped so the same card is not
+	// listed twice. WMI rows themselves are de-duplicated by PNPDeviceID, never
+	// by name: a rig with two identical cards (2x RTX 4090, 4x A6000) emits two
+	// Win32_VideoController instances with the same Name, and both are real.
+	existingNames := make(map[string]bool)
+	for _, g := range existing {
+		existingNames[g.Name] = true
+	}
+	seenPNP := make(map[string]bool)
+
+	var added []types.GPUInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		if name == "" || existingNames[name] {
+			continue // Already have from nvidia-smi
+		}
+		if len(parts) >= 4 {
+			pnp := strings.ToUpper(strings.TrimSpace(parts[3]))
+			if pnp != "" {
+				if seenPNP[pnp] {
+					continue // WMI listed the same physical device twice
+				}
+				seenPNP[pnp] = true
+			}
+		}
+
+		gpu := types.GPUInfo{
+			Index:         len(existing) + len(added),
+			Name:          name,
+			DriverVersion: strings.TrimSpace(parts[1]),
+			Vendor:        vendorFromName(name),
+		}
+		gpu.IsNVIDIA = gpu.Vendor == "NVIDIA"
+
+		// Parse PCI IDs from PNP Device ID
+		if len(parts) >= 4 {
+			if m := pnpPCIRe.FindStringSubmatch(parts[3]); m != nil {
+				gpu.PCIVendorID = m[1]
+				gpu.PCIDeviceID = m[2]
+			}
+		}
+
+		added = append(added, gpu)
+	}
+	return added
+}
+
+// vendorFromName classifies a display adapter by its marketing name.
+func vendorFromName(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "nvidia"):
+		return "NVIDIA"
+	case strings.Contains(lower, "intel"):
+		return "Intel"
+	case strings.Contains(lower, "amd"), strings.Contains(lower, "radeon"):
+		return "AMD"
+	default:
+		return "Unknown"
 	}
 }
 
@@ -204,15 +291,27 @@ func collectGPUsLinux(gpus *[]types.GPUInfo, errs *[]types.CollectorError, timeo
 		return
 	}
 
+	*gpus = append(*gpus, parseLspciGPUs(r.Stdout, *gpus)...)
+}
+
+var lspciGPURe = regexp.MustCompile(`^([0-9a-f:.]+)\s+(?:VGA|3D|Display).*?:\s+(.+?)\s*\[([0-9a-f]{4}):([0-9a-f]{4})\]`)
+
+// parseLspciGPUs parses "lspci -nn" output for VGA/3D/Display devices. Devices
+// whose bus id nvidia-smi already reported are skipped. nvidia-smi prints bus
+// ids as "00000000:01:00.0" while lspci prints "01:00.0", so the comparison
+// is on the domain-less form.
+func parseLspciGPUs(out string, existing []types.GPUInfo) []types.GPUInfo {
 	existingBusIDs := make(map[string]bool)
-	for _, g := range *gpus {
-		existingBusIDs[g.PCIBusID] = true
+	for _, g := range existing {
+		if g.PCIBusID != "" {
+			existingBusIDs[shortBusID(g.PCIBusID)] = true
+		}
 	}
 
-	vgaRe := regexp.MustCompile(`^([0-9a-f:.]+)\s+(?:VGA|3D|Display).*?:\s+(.+?)\s*\[([0-9a-f]{4}):([0-9a-f]{4})\]`)
-	for _, line := range strings.Split(r.Stdout, "\n") {
+	var added []types.GPUInfo
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		m := vgaRe.FindStringSubmatch(line)
+		m := lspciGPURe.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
@@ -221,12 +320,13 @@ func collectGPUsLinux(gpus *[]types.GPUInfo, errs *[]types.CollectorError, timeo
 		vendorID := m[3]
 		deviceID := m[4]
 
-		if existingBusIDs[busID] {
+		if existingBusIDs[shortBusID(busID)] {
 			continue
 		}
+		existingBusIDs[shortBusID(busID)] = true
 
 		gpu := types.GPUInfo{
-			Index:       len(*gpus),
+			Index:       len(existing) + len(added),
 			Name:        name,
 			PCIBusID:    busID,
 			PCIVendorID: vendorID,
@@ -245,8 +345,19 @@ func collectGPUsLinux(gpus *[]types.GPUInfo, errs *[]types.CollectorError, timeo
 			gpu.Vendor = "Unknown"
 		}
 
-		*gpus = append(*gpus, gpu)
+		added = append(added, gpu)
 	}
+	return added
+}
+
+// shortBusID normalises a PCI bus id to lower-case "bb:dd.f" by dropping the
+// domain prefix nvidia-smi adds ("00000000:01:00.0" -> "01:00.0").
+func shortBusID(id string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if parts := strings.Split(id, ":"); len(parts) == 3 {
+		return parts[1] + ":" + parts[2]
+	}
+	return id
 }
 
 // processSectionOmittedNote replaces the Processes table in stored nvidia-smi output.
