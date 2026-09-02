@@ -75,11 +75,14 @@ the documentation was checked against what the binary actually does.
   command cannot stall `fix` or `undo` indefinitely.
 - The nouveau checks fire only when a nouveau kernel module is actually built
   for the running kernel; an absent module is no longer reported as a conflict.
-- `self-test`'s write-permission check is documented for what it is: it creates
-  and removes one temporary file (`.nvcheckup-selftest-write`) in the current
-  directory and changes no system settings.
-- CUDA toolkit detection follows the `/usr/local/cuda` symlink to the versioned
-  installation it points at.
+- `self-test`'s write-permission check creates and removes one uniquely named
+  temporary file (`.nvcheckup-selftest-*`) in the current directory and changes
+  no system settings; it no longer overwrites a pre-existing
+  `.nvcheckup-selftest-write` file.
+- On Linux, the CUDA toolkit version falls back to the version embedded in the
+  directory `/usr/local/cuda` resolves to (including the Debian/Ubuntu
+  `/etc/alternatives/cuda` indirection, e.g. `/usr/local/cuda-12.4` -> `12.4`)
+  when `nvcc` is not on `PATH` or reports no release.
 - WSL2 detection works on distributions booted with systemd.
 
 ### Changed
