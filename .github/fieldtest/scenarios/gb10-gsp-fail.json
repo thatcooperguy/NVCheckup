@@ -1,5 +1,5 @@
 {
-  "description": "DGX Spark (GB10) whose GPU failed GSP initialisation at boot (spec section 10 variant gb10-gsp-fail, strings from spec 3.2 / S12). Same machine, DGX OS and packages as gb10.json, but every nvidia-smi invocation prints 'No devices were found' (spec 3.2) and dmesg carries the Xid 119 GSP RPC timeout, the ksec2PrepareBootCommands_GB20B SEC2 secure-boot timeout, 'RmInitAdapter: Cannot initialize GSP firmware RM' and 'RmInitAdapter failed! (0x62:0x65:2028)' (all spec 3.2). lspci still lists [10de:2e12] at 000f:01:00.0 (spec 3.1 row 5) and lsmod still shows the nvidia modules loaded. The OTA checker reports failed: [\"driver\"] (spec 3.2). Expected (spec 10): dgx-spark-gsp-init-failure CRIT; forbidden: no-nvidia-gpu (spec 5.1 also suppresses driver-not-detected). PLACEHOLDER: the nvidia-smi exit code for 'No devices were found' (6 here) is not in the spec; the collectors only test for non-zero.",
+  "description": "DGX Spark (GB10) whose GPU failed GSP initialisation at boot (spec section 10 variant gb10-gsp-fail, strings from spec 3.2 / S12). Same machine, DGX OS and packages as gb10.json, but every nvidia-smi invocation prints 'No devices were found' (spec 3.2) and dmesg carries the Xid 119 GSP RPC timeout, the ksec2PrepareBootCommands_GB20B SEC2 secure-boot timeout, 'RmInitAdapter: Cannot initialize GSP firmware RM' and 'RmInitAdapter failed! (0x62:0x65:2028)' (all spec 3.2). lspci still lists [10de:2e12] at 000f:01:00.0 (spec 3.1 row 5) and lsmod still shows the nvidia modules loaded. The OTA checker reports failed: [\"driver\"] (spec 3.2). Expected (spec 10): dgx-spark-gsp-init-failure CRIT; forbidden: no-nvidia-gpu (spec 5.1 also suppresses driver-not-detected). lspci_lines and other_netdevs carry the same omissions as gb10.json (no PCIe root ports, no mgmt-NIC / Wi-Fi PCI ids: spec 2.1 names only the drivers). PLACEHOLDER: the nvidia-smi exit code for 'No devices were found' (6 here) is not in the spec; the collectors only test for non-zero.",
   "machine": "aarch64",
   "driver": "580.159.03",
   "cuda": "13.0",
@@ -167,14 +167,10 @@
     11000
   ],
   "lspci_lines": [
-    "0000:00:00.0 PCI bridge [0604]: NVIDIA Corporation Device [10de:22b8]",
     "0000:01:00.0 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
     "0000:01:00.1 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
-    "0002:00:00.0 PCI bridge [0604]: NVIDIA Corporation Device [10de:22b8]",
     "0002:01:00.0 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
     "0002:01:00.1 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
-    "0007:01:00.0 Ethernet controller [0200]: Realtek Semiconductor Co., Ltd. Device [10ec:8127]",
-    "0009:01:00.0 Network controller [0280]: MEDIATEK Corp. Device [14c3:7925]",
     "000f:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2e12] (rev a1)"
   ],
   "dpkg_lines": [
@@ -298,7 +294,6 @@
       ],
       "gateway": "192.168.1.1",
       "pci": "0007:01:00.0",
-      "pci_id": "10ec:8127",
       "driver": "r8127"
     },
     {
@@ -309,7 +304,6 @@
       "mtu": 1500,
       "ipv4": [],
       "pci": "0009:01:00.0",
-      "pci_id": "14c3:7925",
       "driver": "mt7925e"
     }
   ],

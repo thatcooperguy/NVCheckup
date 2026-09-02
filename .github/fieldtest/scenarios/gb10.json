@@ -1,5 +1,5 @@
 {
-  "description": "DGX Spark Founders Edition (GB10) on DGX OS 7.5.0 / OTA2607, idle and healthy (spec docs/roadmap/spark-support.md section 10). One NVIDIA GB10 at 0000000F:01:00.0 (spec 2.1) with memory.total/free/used, fan.speed and power.limit = [N/A] (spec 2.1); the plain table shows Memory-Usage 'Not Supported' (spec 2.1); PCIe misreported as Gen1 x1 (spec 2.1: the GPU is on-package over NVLink-C2C, so spec 3.1 flag rules A/B must set pcie.on_package and gpus[0].on_package true whichever detection row matched and pcie-width-reduced cannot fire); compute_cap 12.1 (spec 2.1); 128 GB LPDDR5X visible as MemTotal 125513944 kB = 119.7 GiB (spec 2.1). Expected: dgx-spark-detected + unified-memory-nvsmi-expected; platform.class dgx-spark, platform.unified_memory true, gpus[0].memory_reporting not-supported, unified_memory.mem_total_kb 125513944, every finding carries an impact. Forbidden (spec 10): low-vram, pcie-*, fan-not-spinning, gpu-power-cap, gpu-clock-slowdown, no-nvidia-gpu, driver-not-detected, nvidia-smi-missing, jetson-detected, dgx-spark-gsp-init-failure, dgx-spark-ota-torn, dgx-spark-foreign-driver-packages (the dpkg list deliberately includes nvidia-dkms-580-open, a placeholder for the nvidia-driver-580-open metapackage dependency pending field confirmation per spec 3.2, to prove the exclusion), cx7-not-enumerated. PLACEHOLDERS pending a real capture (scripts/spark-capture.sh): idle clocks, clock-event mask, uuid, swap size and /proc/swaps device, ACPI thermal-zone temperature, ConnectX-7 sysfs rate string and cage-0 IPv4 addresses, mgmt-NIC IPv4, systemd unit states, nvidia-container-toolkit / dgx-dashboard / ota-check package versions, fwupdmgr device names, nvidia-smi exit codes and -q layout. device_tree_model is empty because whether DGX Spark exposes /proc/device-tree/model is unconfirmed (spec 12): an empty string means the file is NOT created under NVC_SIM_ROOT. Other values are verbatim from the spec; the shims and scripts/make-simroot.sh name the spec section next to each string they consume.",
+  "description": "DGX Spark Founders Edition (GB10) on DGX OS 7.5.0 / OTA2607, idle and healthy (spec docs/roadmap/spark-support.md section 10). One NVIDIA GB10 at 0000000F:01:00.0 (spec 2.1) with memory.total/free/used, fan.speed and power.limit = [N/A] (spec 2.1); the plain table shows Memory-Usage 'Not Supported' (spec 2.1); PCIe misreported as Gen1 x1 (spec 2.1: the GPU is on-package over NVLink-C2C, so spec 3.1 flag rules A/B must set pcie.on_package and gpus[0].on_package true whichever detection row matched and pcie-width-reduced cannot fire); compute_cap 12.1 (spec 2.1); 128 GB LPDDR5X visible as MemTotal 125513944 kB = 119.7 GiB (spec 2.1). Expected: dgx-spark-detected + unified-memory-nvsmi-expected; platform.class dgx-spark, platform.unified_memory true, gpus[0].memory_reporting not-supported, unified_memory.mem_total_kb 125513944, every finding carries an impact. Forbidden (spec 10): low-vram, pcie-*, fan-not-spinning, gpu-power-cap, gpu-clock-slowdown, no-nvidia-gpu, driver-not-detected, nvidia-smi-missing, jetson-detected, dgx-spark-gsp-init-failure, dgx-spark-ota-torn, dgx-spark-foreign-driver-packages (the dpkg list deliberately includes nvidia-dkms-580-open, a placeholder for the nvidia-driver-580-open metapackage dependency pending field confirmation per spec 3.2, to prove the exclusion), cx7-not-enumerated. PLACEHOLDERS pending a real capture (scripts/spark-capture.sh): idle clocks, clock-event mask, uuid, swap size and /proc/swaps device, ACPI thermal-zone temperature, ConnectX-7 sysfs rate string and cage-0 IPv4 addresses, mgmt-NIC IPv4, systemd unit states, nvidia-container-toolkit / dgx-dashboard / ota-check package versions, fwupdmgr device names, nvidia-smi exit codes and -q layout. device_tree_model is empty because whether DGX Spark exposes /proc/device-tree/model is unconfirmed (spec 12): an empty string means the file is NOT created under NVC_SIM_ROOT. LEFT OUT because the spec has no value for them (spec 2.1 names only the drivers r8127 / mt7925e and the netdev names): the PCI ids of the enP7s7 mgmt NIC and the wlP9s9 Wi-Fi and their lspci lines, and any PCIe root-port lines; the PCI addresses 0007:01:00.0 / 0009:01:00.0 in other_netdevs are inferred from the P7 / P9 of the spec's interface names (an assumption, not a spec value). Other values are verbatim from the spec; the shims and scripts/make-simroot.sh name the spec section next to each string they consume.",
   "machine": "aarch64",
   "driver": "580.159.03",
   "cuda": "13.0",
@@ -167,14 +167,10 @@
     11000
   ],
   "lspci_lines": [
-    "0000:00:00.0 PCI bridge [0604]: NVIDIA Corporation Device [10de:22b8]",
     "0000:01:00.0 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
     "0000:01:00.1 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
-    "0002:00:00.0 PCI bridge [0604]: NVIDIA Corporation Device [10de:22b8]",
     "0002:01:00.0 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
     "0002:01:00.1 Ethernet controller [0200]: Mellanox Technologies MT2910 Family [ConnectX-7] [15b3:1021]",
-    "0007:01:00.0 Ethernet controller [0200]: Realtek Semiconductor Co., Ltd. Device [10ec:8127]",
-    "0009:01:00.0 Network controller [0280]: MEDIATEK Corp. Device [14c3:7925]",
     "000f:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2e12] (rev a1)"
   ],
   "dpkg_lines": [
@@ -295,7 +291,6 @@
       ],
       "gateway": "192.168.1.1",
       "pci": "0007:01:00.0",
-      "pci_id": "10ec:8127",
       "driver": "r8127"
     },
     {
@@ -306,7 +301,6 @@
       "mtu": 1500,
       "ipv4": [],
       "pci": "0009:01:00.0",
-      "pci_id": "14c3:7925",
       "driver": "mt7925e"
     }
   ],
