@@ -116,6 +116,11 @@ type GPUInfo struct {
 	IsNVIDIA      bool   `json:"is_nvidia"`
 	PCIeLinkSpeed string `json:"pcie_link_speed,omitempty"` // "Gen4"
 	PCIeLinkWidth string `json:"pcie_link_width,omitempty"` // "x16"
+
+	// Spark / unified-memory additions (docs/roadmap/spark-support.md section 4).
+	ComputeCap      string `json:"compute_cap,omitempty"`      // CUDA compute capability from nvidia-smi --query-gpu=compute_cap, e.g. "12.1"
+	OnPackage       bool   `json:"on_package,omitempty"`       // GPU is on the SoC package (GB10/N1X): no user-serviceable PCIe slot, PCIe rules are suppressed
+	MemoryReporting string `json:"memory_reporting,omitempty"` // "dedicated" | "not-supported" (nvidia-smi memory.total is [N/A] on unified-memory parts)
 }
 
 // DriverInfo holds NVIDIA driver details
@@ -217,6 +222,10 @@ type PyTorchInfo struct {
 	CUDAAvailable bool   `json:"cuda_available"`
 	DeviceName    string `json:"device_name,omitempty"`
 	Error         string `json:"error,omitempty"`
+
+	// Spark / unified-memory additions (docs/roadmap/spark-support.md section 4).
+	Warnings []string `json:"warnings,omitempty"`  // stderr warnings emitted by the torch probe (e.g. unsupported capability 12.1)
+	ArchList []string `json:"arch_list,omitempty"` // torch.cuda.get_arch_list(), e.g. ["sm_80", ..., "sm_120"]
 }
 
 // TFInfo holds TensorFlow probe results
@@ -255,6 +264,9 @@ type Finding struct {
 	Confidence   int                `json:"confidence"`         // 0-100 confidence score
 	Remediation  *RemediationAction `json:"remediation,omitempty"`
 	GPUIndexes   []int              `json:"gpu_indexes,omitempty"` // nvidia-smi indices of the GPU(s) this finding is about (thermal/PCIe findings)
+
+	// Spark / unified-memory additions (docs/roadmap/spark-support.md section 4).
+	Impact string `json:"impact,omitempty"` // most invasive next step of the rule: none | reversible | persistent | irreversible | data-loss
 }
 
 // RemediationAction describes a safe, reversible fix for a finding
@@ -312,6 +324,10 @@ type ThermalInfo struct {
 	ThrottleReasons []string `json:"throttle_reasons,omitempty"` // decoded active reasons, e.g. "sw_thermal_slowdown"
 	UtilizationPct  int      `json:"utilization_pct"`            // utilization.gpu at sample time
 	GPUIndex        int      `json:"gpu_index"`                  // nvidia-smi index of the GPU this row describes
+
+	// Spark / unified-memory additions (docs/roadmap/spark-support.md section 4).
+	PowerLimitSupported bool             `json:"power_limit_supported"`       // false when nvidia-smi reports power.limit as [N/A] (GB10)
+	EventCounters       map[string]int64 `json:"event_counters_us,omitempty"` // nvidia-smi -q -d PERFORMANCE "Clocks Event Reasons Counters", microseconds per reason
 }
 
 // PCIeInfo holds PCIe link state data
@@ -325,6 +341,9 @@ type PCIeInfo struct {
 	UtilizationPct int    `json:"utilization_pct"`       // utilization.gpu at sample time
 	IdleLikely     bool   `json:"idle_likely"`           // P5+ or low utilization: link power-saving is expected
 	GPUIndex       int    `json:"gpu_index"`             // nvidia-smi index of the GPU this row describes
+
+	// Spark / unified-memory additions (docs/roadmap/spark-support.md section 4).
+	OnPackage bool `json:"on_package,omitempty"` // GPU is on the SoC package: the reported link is not a user-serviceable slot, all PCIe rules are suppressed
 }
 
 // DisplayInfo holds display/monitor pipeline data
@@ -399,6 +418,13 @@ type Report struct {
 	TopIssues       []string         `json:"top_issues"`
 	NextSteps       []string         `json:"next_steps"`
 	SummaryBlock    string           `json:"summary_block"`
+
+	// Spark / unified-memory additions (docs/roadmap/spark-support.md section 4).
+	Platform      PlatformInfo       `json:"platform"`                 // always present; Class is "" when no detection row matched
+	UnifiedMemory *UnifiedMemoryInfo `json:"unified_memory,omitempty"` // only when Platform.UnifiedMemory
+	DGXOS         *DGXOSInfo         `json:"dgx_os,omitempty"`         // only on dgx-spark
+	Cluster       *ClusterInfo       `json:"cluster,omitempty"`        // only when ConnectX-7 functions are enumerated
+	Ecosystem     *EcosystemInfo     `json:"ecosystem,omitempty"`      // only on dgx-spark / rtx-spark
 }
 
 // ReportMetadata holds info about the report itself
@@ -439,4 +465,175 @@ type Difference struct {
 	ValueA   string `json:"value_a"`
 	ValueB   string `json:"value_b"`
 	Severity string `json:"severity,omitempty"` // how important is this change
+}
+
+// ---------------------------------------------------------------------------
+// DGX Spark / RTX Spark / unified-memory platform types
+// (docs/roadmap/spark-support.md section 4; additive, SchemaVersion stays "1").
+// ---------------------------------------------------------------------------
+
+// PlatformInfo classifies the machine (DGX Spark, RTX Spark, Jetson, Grace Hopper,
+// arm64 with a discrete GPU) and carries the platform-level facts the Spark rules
+// need. It is always present in a Report; Class is "" when no row of the detection
+// table (spec section 3.1) matched.
+type PlatformInfo struct {
+	Class          string `json:"class"`                     // dgx-spark | rtx-spark | jetson | grace-hopper | arm64-dgpu | ""
+	Vendor         string `json:"vendor,omitempty"`          // DMI sys_vendor / Win32_ComputerSystem.Manufacturer
+	Model          string `json:"model,omitempty"`           // DMI product_name / device-tree model / Win32_ComputerSystemProduct.Name
+	ProductVersion string `json:"product_version,omitempty"` // "A.7" on GB10
+	BIOSVersion    string `json:"bios_version,omitempty"`
+	BIOSDate       string `json:"bios_date,omitempty"`
+	GPUSoC         string `json:"gpu_soc,omitempty"`     // GB10 | N1X | GH200
+	ComputeCap     string `json:"compute_cap,omitempty"` // "12.1"
+	UnifiedMemory  bool   `json:"unified_memory"`        // CPU and GPU share one physical memory pool (nvidia-smi memory.total is [N/A])
+
+	// Sub-structures collected in phase 4 on dgx-spark / rtx-spark only.
+	// The same data is also exposed at the top level of Report (Report.DGXOS,
+	// Report.UnifiedMemory, Report.Cluster, Report.Ecosystem), which is where
+	// spec section 10 asserts on it (e.g. unified_memory.mem_total_kb).
+	DGXOS      *DGXOSInfo          `json:"dgx_os,omitempty"`
+	UnifiedMem *UnifiedMemoryInfo  `json:"unified_memory_info,omitempty"`
+	Firmware   []FirmwareComponent `json:"firmware,omitempty"` // fwupdmgr get-devices
+	Cluster    *ClusterInfo        `json:"cluster,omitempty"`
+	Ecosystem  *EcosystemInfo      `json:"ecosystem,omitempty"`
+
+	// Windows on Arm (spec section 8).
+	IsWindowsOnArm  bool   `json:"is_windows_on_arm,omitempty"`
+	ProcessEmulated bool   `json:"process_emulated,omitempty"` // NVCheckup itself is running under Prism (x64 emulation)
+	NativeMachine   string `json:"native_machine,omitempty"`   // ARM64 | AMD64
+
+	// Kernel, thermal, boot and power facts (Linux).
+	NvidiaKernelFlavour bool           `json:"nvidia_kernel_flavour,omitempty"` // Canonical linux-nvidia kernel (also on GH200/x86 DGX); consumed only by dgx-spark-non-nvidia-kernel
+	ACPIThermalMC       map[string]int `json:"acpi_thermal_mc,omitempty"`       // thermal_zoneN -> millidegrees C
+	PrevBootClean       *bool          `json:"prev_boot_clean,omitempty"`       // nil when the previous boot's journal is unreadable
+	PrevBootLastLine    string         `json:"prev_boot_last_line,omitempty"`
+	PstoreEmpty         *bool          `json:"pstore_empty,omitempty"`
+	ClockCapUnit        string         `json:"clock_cap_unit,omitempty"` // "gb10-clock-cap.service"
+	GDMSleepPolicy      string         `json:"gdm_sleep_policy,omitempty"`
+	SuspendAttempts     int            `json:"suspend_attempts,omitempty"`
+	SuspendFailed       bool           `json:"suspend_failed,omitempty"`
+}
+
+// DGXOSInfo holds DGX OS release, OTA, package and service state read on
+// dgx-spark (/etc/dgx-release, /etc/fastos-release, dpkg, nvidia-spark-ota-check,
+// systemd). Read-only; SerialNumber is redacted to <serial>.
+type DGXOSInfo struct {
+	Name           string `json:"name,omitempty"`
+	PrettyName     string `json:"pretty_name,omitempty"`
+	SWBuildVersion string `json:"sw_build_version,omitempty"`
+	SWBuildDate    string `json:"sw_build_date,omitempty"`
+	OTAVersion     string `json:"ota_version,omitempty"`
+	OTADate        string `json:"ota_date,omitempty"`
+	Platform       string `json:"platform,omitempty"`
+	CommitID       string `json:"commit_id,omitempty"`
+	SerialNumber   string `json:"serial_number,omitempty"`   // redacted to <serial>
+	FastOSVersion  string `json:"fast_os_version,omitempty"` // /etc/fastos-release
+	OTAName        string `json:"ota_name,omitempty"`        // e.g. "OTA2607"
+
+	OTATorn   *int     `json:"ota_torn,omitempty"`   // nvidia-spark-ota-check torn score; nil when the tool is absent or timed out
+	OTAFailed []string `json:"ota_failed,omitempty"` // components the OTA check reports as failed
+
+	DriverPkgVersion   string `json:"driver_pkg_version,omitempty"`   // nvidia driver dpkg version
+	FirmwarePkgVersion string `json:"firmware_pkg_version,omitempty"` // nvidia firmware dpkg version
+	ModulesForKernel   bool   `json:"modules_for_kernel"`             // an nvidia modules package matches the running kernel
+
+	DashboardActive      bool `json:"dashboard_active"`       // dgx-dashboard.service
+	DashboardAdminActive bool `json:"dashboard_admin_active"` // dgx-dashboard-admin.service
+	FwupdActive          bool `json:"fwupd_active"`           // fwupd.service
+	PersistencedActive   bool `json:"persistenced_active"`    // nvidia-persistenced.service
+	DashboardPortOpen    bool `json:"dashboard_port_open"`    // 127.0.0.1:11000 accepts connections
+
+	FwupdError       string `json:"fwupd_error,omitempty"`        // last fwupd error line, if any
+	AptSourceCorrupt string `json:"apt_source_corrupt,omitempty"` // apt source that fails to parse (e.g. nvidia-container-toolkit.list)
+}
+
+// UnifiedMemoryInfo is the system-memory picture on unified-memory platforms
+// (GB10/N1X), where /proc/meminfo is the only truthful "VRAM" source.
+// Counts only; no process names are recorded.
+type UnifiedMemoryInfo struct {
+	MemTotalKB     int64 `json:"mem_total_kb"`
+	MemFreeKB      int64 `json:"mem_free_kb"`
+	MemAvailableKB int64 `json:"mem_available_kb"`
+	BuffersKB      int64 `json:"buffers_kb"`
+	CachedKB       int64 `json:"cached_kb"`
+	SwapTotalKB    int64 `json:"swap_total_kb"`
+	SwapFreeKB     int64 `json:"swap_free_kb"`
+	HugePagesTotal int64 `json:"huge_pages_total"`
+	HugePagesFree  int64 `json:"huge_pages_free"`
+	HugepagesizeKB int64 `json:"hugepagesize_kb"`
+	AllocatableKB  int64 `json:"allocatable_kb"` // memory a single CUDA allocation can realistically obtain (spec section 3.3)
+
+	SwapDevices  []string `json:"swap_devices,omitempty"` // /proc/swaps device names (zram, files, partitions)
+	Swappiness   int      `json:"swappiness"`             // vm.swappiness
+	PSISomeAvg10 float64  `json:"psi_some_avg10"`         // /proc/pressure/memory "some avg10"
+	PSIFullAvg10 float64  `json:"psi_full_avg10"`         // /proc/pressure/memory "full avg10"
+
+	GPUProcesses int `json:"gpu_processes"`  // processes holding a GPU context (count only)
+	OOMKills     int `json:"oom_kills"`      // kernel OOM-killer events seen in logs
+	NVRMNoMemory int `json:"nvrm_no_memory"` // NVRM out-of-memory class kernel messages
+}
+
+// FirmwareComponent is one device row from fwupdmgr get-devices.
+type FirmwareComponent struct {
+	Name    string `json:"name"`
+	GUID    string `json:"guid,omitempty"`
+	Version string `json:"version,omitempty"` // current version, dotted or hex form as printed
+	Pending string `json:"pending,omitempty"` // update version staged but not yet applied
+}
+
+// FabricPort describes one ConnectX-7 port (RDMA device plus netdev) on DGX Spark.
+type FabricPort struct {
+	RDMADev    string   `json:"rdma_dev,omitempty"`   // /sys/class/infiniband device, e.g. "rocep1s0f0"
+	Netdev     string   `json:"netdev,omitempty"`     // e.g. "enp1s0f0np0"
+	PCIAddr    string   `json:"pci_addr,omitempty"`   // full BDF including domain
+	Cage       int      `json:"cage"`                 // physical QSFP cage grouping the functions
+	State      string   `json:"state,omitempty"`      // ports/1/state, e.g. "4: ACTIVE"
+	PhysState  string   `json:"phys_state,omitempty"` // ports/1/phys_state, e.g. "5: LinkUp"
+	SpeedMbps  int      `json:"speed_mbps"`           // /sys/class/net/<if>/speed
+	MTU        int      `json:"mtu"`
+	IPv4       []string `json:"ipv4,omitempty"` // redacted
+	Bond       string   `json:"bond,omitempty"` // bond master, if enslaved
+	Persistent bool     `json:"persistent"`     // configuration is persisted (netplan), not ad hoc
+}
+
+// ClusterInfo holds ConnectX-7 fabric and NCCL state for multi-Spark clustering
+// (spec section 9). Read-only: no active network probes are made.
+type ClusterInfo struct {
+	Ports              []FabricPort      `json:"ports,omitempty"`
+	HotplugFileEnabled bool              `json:"hotplug_file_enabled"` // /etc/nvidia/cx7-hotplug-enabled present
+	NetplanMTU         int               `json:"netplan_mtu"`          // MTU configured in netplan for the fabric ports (0 = unset)
+	NCCLEnv            map[string]string `json:"nccl_env,omitempty"`   // NCCL_* / UCX_* variables of this process
+	NCCLPluginLib      string            `json:"nccl_plugin_lib,omitempty"`
+	NCCLVersion        string            `json:"nccl_version,omitempty"`
+	PeermemAttempted   bool              `json:"peermem_attempted"` // nvidia-peermem load attempted
+	AvahiActive        bool              `json:"avahi_active"`
+	AvahiConflicts     int               `json:"avahi_conflicts"`      // hostname conflicts (spark-xxxx renames) seen in the journal
+	UfwEnabled         bool              `json:"ufw_enabled"`          // /etc/ufw/ufw.conf ENABLED=yes
+	RDMATools          []string          `json:"rdma_tools,omitempty"` // rdma-core tools found on PATH (ibstat, ibdev2netdev, ...)
+}
+
+// EcosystemInfo captures the AI software-ecosystem facts that matter on
+// sm_121 / arm64 (spec section 5 ecosystem rules).
+type EcosystemInfo struct {
+	TorchArchList      []string         `json:"torch_arch_list,omitempty"` // torch.cuda.get_arch_list()
+	TorchWarnings      []string         `json:"torch_warnings,omitempty"`  // stderr of the torch probe
+	TritonPtxasVersion string           `json:"triton_ptxas_version,omitempty"`
+	TritonPtxasPath    string           `json:"triton_ptxas_path,omitempty"`  // TRITON_PTXAS_PATH
+	LibcudartVersions  []string         `json:"libcudart_versions,omitempty"` // libcudart.so.12 / .13 found
+	FlashAttnVersion   string           `json:"flash_attn_version,omitempty"`
+	ORTVersion         string           `json:"ort_version,omitempty"` // onnxruntime distribution version
+	ORTProviders       []string         `json:"ort_providers,omitempty"`
+	ORTGPUShadowed     bool             `json:"ort_gpu_shadowed"` // CPU-only onnxruntime installed alongside onnxruntime-gpu
+	Images             []ContainerImage `json:"images,omitempty"`
+	DockerRuntimes     []string         `json:"docker_runtimes,omitempty"` // daemon.json runtimes
+	DockerCDI          bool             `json:"docker_cdi"`                // daemon.json features.cdi
+	CDISpecPresent     bool             `json:"cdi_spec_present"`          // /etc/cdi/nvidia.yaml
+	SnapDocker         bool             `json:"snap_docker"`               // docker installed from snap
+	ListeningPorts     []int            `json:"listening_ports,omitempty"` // inference ports open (8000, 30000, 11434, ...); no process names
+}
+
+// ContainerImage is a local container image reference and its architecture.
+type ContainerImage struct {
+	Ref  string `json:"ref"`
+	Arch string `json:"arch,omitempty"` // e.g. "arm64", "amd64"
 }
