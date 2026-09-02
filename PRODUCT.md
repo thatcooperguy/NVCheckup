@@ -371,7 +371,7 @@ The analyzer processes collected data through more than 45 diagnostic rules and 
 | Network (opt-in) | High jitter, packet loss, Wi-Fi congestion, slow DNS, healthy |
 | Hardware | Low VRAM |
 
-The authoritative list is `internal/analyzer/analyzer.go`; `knowledge/rules.json` mirrors the ids for the experimental Rust companion.
+The authoritative list is `internal/analyzer/analyzer.go`; `knowledge/rules.json` mirrors the ids so external tooling can look them up.
 
 ### Report Summaries
 
@@ -722,7 +722,6 @@ nvcheckup (static binary, a few MB)
 │   └── selftest/selftest.go       Environment and collector-query verification
 ├── pkg/types/types.go             All shared data structures (append-only)
 ├── knowledge/                     Reference pack: rules.json, xid_codes.json, remediations.json
-├── rust/                          Experimental partial port; not built in CI, not shipped
 └── docs/index.html                Landing page (GitHub Pages)
 ```
 

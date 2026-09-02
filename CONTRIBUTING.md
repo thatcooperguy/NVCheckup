@@ -49,7 +49,6 @@ internal/redact/      PII redaction
 internal/report/      text, JSON, markdown output
 pkg/types/            shared structs; append-only, other packages depend on them
 knowledge/            reference JSON (rules, Xid codes, remediations)
-rust/                 experimental partial port, not built in CI
 ```
 
 ## Adding a collector
@@ -192,7 +191,7 @@ Rules live in `internal/analyzer/analyzer.go` and produce `types.Finding`.
    triggers the rule, and asserts id, severity, and that the normal case does not
    fire.
 8. **Update the docs**: the rule category summary in `PRODUCT.md`, and
-   `knowledge/rules.json` if you want the Rust companion to know about it.
+   `knowledge/rules.json`; the drift test (`TestRulesJSON_MatchesAnalyzer`) fails until you do.
 
 ## Adding a remediation action
 

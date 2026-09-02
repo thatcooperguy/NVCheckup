@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Removed
+- The experimental Rust companion (`rust/`). It implemented 7 of the analyzer's rules, was never built in CI or shipped, and had already diverged from the Go analyzer. The knowledge pack under `knowledge/` stays as a reference for contributors and external tooling. The tree is in git history at tag `v0.2.1` if anyone wants to revive it.
+
+### Added
+- `linux-fieldtest.yml` workflow: runs the real binary end to end on Ubuntu 22.04/24.04 x86_64 and Ubuntu 24.04 ARM64 GitHub runners (no GPU) and asserts exit codes, report shape, expected findings, redaction and inert fix/undo behaviour.
+- Release artifacts get a GitHub build-provenance attestation (verify with `gh attestation verify <file> --owner thatcooperguy`).
+
 ## [0.2.1] - 2026-09-01
 
 A correctness and trust release. Every false positive reported against 0.2.0 was
@@ -186,7 +195,7 @@ the documentation was checked against what the binary actually does.
   and complexity rules.
 - Linux Xid error collection with a reference table of Xid codes.
 - `knowledge/` reference pack (rules, Xid codes, remediations).
-- Experimental Rust companion under `rust/` (partial port, not built in CI).
+- Experimental Rust companion under `rust/` (partial port, not built in CI; removed again in 0.2.2).
 - GitHub Pages landing page (`docs/index.html`) and `PRODUCT.md`.
 
 ### Changed

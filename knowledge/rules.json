@@ -1,5 +1,5 @@
 {
-  "description": "Reference knowledge pack. The Go analyzer defines its rules in internal/analyzer; TestRulesJSON_MatchesAnalyzer keeps the ids, categories and remediation ids here identical to the analyzer. The experimental Rust companion embeds this file.",
+  "description": "Reference knowledge pack. The Go analyzer defines its rules in internal/analyzer; TestRulesJSON_MatchesAnalyzer keeps the ids, categories and remediation ids here identical to the analyzer.",
   "version": "0.2.1",
   "rules": [
     {

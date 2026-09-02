@@ -464,9 +464,8 @@ nvcheckup
 │   ├── doctor/             Interactive guided mode
 │   └── selftest/           Environment verification
 ├── pkg/types/              Shared data structures
-├── knowledge/              Reference knowledge pack (rules, Xid codes, remediations);
-│                           embedded by the experimental Rust companion
-└── rust/                   Experimental partial Rust port (not built in CI, not shipped)
+└── knowledge/              Reference knowledge pack (rules, Xid codes, remediations),
+                            kept in lockstep with the analyzer by a test
 ```
 
 The `run` pipeline has seven phases: collect system information, detect GPUs and drivers, collect thermal and PCIe data for every GPU, run platform-specific checks, check the AI/CUDA environment (mode-dependent), run network diagnostics (only with `--network`), and analyze results into findings.
