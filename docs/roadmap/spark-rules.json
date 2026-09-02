@@ -171,8 +171,8 @@
    "why_it_matters": "On GB10 these RM failures preceded log-less hard resets with no Xid trail.",
    "next_steps": [
     "Keep >= 8 GiB MemAvailable (the llm-plan floor) and lower --gpu-memory-utilization / context / concurrency (no system change).",
-    "Advisory: updating to driver >= 580.159.03 through the DGX Dashboard (July 2026 OTA with improved OOM handling, S4) replaces driver and GSP firmware packages; OTA updates are not designed to be rolled back, so use the Dashboard path and back up first.",
-    "Run heavy jobs in a transient scope: systemd-run --scope -p MemoryMax=100G -p MemorySwapMax=0 <cmd> (no persistent change; S33)."
+    "Run heavy jobs in a transient scope: systemd-run --scope -p MemoryMax=100G -p MemorySwapMax=0 <cmd> (no persistent change; S33).",
+    "Advisory: updating to driver >= 580.159.03 through the DGX Dashboard (July 2026 OTA with improved OOM handling, S4) replaces driver and GSP firmware packages; OTA updates are not designed to be rolled back, so use the Dashboard path and back up first."
    ],
    "confidence": 80,
    "sources": [
@@ -194,9 +194,9 @@
    "why_it_matters": "Driver and GSP firmware are paired per OTA; a plain apt upgrade (580.173.02 on OTA2607 = 580.159.03) leaves the GPU unbootable.",
    "next_steps": [
     "Read-only first: sudo nvidia-spark-ota-check summary shows the torn component; collect sudo nvidia-bug-report.sh before changing anything.",
+    "If it persists, open a support case with the bug report (do not reimage as a first step).",
     "Advisory: re-run the DGX Dashboard update (http://localhost:11000), or sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot (S13). This reinstalls driver packages (revert: apt install the previous versions) and flashes firmware capsules, which cannot be rolled back; unplug AC for 30 s after the firmware step.",
-    "Advisory: if the GPU is still missing, downgrade to the OTA-paired driver: sudo apt install nvidia-driver-580-open=<paired> nvidia-firmware-580-<paired> (revert: apt install the newer version again), then sudo apt-mark hold nvidia-driver-580-open (revert: sudo apt-mark unhold nvidia-driver-580-open) and reboot.",
-    "If it persists, open a support case with the bug report (do not reimage as a first step)."
+    "Advisory: if the GPU is still missing, downgrade to the OTA-paired driver: sudo apt install nvidia-driver-580-open=<paired> nvidia-firmware-580-<paired> (revert: apt install the newer version again), then sudo apt-mark hold nvidia-driver-580-open (revert: sudo apt-mark unhold nvidia-driver-580-open) and reboot."
    ],
    "confidence": 95,
    "sources": [
@@ -237,7 +237,7 @@
    "why_it_matters": "sm_121 is unsupported by pre-580 drivers; workloads silently run on CPU.",
    "next_steps": [
     "Advisory: update via the DGX Dashboard (Settings > Updates) or sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot; this replaces the driver (revert: apt install the previous version) and flashes firmware capsules, which cannot be rolled back.",
-    "Last resort, only if a manual driver install left apt unrecoverable: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first."
+    "Advisory: (data loss) Last resort, only if a manual driver install left apt unrecoverable: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first."
    ],
    "confidence": 90,
    "sources": [
@@ -280,7 +280,7 @@
    "next_steps": [
     "Read-only: dpkg -l | grep -E 'nvidia-driver|nvidia-dkms|nvidia-fabricmanager|nvidia-nvswitch' and sudo nvidia-spark-ota-check summary to list what differs from the image set.",
     "Advisory: remove only the foreign packages (sudo apt purge <pkgs>) and reinstall the image driver set (sudo apt install nvidia-driver-580-open nvidia-firmware-580-<ver> linux-modules-nvidia-580-open-$(uname -r)), then reboot; revert by reinstalling the removed packages.",
-    "Last resort, only if the driver set cannot be restored: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first."
+    "Advisory: (data loss) Last resort, only if the driver set cannot be restored: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first."
    ],
    "confidence": 80,
    "sources": [
@@ -302,8 +302,8 @@
    "evidence_template": "Log '{line}' on driver {driver}; reported fixed in 580.173.02 (forum report S41, not yet paired by an OTA).",
    "why_it_matters": "Batch inference crashes; the fix must arrive via a pairing OTA, not plain apt (see dgx-spark-gsp-init-failure).",
    "next_steps": [
-    "Advisory: update through the DGX Dashboard when it offers >= 580.173.02 (driver + firmware change; OTA updates are not designed to be rolled back); do not pull the driver from apt ahead of the OTA.",
-    "Until then reduce batch size or use --enforce-eager where the failing kernel is selected (no system change)."
+    "Until then reduce batch size or use --enforce-eager where the failing kernel is selected (no system change).",
+    "Advisory: update through the DGX Dashboard when it offers >= 580.173.02 (driver + firmware change; OTA updates are not designed to be rolled back); do not pull the driver from apt ahead of the OTA."
    ],
    "confidence": 65,
    "sources": [
@@ -406,8 +406,8 @@
    "why_it_matters": "Community-observed signature (S46 forum thread; S47/S120 community repos; S6/S108/S123 threads) of a wedged USB-C PD contract: the SoC sits in a ~13-30 W fallback, 3-5x slower, -lgc has no effect and a warm reboot does not clear it. NVIDIA support in S46 confirmed the cold power cycle as the recovery and pointed a persistent OEM case to RMA (S107).",
    "next_steps": [
     "Cold drain (no software change): shut down, unplug the PSU from wall AND unit, unplug all USB-C, hold power 30 s, wait 60 s, reconnect only the supplied adapter, re-test under load.",
-    "Advisory: update firmware via the DGX Dashboard or your vendor channel (firmware flashes cannot be rolled back), cold-drain again, and avoid suspend/resume (S51).",
-    "If it recurs: sudo nvidia-bug-report.sh and open a support/RMA case (NVIDIA for FE, the OEM for OEM units)."
+    "If it recurs: sudo nvidia-bug-report.sh and open a support/RMA case (NVIDIA for FE, the OEM for OEM units).",
+    "Advisory: update firmware via the DGX Dashboard or your vendor channel (firmware flashes cannot be rolled back), cold-drain again, and avoid suspend/resume (S51)."
    ],
    "confidence": 85,
    "sources": [
@@ -502,9 +502,9 @@
    "why_it_matters": "Suspend is disabled by default on Spark and s2idle does not complete; resume triggers the PD wedge; headless boxes suspend from the login screen and drop Wi-Fi.",
    "next_steps": [
     "Keep suspend off: GNOME Settings > Power > Automatic Suspend = Off (reversible in the same dialog).",
+    "Re-test clocks after any suspend (gb10-pd-power-wedge).",
     "Advisory: sudo systemctl mask sleep.target suspend.target (persistent; revert: sudo systemctl unmask sleep.target suspend.target).",
-    "Advisory: (headless, S52) sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' (persistent; revert: sudo -u gdm dbus-run-session gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type).",
-    "Re-test clocks after any suspend (gb10-pd-power-wedge)."
+    "Advisory: (headless, S52) sudo -u gdm dbus-run-session gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' (persistent; revert: sudo -u gdm dbus-run-session gsettings reset org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type)."
    ],
    "confidence": 75,
    "sources": [
@@ -775,8 +775,8 @@
    "why_it_matters": "No 200 Gb/s link, RoCE or multi-node NCCL; 6.17.0-1021/1029-nvidia have a hotplug regression that drops the NIC 5-22 s after boot, retraining failures needed RMA.",
    "next_steps": [
     "Cold power cycle with power and QSFP unplugged (no software change).",
-    "Advisory: on 6.17.0-1021/1029-nvidia move to the fixed 6.17 kernel (>= 6.17.0-1031-nvidia, spec 2.1) via the DGX Dashboard or apt (kernel change; revert by selecting the previous entry in GRUB). Pinning linux-image-6.14.0-1015-nvidia plus matching nvidia-580-open modules is a stop-gap kernel downgrade only: it makes dgx-spark-ota-outdated fire (revert: apt-mark unhold and reinstall the current kernel).",
-    "Persistent 'retraining failed' -> fieldiag (Advisory: partnerdiag needs Secure Boot disabled in UEFI setup, re-enable it afterwards) and RMA."
+    "Persistent 'retraining failed' -> fieldiag (Advisory: partnerdiag needs Secure Boot disabled in UEFI setup, re-enable it afterwards) and RMA.",
+    "Advisory: on 6.17.0-1021/1029-nvidia move to the fixed 6.17 kernel (>= 6.17.0-1031-nvidia, spec 2.1) via the DGX Dashboard or apt (kernel change; revert by selecting the previous entry in GRUB). Pinning linux-image-6.14.0-1015-nvidia plus matching nvidia-580-open modules is a stop-gap kernel downgrade only: it makes dgx-spark-ota-outdated fire (revert: apt-mark unhold and reinstall the current kernel)."
    ],
    "confidence": 85,
    "sources": [

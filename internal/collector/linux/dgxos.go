@@ -164,11 +164,13 @@ func parseOTASummary(out string) (name string, failed []string) {
 }
 
 // tornScoreRe captures the integer that follows a "torn score" / "torn-score"
-// / "torn_score" label.
-var tornScoreRe = regexp.MustCompile(`(?i)torn[-_ ]?score\D*?(-?\d+)`)
+// / "torn_score" label on the same line, separated only by an optional "for",
+// whitespace, ":" or "=" (so "torn-score|installed-name>" in a usage banner
+// never reaches a number further down the text).
+var tornScoreRe = regexp.MustCompile(`(?i)torn[-_ ]?score(?:[ 	]+for)?[ 	]*[:=]?[ 	]*(-?\d+)`)
 
-// intRe finds integers in a tool's output.
-var intRe = regexp.MustCompile(`-?\d+`)
+// bareIntRe matches output that is nothing but one integer.
+var bareIntRe = regexp.MustCompile(`^-?\d+$`)
 
 // parseTornScore returns the score printed by "nvidia-spark-ota-check
 // torn-score". ASSUMPTION: the exact output format of torn-score is not in
@@ -177,6 +179,10 @@ var intRe = regexp.MustCompile(`-?\d+`)
 // integer is taken after removing OTA names (OTA2607, spec 2.1), so the OTA
 // name can never be mistaken for the score. Pending a field capture (spec
 // section 12).
+// Only two shapes are accepted: a labelled "torn-score: N" anywhere in the
+// output, or the whole trimmed output being a single integer. Any other text
+// (error banners, usage help, version strings) yields no score rather than a
+// guessed one.
 func parseTornScore(out string) (int, bool) {
 	stripped := otaNameRe.ReplaceAllString(out, "")
 	if m := tornScoreRe.FindStringSubmatch(stripped); m != nil {
@@ -184,15 +190,13 @@ func parseTornScore(out string) (int, bool) {
 			return n, true
 		}
 	}
-	all := intRe.FindAllString(stripped, -1)
-	if len(all) == 0 {
-		return 0, false
+	trimmed := strings.TrimSpace(out)
+	if bareIntRe.MatchString(trimmed) {
+		if n, err := strconv.Atoi(trimmed); err == nil {
+			return n, true
+		}
 	}
-	n, err := strconv.Atoi(all[len(all)-1])
-	if err != nil {
-		return 0, false
-	}
-	return n, true
+	return 0, false
 }
 
 func collectOTAState(info *types.DGXOSInfo, errs *[]types.CollectorError) {
@@ -211,8 +215,11 @@ func collectOTAState(info *types.DGXOSInfo, errs *[]types.CollectorError) {
 		}
 		info.OTAFailed = failed
 	}
+	// The score is only trusted on exit status 0: unprivileged runs print
+	// "Error: nvidia-spark-ota-check must be run as root (uid 1000)" and exit
+	// non-zero (spec section 12 runs the tool with sudo).
 	r = util.RunCommand(otaCheckTimeoutSec, otaCheckTool, "torn-score")
-	if r.Err == nil || strings.TrimSpace(r.Stdout) != "" {
+	if r.Err == nil {
 		if n, ok := parseTornScore(r.Stdout); ok {
 			info.OTATorn = &n
 		}
@@ -514,15 +521,27 @@ func unitState(timeout int, unit string) string {
 	return firstLineOfText(r.Stdout)
 }
 
+// collectDGXUnits reads the systemd states of the DGX OS units named by WP1
+// item 6 (dgx-dashboard, dgx-dashboard-admin, fwupd, nvidia-persistenced).
+//
+// UnitsQueried is the integration contract for rule
+// dgx-spark-dashboard-unhealthy: it is true only when systemctl answered with
+// a state for at least one unit, so the *Active booleans are measurements.
+// With systemctl absent or unable to talk to systemd (containers, the
+// simulated run without a shim) it stays false and the booleans are unknown.
 func collectDGXUnits(info *types.DGXOSInfo, timeout int) {
-	info.DashboardActive = unitState(timeout, unitDashboard) == "active"
-	info.DashboardAdminActive = unitState(timeout, unitDashboardAdmin) == "active"
+	dash := unitState(timeout, unitDashboard)
+	admin := unitState(timeout, unitDashboardAdmin)
 	fw := unitState(timeout, unitFwupd)
+	pers := unitState(timeout, unitPersistenced)
+	info.UnitsQueried = dash != "" || admin != "" || fw != "" || pers != ""
+	info.DashboardActive = dash == "active"
+	info.DashboardAdminActive = admin == "active"
 	info.FwupdActive = fw == "active"
 	if fw == "failed" {
 		info.FwupdError = unitFwupd + " failed"
 	}
-	info.PersistencedActive = unitState(timeout, unitPersistenced) == "active"
+	info.PersistencedActive = pers == "active"
 }
 
 // ProcNetTCPListening returns the local ports in LISTEN state (st 0A) from

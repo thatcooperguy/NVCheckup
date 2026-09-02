@@ -78,7 +78,15 @@ var loggedFailureMarkers = []string{
 	"out of memory:",
 	"nvrm: xid",
 	"critical temperature",
-	"thermal",
+	"thermal shutdown",
+}
+
+// loggedFailureMarkerPairs are failure signatures that need two substrings on
+// the same line: a thermal zone reporting a critical trip. The bare word
+// "thermal" is deliberately not a marker ("Started thermald.service" is a
+// normal boot line, not a failure).
+var loggedFailureMarkerPairs = [][2]string{
+	{"thermal_zone", "critical"},
 }
 
 // suspendEntryMarker counts suspend attempts; suspendFailureMarkers mark a
@@ -371,6 +379,11 @@ func classifyBootTail(out string) bootTail {
 		lower := strings.ToLower(l)
 		for _, marker := range loggedFailureMarkers {
 			if strings.Contains(lower, marker) {
+				b.LoggedFailure = true
+			}
+		}
+		for _, pair := range loggedFailureMarkerPairs {
+			if strings.Contains(lower, pair[0]) && strings.Contains(lower, pair[1]) {
 				b.LoggedFailure = true
 			}
 		}

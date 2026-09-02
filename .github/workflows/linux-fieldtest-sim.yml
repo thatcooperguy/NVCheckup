@@ -22,6 +22,8 @@ on:
       - 'knowledge/**'
       - '.github/fieldtest/**'
       - 'scripts/make-simroot.sh'
+      - 'scripts/spark-capture.sh'
+      - 'scripts/linux-fieldtest.sh'
       - '.github/workflows/linux-fieldtest-sim.yml'
   workflow_dispatch:
 
@@ -326,6 +328,8 @@ jobs:
                   assert not (isinstance(v, (int, float)) and v > 0), (k, v)  # nvidia-smi memory is [N/A]: never a number
           pcie = j.get("gpu_pcie") or []
           assert pcie and pcie[0].get("on_package") is True, pcie             # spec 5.1: GEN 1@1x must not reach pcie-width-reduced
+          pc = j.get("pcie")
+          assert pc is None or pc.get("on_package") is True, pc            # spec 10: pcie.on_package (None tolerated until the pointer is guaranteed on single-GPU reports)
           # --- unified memory (WP1: unified_memory.go from NVC_SIM_ROOT/proc/meminfo) ---
           um = j.get("unified_memory")
           assert um, "unified_memory section missing"
@@ -410,8 +414,12 @@ jobs:
           # spec 5.1 / 10: the summary block replaces VRAM with a unified-memory line and adds a Platform line.
           grep -n "Unified memory" gb10/report.txt
           grep -n "Platform: DGX Spark" gb10/report.txt
-          # `! grep -q ...` never trips errexit, so test the inverse explicitly.
-          if grep -qE "^\s*VRAM:" gb10/report.txt; then echo "VRAM line present on a unified-memory platform (spec 5.1)"; exit 1; fi
+          # `! grep` is exempt from set -e, so test explicitly and fail the step (spec 5.1: no VRAM line on unified memory).
+          if grep -q "^\s*VRAM:" gb10/report.txt; then
+            echo "VRAM line present on a unified-memory platform (spec 5.1)"
+            grep -n "^\s*VRAM:" gb10/report.txt
+            exit 1
+          fi
           grep -q "Unified memory" gb10/report.md
           # spec 3.1 row 4: DGX_SERIAL_NUMBER is redacted (WP1).
           for f in gb10/report.txt gb10/report.json gb10/report.md; do

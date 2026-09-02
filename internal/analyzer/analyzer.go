@@ -10,6 +10,7 @@ package analyzer
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,7 +212,7 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 	// driver-not-detected is not emitted when dgx-spark-gsp-init-failure
 	// explains the missing driver version (spec 5.1).
 	if report.Driver.Version == "" && !gspInitFailure(report) {
-		findings = append(findings, types.Finding{
+		f := types.Finding{
 			ID:           "driver-not-detected",
 			Severity:     types.SeverityCrit,
 			Title:        "NVIDIA Driver Version Not Detected",
@@ -224,7 +225,29 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 			},
 			Category:   "driver",
 			Confidence: 95,
-		})
+		}
+		// Spec 5.1 / 8 (WP2 brief item 3): on rtx-spark without nvidia-smi.exe
+		// the WDDM DriverVersion from WMI is the only driver source, so a
+		// missing nvidia-smi version is INFO, not CRIT, while the N1X GPU is
+		// in the inventory. Whether the 616.00 Arm64 package ships
+		// nvidia-smi.exe is unconfirmed (spec 2.2).
+		if g := firstNVIDIAGPU(report); isRTXSpark(report) && report.Driver.NvidiaSmiPath == "" && g != nil {
+			wddm := strings.TrimSpace(g.DriverVersion)
+			if wddm == "" {
+				wddm = "n/a"
+			}
+			f.Severity = types.SeverityInfo
+			f.Title = "NVIDIA Driver Version Not Reported by nvidia-smi (RTX Spark)"
+			f.Evidence = fmt.Sprintf("nvidia-smi is absent, so no driver version came from it; the WDDM DriverVersion from WMI for GPU %d (%s) is %s. Whether the RTX Spark Arm64 driver package ships nvidia-smi.exe is unconfirmed (spec 2.2), so this is informational.", g.Index, g.Name, wddm)
+			f.WhyItMatters = "Until nvidia-smi.exe presence on RTX Spark is confirmed, the WDDM version reported by Windows (Win32_VideoController.DriverVersion) is the only driver-version source; the GPU is present and the driver may be healthy."
+			f.NextSteps = []string{
+				"Compare the WDDM DriverVersion above with the 616.00 Developer Preview package (WDDM suffix 16.1600, spec 2.2) via 'Get-CimInstance Win32_VideoController | fl Name,DriverVersion,InfFilename' (read-only).",
+				"If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.",
+			}
+			f.Confidence = 60
+			f.GPUIndexes = []int{g.Index}
+		}
+		findings = append(findings, f)
 	}
 
 	if report.Driver.NvidiaSmiPath == "" {
@@ -249,7 +272,9 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 			f.Title = "nvidia-smi Not Found (may be absent on RTX Spark)"
 			f.Evidence = "The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver package ships nvidia-smi.exe is unconfirmed (spec 2.2), so this is informational."
 			f.WhyItMatters = "Without nvidia-smi the GPU, thermal and PCIe samples come from WMI only; memory is the unified pool (Win32_OperatingSystem.TotalVisibleMemorySize), not AdapterRAM."
-			f.NextSteps = []string{"No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set."}
+			// Same sentence as the rtx-spark driver-not-detected step so the
+			// two collapse to one entry in RECOMMENDED NEXT STEPS.
+			f.NextSteps = []string{"If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set."}
 			f.Confidence = 60
 		}
 		findings = append(findings, f)
@@ -2189,6 +2214,30 @@ func isPlaceholderStep(lowerStep string) bool {
 		strings.HasPrefix(lowerStep, "no network action needed")
 }
 
+// stateChangingRe marks the steps that must never precede a read-only step
+// in RECOMMENDED NEXT STEPS (spec 5, "read-only steps always come first"):
+// Advisory steps and the "Last resort" System Recovery reimage steps, which
+// erase the unit and belong at the very end. The report renderers apply the
+// same partition to the per-finding steps.
+var stateChangingRe = regexp.MustCompile(`^(Advisory\b|Last resort\b)`)
+
+// orderReadOnlyFirst stable-partitions steps: read-only steps in their
+// original order, then the Advisory / Last resort steps in theirs.
+func orderReadOnlyFirst(steps []string) []string {
+	out := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if !stateChangingRe.MatchString(s) {
+			out = append(out, s)
+		}
+	}
+	for _, s := range steps {
+		if stateChangingRe.MatchString(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // buildNextSteps interleaves the findings' steps round-robin: the first step
 // of every CRIT/WARN finding, then the second step of each, and so on. This
 // way a single verbose finding cannot crowd out the others. INFO findings
@@ -2236,7 +2285,10 @@ func buildNextSteps(findings []types.Finding) []string {
 	if len(steps) == 0 {
 		steps = append(steps, "No immediate action required. System appears healthy.")
 	}
-	return steps
+	// Spec 5: rules whose only steps are Advisory (e.g. dgx-spark-ota-outdated)
+	// would otherwise place their depth-0 Advisory step ahead of another
+	// finding's read-only step, so partition the interleaved list once.
+	return orderReadOnlyFirst(steps)
 }
 
 // summaryLineWidth is the widest a summary line may be so the block fits in
@@ -2448,10 +2500,16 @@ func platformSummaryLine(report *types.Report) string {
 	case model != "":
 		line += " (" + model + ")"
 	}
-	if report.DGXOS != nil && report.DGXOS.SWBuildVersion != "" {
-		line += " | DGX OS " + report.DGXOS.SWBuildVersion
-		if report.DGXOS.OTAName != "" {
-			line += " / " + report.DGXOS.OTAName
+	// Same reading as dgx-spark-detected and the DGX OS block: DGX OS
+	// <DGX_SWBUILD_VERSION> / OTA <DGX_OTA_VERSION>; the OTA name stands in
+	// when the version is unknown. Stays under 72 columns for FE units.
+	if d := report.DGXOS; d != nil && (d.SWBuildVersion != "" || d.OTAVersion != "" || d.OTAName != "") {
+		line += " | DGX OS " + orNA(d.SWBuildVersion)
+		switch {
+		case d.OTAVersion != "":
+			line += " / OTA " + d.OTAVersion
+		case d.OTAName != "":
+			line += " / " + d.OTAName
 		}
 	}
 	return line

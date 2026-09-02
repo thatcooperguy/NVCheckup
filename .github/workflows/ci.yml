@@ -65,13 +65,11 @@ jobs:
     # Native Windows on Arm (spec docs/roadmap/spark-support.md section 8: runs-on
     # windows-11-arm, GA and free for public repos, image 10.0.26200, no GPU).
     # The RTX Spark (N1X) collectors are Windows/arm64 code; this is the only
-    # runner that executes them natively. continue-on-error because the
-    # windows-11-arm pool is newer than the x64 pools and its availability for
-    # this repository has not been confirmed; flip to false once a run has gone
-    # green.
+    # runner that executes them natively. The windows-11-arm pool has been
+    # confirmed for this repository (CI run 33642608687 on main went green), so
+    # this job is blocking like the others.
     timeout-minutes: 20
     runs-on: windows-11-arm
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

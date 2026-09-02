@@ -31,6 +31,12 @@ MAC placeholder, PCI_SLOT_NAME), `/etc/netplan/50-cx7.yaml` (cage-0 addresses,
 `/etc/cdi/nvidia.yaml`, and the container-toolkit apt source. The scenario's
 `description` names which of these are placeholders pending a hardware capture.
 
+The generator wipes `etc proc sys lib run var dev opt` under its output
+directory before writing, so it only accepts a directory under this folder or
+one that already carries the marker file `.nvc-simroot` (which it writes into
+every tree it generates). Pass any other path and it exits 2 without touching
+anything.
+
 `/proc/device-tree/model` is deliberately absent: whether DGX Spark exposes a
 device tree is an open question (spec section 12), so the scenario leaves
 `device_tree_model` empty and the generator creates no file.

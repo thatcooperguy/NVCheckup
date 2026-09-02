@@ -2,9 +2,9 @@ package report
 
 // Rendering helpers for the DGX Spark / RTX Spark / unified-memory additions
 // (docs/roadmap/spark-support.md sections 5 and 5.1): the Platform block, the
-// UNIFIED MEMORY / DGX OS / FIRMWARE / CLUSTER FABRIC sections, the impact
-// label next to WARN/CRIT severities and the distinct rendering of next
-// steps that start with the word Advisory.
+// UNIFIED MEMORY / DGX OS / FIRMWARE / CLUSTER FABRIC / GSP sections, the
+// impact label next to WARN/CRIT severities and the distinct rendering of
+// next steps that start with the word Advisory.
 
 import (
 	"fmt"
@@ -15,17 +15,36 @@ import (
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
-// advisoryRe matches the state-changing steps of spec 5 ("Advisory:" and
-// "Advisory: (data loss)" both qualify).
+// advisoryRe is the single contract for state-changing steps (spec 5 and the
+// spark-rules.json schema_notes): "^Advisory" followed by a word boundary, so
+// "Advisory: ...", "Advisory: (data loss) ..." and "Advisory sudo ..." all
+// qualify and nothing else does. The catalog's System Recovery reimage
+// steps carry the "Advisory: (data loss)" prefix themselves.
 var advisoryRe = regexp.MustCompile(`^Advisory\b`)
-
-// stateChangingRe additionally covers the "Last resort" System Recovery
-// steps, which erase the unit and must stay after every read-only step.
-var stateChangingRe = regexp.MustCompile(`^(Advisory\b|Last resort\b)`)
 
 // advisoryPrefixRe captures the leading "Advisory" / "Advisory:" token for
 // bold rendering in markdown.
 var advisoryPrefixRe = regexp.MustCompile(`^Advisory:?`)
+
+// unifiedGPU reports whether a GPU's thermal sample belongs to a
+// unified-memory part: the platform flag, or nvidia-smi memory reported as
+// not-supported for that GPU (spec 2.1 / 5.1).
+func unifiedGPU(report *types.Report, gpu types.GPUInfo) bool {
+	return report.Platform.UnifiedMemory || gpu.MemoryReporting == "not-supported"
+}
+
+// footerAdvisory joins the privacy footer when the report carries Advisory
+// steps: they are advice the user types, never actions NVCheckup took.
+const footerAdvisory = "Steps marked \"Advisory:\" are advice with a revert command or a data-loss warning. NVCheckup did not run them."
+
+// uncleanBootWindowDays is the {days} window of gb10-logless-hard-poweroff
+// (spark-rules.json: "in the last {days} days (default 14)"); the collector
+// (linux.UncleanBootWindowDays) counts PlatformInfo.UncleanBoots over it.
+const uncleanBootWindowDays = 14
+
+// gspLinesShown caps the GSP / NVRM kernel lines printed in the text and
+// markdown reports; report.json carries all of them.
+const gspLinesShown = 6
 
 // isAdvisory reports whether a next step is an Advisory (state-changing) step.
 func isAdvisory(step string) bool {
@@ -33,21 +52,34 @@ func isAdvisory(step string) bool {
 }
 
 // orderedSteps returns the steps with every read-only step first and the
-// Advisory / last-resort steps after them, each group in its original order
-// (spec 5: read-only steps always come first).
+// Advisory steps after them, each group in its original order (spec 5:
+// read-only steps always come first).
 func orderedSteps(steps []string) []string {
 	out := make([]string, 0, len(steps))
 	for _, s := range steps {
-		if !stateChangingRe.MatchString(s) {
+		if !isAdvisory(s) {
 			out = append(out, s)
 		}
 	}
 	for _, s := range steps {
-		if stateChangingRe.MatchString(s) {
+		if isAdvisory(s) {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// hasAdvisorySteps reports whether any finding of the report carries an
+// Advisory step (drives the extra privacy-footer sentence).
+func hasAdvisorySteps(r *types.Report) bool {
+	for _, f := range r.Findings {
+		for _, s := range f.NextSteps {
+			if isAdvisory(s) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // impactSuffix renders " (impact: persistent)" for WARN/CRIT findings that
@@ -102,11 +134,66 @@ func gib(kb int64) string {
 	return fmt.Sprintf("%.1f", float64(kb)/(1024*1024))
 }
 
+// gspLines returns the GSP / SEC2 kernel lines the Linux collector kept
+// (LinuxInfo.GSPFailureLines, spec 3.2), nil when there are none. The
+// producer (linux/nvrm.go) reads dmesg or `journalctl -k -o cat`, so the
+// lines are kernel messages only and carry no hostname or username by
+// construction; internal/redact does not currently touch this field.
+func gspLines(r *types.Report) []string {
+	if r.Linux == nil {
+		return nil
+	}
+	return r.Linux.GSPFailureLines
+}
+
 // hasPlatformBlock reports whether the report carries anything the Platform
 // block can show.
 func hasPlatformBlock(r *types.Report) bool {
 	return r.Platform.Class != "" || r.Platform.UnifiedMemory || r.Platform.IsWindowsOnArm ||
-		r.UnifiedMemory != nil || r.DGXOS != nil || r.Cluster != nil
+		r.Platform.WoA != nil || r.Platform.UncleanBoots > 0 ||
+		r.UnifiedMemory != nil || r.DGXOS != nil || r.Cluster != nil || len(gspLines(r)) > 0
+}
+
+// dgxOSLabel is the one-line DGX OS reading shared with the analyzer's
+// dgx-spark-detected evidence and the summary line: image =
+// DGX_SWBUILD_VERSION, OTA = DGX_OTA_VERSION with the nvidia-spark-ota-check
+// name in parentheses.
+func dgxOSLabel(d *types.DGXOSInfo) string {
+	v := "image " + valueOrNA(d.SWBuildVersion)
+	switch {
+	case d.OTAVersion != "" && d.OTAName != "":
+		v += " / OTA " + d.OTAVersion + " (" + d.OTAName + ")"
+	case d.OTAVersion != "":
+		v += " / OTA " + d.OTAVersion
+	case d.OTAName != "":
+		v += " / OTA " + d.OTAName
+	}
+	return v
+}
+
+// prevBootLabel summarises the journal classification of the previous boot
+// and the log-less boot count of the window (gb10-logless-hard-poweroff).
+func prevBootLabel(p types.PlatformInfo) string {
+	var v string
+	switch {
+	case p.PrevBootClean == nil:
+		v = "journal of boot -1 not readable"
+	case *p.PrevBootClean:
+		v = "clean shutdown"
+	default:
+		v = "no clean-shutdown marker"
+	}
+	if p.PrevBootLastLine != "" {
+		v += fmt.Sprintf(" (last line '%s')", p.PrevBootLastLine)
+	}
+	if p.PstoreEmpty != nil {
+		if *p.PstoreEmpty {
+			v += "; pstore empty"
+		} else {
+			v += "; pstore holds crash records"
+		}
+	}
+	return v + fmt.Sprintf("; %d log-less boot(s) in the last %d days", p.UncleanBoots, uncleanBootWindowDays)
 }
 
 // platformRows returns the label/value pairs of the Platform block, shared by
@@ -150,18 +237,14 @@ func platformRows(r *types.Report) [][2]string {
 		add("Unified memory", "no")
 	}
 	if r.DGXOS != nil {
-		v := valueOrNA(r.DGXOS.SWBuildVersion)
-		if r.DGXOS.OTAName != "" || r.DGXOS.OTAVersion != "" {
-			v += " / OTA " + valueOrNA(r.DGXOS.OTAName)
-			if r.DGXOS.OTAVersion != "" {
-				v += " (" + r.DGXOS.OTAVersion + ")"
-			}
-		}
-		add("DGX OS", v)
+		add("DGX OS", dgxOSLabel(r.DGXOS))
 	}
 	if um := r.UnifiedMemory; um != nil {
 		add("Memory pool", fmt.Sprintf("%s GiB total, %s GiB available, %s GiB allocatable (MemAvailable + SwapFree; HugePages override, spec 3.3)",
 			gib(um.MemTotalKB), gib(um.MemAvailableKB), gib(um.AllocatableKB)))
+	}
+	if p.PrevBootClean != nil || p.UncleanBoots > 0 {
+		add("Previous boot", prevBootLabel(p))
 	}
 	if c := r.Cluster; c != nil && len(c.Ports) > 0 {
 		parts := make([]string, 0, len(c.Ports))
@@ -187,6 +270,44 @@ func platformRows(r *types.Report) [][2]string {
 		}
 		add("Windows on Arm", v)
 	}
+	// RTX Spark adapter facts from windows.CollectWoA (spec 8).
+	if w := p.WoA; w != nil {
+		if w.AdapterName != "" || w.PNPDeviceID != "" {
+			v := valueOrNA(w.AdapterName)
+			if w.PNPDeviceID != "" {
+				v += " [" + w.PNPDeviceID + "]"
+			}
+			add("Adapter", v)
+		}
+		if w.DriverVersion != "" || w.InfFilename != "" || w.DeveloperPreview {
+			var parts []string
+			if w.DriverVersion != "" {
+				parts = append(parts, "WDDM "+w.DriverVersion)
+			}
+			if w.InfFilename != "" {
+				parts = append(parts, w.InfFilename)
+			}
+			if w.DeveloperPreview {
+				parts = append(parts, "616.00 Developer Preview")
+			} else {
+				parts = append(parts, "not the Developer Preview")
+			}
+			add("WDDM driver", strings.Join(parts, ", "))
+		}
+		if w.NvccMachine != "" || w.NvccPath != "" {
+			v := valueOrNA(w.NvccMachine)
+			switch strings.ToUpper(strings.TrimSpace(w.NvccMachine)) {
+			case "AMD64", "I386":
+				v += " (x86 toolkit running under Prism)"
+			case "ARM64":
+				v += " (native Arm64 toolkit)"
+			}
+			// The path itself is not printed: it may carry a username
+			// (CUDA_PATH under a user profile) and the redacted finding
+			// evidence already shows it; the machine word is the diagnostic.
+			add("nvcc.exe", v)
+		}
+	}
 	return rows
 }
 
@@ -205,13 +326,19 @@ func unifiedMemoryRows(um *types.UnifiedMemoryInfo) [][2]string {
 		{"GPU processes", fmt.Sprintf("%d", um.GPUProcesses)},
 		{"OOM events", fmt.Sprintf("%d OOM-killer, %d NVRM no-memory", um.OOMKills, um.NVRMNoMemory)},
 	}
+	if um.PswpinDelta > 0 {
+		rows = append(rows, [2]string{"Swap-in", fmt.Sprintf("%d pages swapped in during the run (/proc/vmstat pswpin)", um.PswpinDelta)})
+	}
 	if um.HugePagesTotal > 0 {
 		rows = append(rows, [2]string{"HugePages", fmt.Sprintf("%d total, %d free, %d kB each", um.HugePagesTotal, um.HugePagesFree, um.HugepagesizeKB)})
 	}
 	return rows
 }
 
-// dgxOSRows lists the DGX OS release, pairing and service state.
+// dgxOSRows lists the DGX OS release, pairing and service state. The unit
+// states are printed as measurements only when systemctl answered
+// (DGXOSInfo.UnitsQueried, integration contract); otherwise they are unknown
+// and say so rather than showing zero-valued booleans as "inactive".
 func dgxOSRows(d *types.DGXOSInfo) [][2]string {
 	state := func(b bool) string {
 		if b {
@@ -219,28 +346,73 @@ func dgxOSRows(d *types.DGXOSInfo) [][2]string {
 		}
 		return "inactive"
 	}
-	torn := "n/a"
-	if d.OTATorn != nil {
-		torn = fmt.Sprintf("%d", *d.OTATorn)
+	release := valueOrNA(d.PrettyName) + ", image " + valueOrNA(d.SWBuildVersion) + " (DGX_SWBUILD_VERSION"
+	if d.SWBuildDate != "" {
+		release += ", built " + d.SWBuildDate
 	}
+	if d.CommitID != "" {
+		release += ", commit " + d.CommitID
+	}
+	release += ")"
+	ota := valueOrNA(d.OTAVersion) + " (DGX_OTA_VERSION)"
+	if d.OTAName != "" {
+		ota += " " + d.OTAName
+	}
+	if d.OTADate != "" {
+		ota += ", applied " + d.OTADate
+	}
+	rows := [][2]string{{"Release", release}, {"OTA", ota}}
+	if d.Platform != "" {
+		rows = append(rows, [2]string{"DGX platform", d.Platform}) // "DGX Server for KVM" quirk, spec 3.1 row 4
+	}
+	if d.FastOSVersion != "" {
+		rows = append(rows, [2]string{"FastOS", d.FastOSVersion})
+	}
+	if d.SerialNumber != "" {
+		rows = append(rows, [2]string{"Serial", d.SerialNumber}) // <serial> after internal/redact
+	}
+	check := "not run (nvidia-spark-ota-check absent, timed out or needs root)"
+	if d.OTATorn != nil || len(d.OTAFailed) > 0 {
+		torn := "n/a"
+		if d.OTATorn != nil {
+			torn = fmt.Sprintf("%d", *d.OTATorn)
+		}
+		check = fmt.Sprintf("torn=%s, failed: %s", torn, valueOrNA(strings.Join(d.OTAFailed, ", ")))
+	}
+	rows = append(rows,
+		[2]string{"OTA check", check},
+		[2]string{"Driver package", valueOrNA(d.DriverPkgVersion)},
+		[2]string{"Firmware package", valueOrNA(d.FirmwarePkgVersion)},
+	)
+	// Same contract as dgx-spark-ota-torn in the analyzer: ModulesForKernel is
+	// a measurement only when the collector probed (UnitsQueried) and dpkg
+	// answered for the driver package; otherwise it is unknown, not missing.
 	modules := "missing"
-	if d.ModulesForKernel {
+	switch {
+	case !d.UnitsQueried:
+		modules = "not checked (collector did not probe)"
+	case d.ModulesForKernel:
 		modules = "present"
+	case d.DriverPkgVersion == "":
+		modules = "not checked (dpkg not queried)"
 	}
-	port := "closed"
-	if d.DashboardPortOpen {
-		port = "open"
-	}
-	rows := [][2]string{
-		{"Release", strings.TrimSpace(valueOrNA(d.PrettyName) + " " + d.SWBuildVersion)},
-		{"OTA", strings.TrimSpace(valueOrNA(d.OTAName) + " " + d.OTAVersion + " " + d.OTADate)},
-		{"OTA check", fmt.Sprintf("torn=%s, failed: %s", torn, valueOrNA(strings.Join(d.OTAFailed, ", ")))},
-		{"Driver package", valueOrNA(d.DriverPkgVersion)},
-		{"Firmware package", valueOrNA(d.FirmwarePkgVersion)},
-		{"Modules for kernel", modules},
-		{"Dashboard", fmt.Sprintf("dgx-dashboard %s, dgx-dashboard-admin %s, port 11000 %s", state(d.DashboardActive), state(d.DashboardAdminActive), port)},
-		{"fwupd", state(d.FwupdActive)},
-		{"Persistenced", state(d.PersistencedActive)},
+	rows = append(rows, [2]string{"Modules for kernel", modules})
+	if d.UnitsQueried {
+		port := "closed"
+		if d.DashboardPortOpen {
+			port = "open"
+		}
+		rows = append(rows,
+			[2]string{"Dashboard", fmt.Sprintf("dgx-dashboard %s, dgx-dashboard-admin %s, port 11000 %s", state(d.DashboardActive), state(d.DashboardAdminActive), port)},
+			[2]string{"fwupd", state(d.FwupdActive)},
+			[2]string{"Persistenced", state(d.PersistencedActive)},
+		)
+	} else {
+		rows = append(rows,
+			[2]string{"Dashboard", "units not queried (systemctl unavailable or the DGX OS collector did not run); port 11000 not checked"},
+			[2]string{"fwupd", "not queried"},
+			[2]string{"Persistenced", "not queried"},
+		)
 	}
 	if d.FwupdError != "" {
 		rows = append(rows, [2]string{"fwupd error", d.FwupdError})
@@ -272,7 +444,11 @@ func clusterRows(c *types.ClusterInfo) [][2]string {
 		if p.RDMADev != "" {
 			name += " (" + p.RDMADev + ")"
 		}
-		v := fmt.Sprintf("cage %d, %s, %d Mb/s, MTU %d, IPv4 %s", p.Cage, valueOrNA(p.State), p.SpeedMbps, p.MTU, valueOrNA(strings.Join(p.IPv4, ", ")))
+		cage := fmt.Sprintf("cage %d", p.Cage)
+		if p.Cage < 0 {
+			cage = "cage unknown"
+		}
+		v := fmt.Sprintf("%s, %s, %d Mb/s, MTU %d, IPv4 %s", cage, valueOrNA(p.State), p.SpeedMbps, p.MTU, valueOrNA(strings.Join(p.IPv4, ", ")))
 		if p.Bond != "" {
 			v += ", bond " + p.Bond
 		}
@@ -339,6 +515,18 @@ func writeRows(sb *strings.Builder, rows [][2]string) {
 	}
 }
 
+// writeGSPLines prints the GSP / SEC2 kernel lines (first gspLinesShown).
+func writeGSPLines(sb *strings.Builder, lines []string) {
+	fmt.Fprintf(sb, "\n== GSP / NVRM KERNEL LINES (%d matched, spec 3.2) ==\n\n", len(lines))
+	for i, l := range lines {
+		if i >= gspLinesShown {
+			fmt.Fprintf(sb, "  ... %d more in report.json\n", len(lines)-gspLinesShown)
+			break
+		}
+		fmt.Fprintf(sb, "  %s\n", l)
+	}
+}
+
 // writePlatformSections writes the Platform block and the optional detail
 // sections of the text report.
 func writePlatformSections(sb *strings.Builder, r *types.Report, line func()) {
@@ -368,6 +556,10 @@ func writePlatformSections(sb *strings.Builder, r *types.Report, line func()) {
 		writeRows(sb, clusterRows(r.Cluster))
 		line()
 	}
+	if lines := gspLines(r); len(lines) > 0 {
+		writeGSPLines(sb, lines)
+		line()
+	}
 }
 
 // writePlatformSectionsMarkdown is the markdown counterpart.
@@ -394,5 +586,16 @@ func writePlatformSectionsMarkdown(sb *strings.Builder, r *types.Report) {
 	}
 	if r.Cluster != nil {
 		table("Cluster Fabric (ConnectX-7)", clusterRows(r.Cluster))
+	}
+	if lines := gspLines(r); len(lines) > 0 {
+		fmt.Fprintf(sb, "## GSP / NVRM Kernel Lines\n\n%d line(s) matched the spec 3.2 GSP / SEC2 markers:\n\n", len(lines))
+		for i, l := range lines {
+			if i >= gspLinesShown {
+				fmt.Fprintf(sb, "- ... %d more in report.json\n", len(lines)-gspLinesShown)
+				break
+			}
+			fmt.Fprintf(sb, "- `%s`\n", strings.ReplaceAll(l, "`", "'"))
+		}
+		sb.WriteString("\n")
 	}
 }

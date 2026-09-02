@@ -1,0 +1,161 @@
+{
+  "verdict": "FITS: Llama 3.1 8B Instruct BF16, 8K context x 1 stream, q8_0 KV, llama.cpp needs 18.5 GiB on this machine (pool 24.0 GiB, margin 5.5 GiB).",
+  "exit_code": 1,
+  "platform": {
+    "label": "NVIDIA GeForce RTX 3090",
+    "os": "windows",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "unified_memory": false,
+    "bandwidth_note": "unknown for this GPU (no figure in the spec)"
+  },
+  "memory": {
+    "total_gib": 24,
+    "available_gib": 22.5,
+    "headroom_gib": 0,
+    "headroom_reason": "0 GiB: dedicated VRAM of a discrete GPU (assumption; spec 7.4 F is a unified-memory reservation; set --headroom-gib to reserve VRAM)",
+    "allocatable_gib": 22.5,
+    "swap_used_gib": 0,
+    "source": "nvidia-smi memory.total of NVIDIA GeForce RTX 3090 (dedicated VRAM, discrete GPU)",
+    "nodes": 1,
+    "discrete_vram": true
+  },
+  "model": {
+    "id": "llama-3.1-8b-instruct",
+    "name": "Llama 3.1 8B Instruct",
+    "hf_repo": "meta-llama/Llama-3.1-8B-Instruct",
+    "params_b": 8.03,
+    "active_params_b": 8.03,
+    "layers": 32,
+    "attention_layers": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "quant": "bf16",
+    "kv_dtype": "q8_0",
+    "kv_bytes_per_token": 65536,
+    "context": 8192,
+    "concurrency": 1,
+    "profile": "chat",
+    "license": "Llama 3.1 Community License"
+  },
+  "fit": {
+    "weights_gib": 15,
+    "weights_measured": false,
+    "kv_gib": 0.5,
+    "runtime_gib": 3,
+    "floor_gib": 0,
+    "total_gib": 18.5,
+    "now_gib": 18.5,
+    "pool_gib": 24,
+    "margin_gib": 5.5,
+    "fits_total": true,
+    "fits_now": true,
+    "gpu_memory_utilization": 0.8,
+    "max_context_tokens": 99007,
+    "per_node": false
+  },
+  "estimates": {
+    "decode_ceiling_tps": 0,
+    "decode_ceiling_weights_only_tps": 0,
+    "decode_band_tps": [
+      0,
+      0
+    ],
+    "prefill_ref_tps": "2,000-8,000 tok/s (measured by others on GB10, S88-S90; not measured here)",
+    "note": "memory bandwidth of this platform is not known to the wizard; no decode ceiling is printed",
+    "measured_by_others": "8B FP8: 20.5 tok/s measured (S89), vs 34 weights-only / 22 at 32K"
+  },
+  "runtime": {
+    "name": "llamacpp",
+    "image": "",
+    "build": "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real",
+    "command": "llama-server -hf meta-llama/Llama-3.1-8B-Instruct:BF16 --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 8192 -np 1 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja",
+    "env": [],
+    "notes": [
+      "--no-mmap avoids the Spark mmap slow-load; keep the KV cache at q8_0 or higher (spec 7.6).",
+      "Optional speculative decoding for models that ship MTP heads: --spec-type draft-mtp --spec-draft-n-max 3 (spec 7.6).",
+      "-hf {repo}:{quant} names a GGUF repo on Hugging Face; llama-server fetches it on first start, llm-plan does not."
+    ]
+  },
+  "advice": {
+    "recommended_quant": "bf16",
+    "reason": "BF16 is the least lossy format that fits with the 0.0 GiB headroom (margin 5.5 GiB)",
+    "quants": [
+      {
+        "quant": "bf16",
+        "weights_gib": 15,
+        "total_gib": 18.5,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 5.5
+      },
+      {
+        "quant": "q8_0",
+        "weights_gib": 7.9,
+        "total_gib": 11.4,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 12.6
+      },
+      {
+        "quant": "q4_k_m",
+        "weights_gib": 4.5,
+        "total_gib": 8,
+        "fits_total": true,
+        "fits_now": true,
+        "margin_gib": 16
+      }
+    ],
+    "lines": [
+      "Keep BF16: BF16 is the least lossy format that fits with the 0.0 GiB headroom (margin 5.5 GiB).",
+      "Headroom: up to about 99007 tokens per stream would still fit at BF16 with 1 stream."
+    ]
+  },
+  "prerequisites": [
+    {
+      "id": "driver-present",
+      "status": "PASS",
+      "detail": "driver 591.86"
+    },
+    {
+      "id": "cuda-13",
+      "status": "PASS",
+      "detail": "CUDA 13.0"
+    },
+    {
+      "id": "torch-cu130-sm120",
+      "status": "SKIP",
+      "detail": "torch not found in the probed python (container runtimes bring their own)"
+    },
+    {
+      "id": "triton-ptxas-path",
+      "status": "SKIP",
+      "detail": "Triton not installed in the probed python"
+    },
+    {
+      "id": "swap-in-use",
+      "status": "SKIP",
+      "detail": "swap usage not available"
+    },
+    {
+      "id": "page-cache",
+      "status": "SKIP",
+      "detail": "page cache vs MemAvailable is a unified-memory check; the pool here is dedicated VRAM"
+    },
+    {
+      "id": "model-server-ports",
+      "status": "SKIP",
+      "detail": "listening ports not available"
+    },
+    {
+      "id": "memavailable-fits",
+      "status": "PASS",
+      "detail": "VRAM free 22.5 GiB \u003e= W + KV + R = 18.5 GiB"
+    }
+  ],
+  "warnings": [
+    "Discrete GPU: the spec's formulas target unified-memory Spark systems; the pool here is dedicated VRAM, so the OS floor F defaults to 0 (an assumption, not a spec figure; --headroom-gib N reserves N GiB of VRAM for the desktop or other GPU work)."
+  ],
+  "notes": [
+    "Discrete GPU: the pool is dedicated VRAM, not the shared pool spec 7.4 sizes; the OS floor F defaults to 0 here (F is a host-OS reservation out of unified memory) unless --headroom-gib is given, and the swap/page-cache checks are skipped."
+  ]
+}

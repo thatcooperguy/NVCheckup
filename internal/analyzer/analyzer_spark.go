@@ -140,6 +140,9 @@ var (
 	fwNameEC  = []string{"embedded controller", " ec", "ec "}
 	fwNameSoC = []string{"soc", "uefi", "system firmware", "sbios"}
 	fwNamePD  = []string{"power delivery", "usb-pd", "usb pd", " pd"}
+	// fwNameCX7: the ConnectX-7 NIC firmware row (nvidia-spark-mlnx-firmware-
+	// manager / fwupd), quoted by cx7-link-speed-degraded; no FE threshold.
+	fwNameCX7 = []string{"connectx", "cx-7", "cx7", "mellanox", "mt2910"}
 )
 
 // ── PD power wedge signature (spec 5, gb10-pd-power-wedge; S120) ──────
@@ -184,12 +187,6 @@ func isUnifiedMem(r *types.Report) bool { return r.Platform.UnifiedMemory }
 func isWindowsReport(r *types.Report) bool {
 	return r.Platform.IsWindowsOnArm || r.Windows != nil || r.Metadata.Platform == "windows" ||
 		strings.Contains(strings.ToLower(r.System.OSName), "windows")
-}
-
-// isArm64Linux reports whether the host is a Linux aarch64 machine.
-func isArm64Linux(r *types.Report) bool {
-	arch := strings.ToLower(strings.TrimSpace(r.System.Architecture))
-	return (arch == "arm64" || arch == "aarch64") && !isWindowsReport(r)
 }
 
 // gb10Hardware: GB10 silicon is present whatever nvidia-smi says (spec 3.1
@@ -247,6 +244,9 @@ func logText(r *types.Report) string {
 	var parts []string
 	if r.Linux != nil {
 		parts = append(parts, r.Linux.DmesgSnippets, r.Linux.JournalSnippets)
+		// GSP / SEC2 lines kept by linux.CollectNVRMMessages without
+		// --include-logs (LinuxInfo.GSPFailureLines, spec 3.2).
+		parts = append(parts, r.Linux.GSPFailureLines...)
 	}
 	parts = append(parts, r.Driver.NvidiaSmiOutput)
 	for _, e := range r.CollectorErrors {
@@ -413,14 +413,15 @@ func analyzePlatformDetected(r *types.Report) []types.Finding {
 	}
 	switch r.Platform.Class {
 	case classDGXSpark:
-		// Rule row dgx-spark-detected (spec 5).
+		// Rule row dgx-spark-detected (spec 5). Evidence template "DGX OS
+		// {swbuild} / OTA {ota}": swbuild is DGX_SWBUILD_VERSION (the factory
+		// image), ota is DGX_OTA_VERSION with the nvidia-spark-ota-check name
+		// in parentheses; the summary line and the DGX OS block use the same
+		// reading.
 		swbuild, ota := "n/a", "n/a"
 		if r.DGXOS != nil {
 			swbuild = orNA(r.DGXOS.SWBuildVersion)
-			ota = orNA(r.DGXOS.OTAName)
-			if r.DGXOS.OTAVersion != "" {
-				ota += " (" + r.DGXOS.OTAVersion + ")"
-			}
+			ota = dgxOTALabel(r.DGXOS)
 		}
 		f := sparkFinding("dgx-spark-detected", fmt.Sprintf("GB10 platform: %s %s (%s); GPU %s CC %s; kernel %s; DGX OS %s / OTA %s.",
 			orNA(r.Platform.Vendor), orNA(r.Platform.Model), feOrOEM(r), gpuName, orNA(computeCap(r)), orNA(r.System.KernelVersion), swbuild, ota))
@@ -428,14 +429,10 @@ func analyzePlatformDetected(r *types.Report) []types.Finding {
 		findings = append(findings, f)
 	case classRTXSpark:
 		if isWindowsReport(r) {
-			// Rule row rtx-spark-detected (spec 5): WoA + PNP DEV_2E03/2E06.
-			cores, devid := "n/a", "n/a"
-			if gpu != nil {
-				if m := regexp.MustCompile(`(\d+)-core`).FindStringSubmatch(gpu.Name); m != nil {
-					cores = m[1]
-				}
-				devid = orNA(strings.ToUpper(strings.TrimPrefix(gpu.PCIDeviceID, "0x")))
-			}
+			// Rule row rtx-spark-detected (spec 5): WoA + PNP DEV_2E03/2E06,
+			// from the nvidia-smi inventory or the WMI adapter row
+			// (PlatformInfo.WoA) when nvidia-smi.exe is absent.
+			cores, devid := rtxSparkAdapterFacts(r)
 			f := sparkFinding("rtx-spark-detected", fmt.Sprintf("RTX Spark N1X (%s-core, DEV_%s), Windows build %s ARM64, %s, pool %.1f GiB (Win32_OperatingSystem.TotalVisibleMemorySize).",
 				cores, devid, orNA(r.System.OSBuild), orNA(strings.TrimSpace(r.Platform.Vendor+" "+r.Platform.Model)), float64(r.System.RAMTotalMB)/1024))
 			f.GPUIndexes = nvidiaGPUIndexes(r)
@@ -452,6 +449,18 @@ func analyzePlatformDetected(r *types.Report) []types.Finding {
 		findings = append(findings, f)
 	}
 	return findings
+}
+
+// dgxOTALabel renders DGX_OTA_VERSION with the OTA name in parentheses
+// ("7.5.0 (OTA2607)"), the name alone when the version is unknown.
+func dgxOTALabel(d *types.DGXOSInfo) string {
+	switch {
+	case d.OTAVersion != "" && d.OTAName != "":
+		return d.OTAVersion + " (" + d.OTAName + ")"
+	case d.OTAVersion != "":
+		return d.OTAVersion
+	}
+	return orNA(d.OTAName)
 }
 
 // ── unified memory ───────────────────────────────────────────────────
@@ -485,9 +494,15 @@ func analyzeUnifiedMemory(r *types.Report) []types.Finding {
 		if g.MemoryReporting == "" {
 			value = "not reported"
 		}
-		pool := "Pool: /proc/meminfo not collected."
+		// The pool source is /proc/meminfo on Linux (spec 3.3) and
+		// Win32_OperatingSystem on Windows on Arm (spec 8).
+		source := "/proc/meminfo"
+		if isWindowsReport(r) {
+			source = "Win32_OperatingSystem TotalVisibleMemorySize"
+		}
+		pool := "Pool: " + source + " not collected."
 		if um != nil {
-			pool = fmt.Sprintf("Pool: MemTotal %s GiB measured from /proc/meminfo", fmtGiB(um.MemTotalKB))
+			pool = fmt.Sprintf("Pool: MemTotal %s GiB measured from %s", fmtGiB(um.MemTotalKB), source)
 			if isDGXSpark(r) {
 				// Spec 2.1: 128 GiB LPDDR5X, ~8.3 GiB reserved on 2025 units.
 				pool += "; the remainder of the 128 GiB LPDDR5X (marketed as 128 GB) is reserved for display/firmware (~8.3 GiB on 2025 units; the 2 GB / 4 GB display reserve is a BIOS toggle since July 2026, S4)"
@@ -522,11 +537,15 @@ func analyzeUnifiedMemory(r *types.Report) []types.Finding {
 
 	// Rule row unified-memory-swap-in-use (spec 5): INFO while a GPU process
 	// holds memory, WARN only when MemAvailable < 8 GiB or PSI full > 0.1.
-	// The pswpin delta is not part of the collected types yet.
+	// UnifiedMemoryInfo.PswpinDelta is /proc/vmstat pswpin sampled at the
+	// start and the end of the collector: a positive delta is swap-in
+	// activity and fires on its own; zero proves nothing (the window is
+	// milliseconds), so the swap-used clauses stay the primary trigger.
 	swapUsed := um.SwapTotalKB - um.SwapFreeKB
-	if um.GPUProcesses > 0 && swapUsed > 0 && (swapUsed >= umSwapUsedKB || (um.MemTotalKB > 0 && swapUsed*1000 > um.MemTotalKB*umSwapUsedPctX10)) {
-		f := sparkFinding("unified-memory-swap-in-use", fmt.Sprintf("Swap in use: %s of %s GiB (%s); MemAvailable %s GiB; vm.swappiness=%d; pswpin delta not collected. Single user measurement on GB10 (S36): 6.7 GiB swapped cost 43%% tok/s, 13 GiB cost 95%%.",
-			fmtGiB(swapUsed), fmtGiB(um.SwapTotalKB), orNA(strings.Join(um.SwapDevices, ", ")), fmtGiB(um.MemAvailableKB), um.Swappiness))
+	swapSized := swapUsed >= umSwapUsedKB || (um.MemTotalKB > 0 && swapUsed*1000 > um.MemTotalKB*umSwapUsedPctX10)
+	if um.GPUProcesses > 0 && ((swapUsed > 0 && swapSized) || um.PswpinDelta > 0) {
+		f := sparkFinding("unified-memory-swap-in-use", fmt.Sprintf("Swap in use: %s of %s GiB (%s); MemAvailable %s GiB; vm.swappiness=%d; pswpin delta %d pages during the run. Single user measurement on GB10 (S36): 6.7 GiB swapped cost 43%% tok/s, 13 GiB cost 95%%.",
+			fmtGiB(swapUsed), fmtGiB(um.SwapTotalKB), orNA(strings.Join(um.SwapDevices, ", ")), fmtGiB(um.MemAvailableKB), um.Swappiness, um.PswpinDelta))
 		if (um.MemAvailableKB > 0 && um.MemAvailableKB < umPressureWarnKB) || um.PSIFullAvg10 > umPSIFullWarn {
 			f.Severity = types.SeverityWarn
 		}
@@ -710,7 +729,10 @@ func analyzeDGXOS(r *types.Report) []types.Finding {
 	drvBase := strings.Join(intsToStrings(versionInts(dgx.DriverPkgVersion)), ".")
 	fwBase := strings.Join(intsToStrings(versionInts(dgx.FirmwarePkgVersion)), ".")
 	pkgMismatch := drvBase != "" && fwBase != "" && drvBase != fwBase
-	modulesMissing := dgx.DriverPkgVersion != "" && !dgx.ModulesForKernel
+	// ModulesForKernel is a measurement only when the DGX OS collector ran
+	// its probes (DGXOSInfo.UnitsQueried, integration contract): a DGXOSInfo
+	// filled from /etc/dgx-release alone carries zero-valued booleans.
+	modulesMissing := dgx.UnitsQueried && dgx.DriverPkgVersion != "" && !dgx.ModulesForKernel
 	if torn > 0 || len(dgx.OTAFailed) > 0 || pkgMismatch || modulesMissing {
 		state := "installed"
 		if modulesMissing {
@@ -731,8 +753,14 @@ func analyzeDGXOS(r *types.Report) []types.Finding {
 			orNA(dgx.OTAVersion), orNA(dgx.OTADate), orNA(r.System.KernelVersion), orNA(r.Driver.Version), otaCurrentDisplay)))
 	}
 
-	// Rule row dgx-spark-dashboard-unhealthy (spec 5), WARN.
-	if !dgx.DashboardActive || !dgx.DashboardAdminActive || !dgx.DashboardPortOpen || !dgx.FwupdActive || dgx.FwupdError != "" {
+	// Rule row dgx-spark-dashboard-unhealthy (spec 5), WARN. The trigger is
+	// "DGX OS AND (...)", so the clause needs a real DGX OS build string.
+	// The *Active booleans are measurements only when the collector reports
+	// DGXOSInfo.UnitsQueried (systemctl answered; integration contract in
+	// pkg/types): DashboardPortOpen comes from /proc/net/tcp and FwupdError
+	// from the journal independently of systemctl, so neither proves the
+	// units were queried, and when UnitsQueried is false the rule stays silent.
+	if dgx.SWBuildVersion != "" && dgx.UnitsQueried && (!dgx.DashboardActive || !dgx.DashboardAdminActive || !dgx.DashboardPortOpen || !dgx.FwupdActive || dgx.FwupdError != "") {
 		state := func(b bool) string {
 			if b {
 				return "active"
@@ -803,9 +831,14 @@ func fwTripletString(t [3]int) string {
 	return fmt.Sprintf("%d.%d.%d", t[0], t[1], t[2])
 }
 
-// fwClass maps a fwupdmgr device name onto "ec", "soc", "pd" or "".
+// fwClass maps a fwupdmgr device name onto "ec", "soc", "pd", "cx7" or "".
 func fwClass(name string) string {
 	n := " " + strings.ToLower(strings.TrimSpace(name)) + " "
+	for _, k := range fwNameCX7 {
+		if strings.Contains(n, k) {
+			return "cx7"
+		}
+	}
 	for _, k := range fwNamePD {
 		if strings.Contains(n, k) {
 			return "pd"
@@ -840,8 +873,8 @@ func analyzeFirmware(r *types.Report) []types.Finding {
 			pending = append(pending, fmt.Sprintf("%s -> %s", c.Name, c.Pending))
 		}
 		class := fwClass(c.Name)
-		if class == "" || !isFE {
-			continue
+		if (class != "ec" && class != "soc" && class != "pd") || !isFE {
+			continue // only the three FE-thresholded components are compared
 		}
 		cur, ok := fwVersionTriplet(c.Version)
 		if !ok {
@@ -1220,7 +1253,10 @@ func ngcImageTooOld(ref string) bool {
 // arm64-container-amd64-image and sm121-ngc-image-too-old (spec 5).
 func analyzeArm64Containers(r *types.Report) []types.Finding {
 	var findings []types.Finding
-	arm64Host := isDGXSpark(r) || r.Platform.Class == classArm64DGPU || isArm64Linux(r)
+	// Catalog platforms for arm64-flash-attn-no-wheel and
+	// arm64-container-amd64-image are [dgx-spark, arm64-dgpu] only (spec 5):
+	// Jetson and Grace Hopper are aarch64 too but are excluded on purpose.
+	arm64Host := isDGXSpark(r) || r.Platform.Class == classArm64DGPU
 	if !arm64Host {
 		return findings
 	}

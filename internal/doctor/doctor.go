@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/thatcooperguy/nvcheckup/internal/core"
+	"github.com/thatcooperguy/nvcheckup/internal/llmplan"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -144,7 +145,40 @@ func RunInteractive() int {
 	fmt.Println("You can share the report.txt file in support forums or GitHub issues.")
 	fmt.Println("PII has been automatically redacted.")
 
+	// Question 7 (asked last so the six piped answers of existing scripts
+	// keep working; exhausted input reads as "no"): on GB10/N1X hosts, or
+	// for AI users, offer the read-only llm-plan wizard (spec 7.1: doctor
+	// gains one hand-off question).
+	if offerLLMPlan(report, useCase) {
+		fmt.Println()
+		fmt.Println("7. Are you setting up an LLM or agent workload (vLLM, Ollama, llama.cpp, ...) on this machine?")
+		fmt.Println("   a) Yes: plan an LLM deployment now with the read-only llm-plan wizard")
+		fmt.Println("   b) No (default)")
+		fmt.Print("   > ")
+		if isYes(readInput(reader), "a") {
+			fmt.Println()
+			fmt.Println(strings.Repeat("─", 50))
+			llmplan.RunWithReport(reader, os.Stdout, report, runtime.GOOS)
+		} else {
+			fmt.Println("   Later: nvcheckup llm-plan --model <name> (or --list-models).")
+		}
+	}
+
 	return core.ExitCodeFor(report)
+}
+
+// offerLLMPlan decides whether doctor asks the llm-plan hand-off question:
+// always on DGX Spark / RTX Spark (GB10/N1X), and for users who picked the
+// AI use case on any platform.
+func offerLLMPlan(report *types.Report, useCase string) bool {
+	if llmplan.SparkSoC(report) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(useCase)) {
+	case "b", "ai", "ml", "cuda", "llm":
+		return true
+	}
+	return false
 }
 
 // chooseMode maps the two answers to a run mode. The issue answer can

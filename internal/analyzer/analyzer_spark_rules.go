@@ -156,7 +156,7 @@ var sparkRules = map[string]sparkRule{
 		Why:        "sm_121 is unsupported by pre-580 drivers; workloads silently run on CPU.",
 		Steps: []string{
 			"Advisory: update via the DGX Dashboard (Settings > Updates) or sudo apt update && sudo apt dist-upgrade && sudo fwupdmgr refresh && sudo fwupdmgr upgrade && sudo reboot; this replaces the driver (revert: apt install the previous version) and flashes firmware capsules, which cannot be rolled back.",
-			"Last resort, only if a manual driver install left apt unrecoverable: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first.",
+			"Advisory: (data loss) Last resort, only if a manual driver install left apt unrecoverable: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first.",
 		},
 	},
 	"dgx-spark-driver-branch-unsupported": {
@@ -180,7 +180,7 @@ var sparkRules = map[string]sparkRule{
 		Steps: []string{
 			"Read-only: dpkg -l | grep -E 'nvidia-driver|nvidia-dkms|nvidia-fabricmanager|nvidia-nvswitch' and sudo nvidia-spark-ota-check summary to list what differs from the image set.",
 			"Advisory: remove only the foreign packages (sudo apt purge <pkgs>) and reinstall the image driver set (sudo apt install nvidia-driver-580-open nvidia-firmware-580-<ver> linux-modules-nvidia-580-open-$(uname -r)), then reboot; revert by reinstalling the removed packages.",
-			"Last resort, only if the driver set cannot be restored: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first.",
+			"Advisory: (data loss) Last resort, only if the driver set cannot be restored: the System Recovery image (docs.nvidia.com/dgx/dgx-spark/system-recovery.html, S121) ERASES ALL DATA on the unit; back up first.",
 		},
 	},
 	"dgx-spark-cublas-batch-bug": {

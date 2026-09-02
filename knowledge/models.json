@@ -1,0 +1,193 @@
+{
+  "description": "Model shapes for nvcheckup llm-plan (docs/roadmap/spark-support.md section 7.3, HF config.json values S80/S81). The Go catalogue in internal/llmplan/models.go is the shipped copy; TestModelsJSON_MatchesCatalogue keeps this file identical to it.",
+  "version": "1",
+  "models": [
+    {
+      "id": "llama-3.1-8b-instruct",
+      "name": "Llama 3.1 8B Instruct",
+      "aliases": [
+        "llama3.1-8b",
+        "llama-3.1-8b",
+        "llama-8b",
+        "8b"
+      ],
+      "hf_repo": "meta-llama/Llama-3.1-8B-Instruct",
+      "params_b": 8.03,
+      "active_params_b": 8.03,
+      "layers": 32,
+      "hidden_size": 4096,
+      "heads": 32,
+      "kv_heads": 8,
+      "head_dim": 128,
+      "vocab": 128256,
+      "default_quant": "bf16",
+      "kv_bytes_per_token_f16": 131072,
+      "measured_decode_tps": "8B FP8: 20.5 tok/s measured (S89), vs 34 weights-only / 22 at 32K",
+      "ollama_arch": "llama",
+      "license": "Llama 3.1 Community License",
+      "source": "spec 7.3 row 1 (S80)"
+    },
+    {
+      "id": "llama-3.3-70b-instruct",
+      "name": "Llama 3.3 70B Instruct / DeepSeek-R1-Distill-Llama-70B",
+      "aliases": [
+        "llama3.3-70b",
+        "llama-3.3-70b",
+        "llama-70b",
+        "70b",
+        "r1-distill-llama-70b",
+        "deepseek-r1-distill-llama-70b"
+      ],
+      "hf_repo": "meta-llama/Llama-3.3-70B-Instruct",
+      "params_b": 70.6,
+      "active_params_b": 70.6,
+      "layers": 80,
+      "hidden_size": 8192,
+      "heads": 64,
+      "kv_heads": 8,
+      "head_dim": 128,
+      "vocab": 128256,
+      "default_quant": "bf16",
+      "kv_bytes_per_token_f16": 327680,
+      "measured_decode_tps": "70B FP8: 2.7 tok/s measured (S89), vs 3.9 weights-only",
+      "ollama_arch": "llama",
+      "license": "Llama 3.3 Community License (R1-Distill: MIT)",
+      "source": "spec 7.3 row 2 (S80)"
+    },
+    {
+      "id": "qwen3-32b",
+      "name": "Qwen3-32B / DeepSeek-R1-Distill-Qwen-32B",
+      "aliases": [
+        "qwen-32b",
+        "32b",
+        "r1-distill-qwen-32b",
+        "deepseek-r1-distill-qwen-32b"
+      ],
+      "hf_repo": "Qwen/Qwen3-32B",
+      "params_b": 32.8,
+      "active_params_b": 32.8,
+      "layers": 64,
+      "hidden_size": 5120,
+      "heads": 64,
+      "kv_heads": 8,
+      "head_dim": 128,
+      "vocab": 151936,
+      "default_quant": "bf16",
+      "kv_bytes_per_token_f16": 262144,
+      "ollama_arch": "qwen3",
+      "license": "Apache-2.0 (R1-Distill: MIT)",
+      "source": "spec 7.3 row 3 (S80)"
+    },
+    {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3-235B-A22B",
+      "aliases": [
+        "qwen3-235b",
+        "qwen-235b",
+        "235b"
+      ],
+      "hf_repo": "Qwen/Qwen3-235B-A22B",
+      "params_b": 235,
+      "active_params_b": 22,
+      "layers": 94,
+      "hidden_size": 4096,
+      "heads": 64,
+      "kv_heads": 4,
+      "head_dim": 128,
+      "vocab": 151936,
+      "experts": 128,
+      "experts_per_tok": 8,
+      "default_quant": "bf16",
+      "kv_bytes_per_token_f16": 192512,
+      "ollama_arch": "qwen3moe",
+      "license": "Apache-2.0",
+      "notes": "NVFP4 = 235e9 x 0.56 = 122.6 GiB \u003e 119.7 GiB: does not fit one Spark; NVIDIA lists it multi-node only (spec 7.5, S91).",
+      "source": "spec 7.3 row 4 (S80, S82)"
+    },
+    {
+      "id": "gpt-oss-120b",
+      "name": "gpt-oss-120b (MXFP4)",
+      "aliases": [
+        "gptoss-120b",
+        "gpt-oss-120",
+        "120b"
+      ],
+      "hf_repo": "openai/gpt-oss-120b",
+      "params_b": 117,
+      "active_params_b": 5.1,
+      "layers": 36,
+      "hidden_size": 2880,
+      "heads": 64,
+      "kv_heads": 8,
+      "head_dim": 64,
+      "vocab": 201088,
+      "experts": 128,
+      "experts_per_tok": 4,
+      "sliding_window": 128,
+      "default_quant": "mxfp4",
+      "kv_bytes_per_token_f16": 73728,
+      "measured_checkpoint_gib": {
+        "mxfp4": 56.8
+      },
+      "measured_decode_tps": "42-61 tok/s measured (S90)",
+      "no_formula_ceiling": true,
+      "ollama_arch": "gptoss",
+      "license": "Apache-2.0",
+      "notes": "KV B/token is an upper bound: half the layers use a 128-token sliding window (spec 7.3). Checkpoint ~61 GB = 56.8 GiB (spec 7.4/7.5).",
+      "source": "spec 7.3 row 5 (S80)"
+    },
+    {
+      "id": "gpt-oss-20b",
+      "name": "gpt-oss-20b (MXFP4)",
+      "aliases": [
+        "gptoss-20b",
+        "gpt-oss-20",
+        "20b"
+      ],
+      "hf_repo": "openai/gpt-oss-20b",
+      "params_b": 21,
+      "active_params_b": 3.6,
+      "layers": 24,
+      "hidden_size": 2880,
+      "heads": 64,
+      "kv_heads": 8,
+      "head_dim": 64,
+      "vocab": 201088,
+      "experts": 32,
+      "experts_per_tok": 4,
+      "sliding_window": 128,
+      "default_quant": "mxfp4",
+      "kv_bytes_per_token_f16": 49152,
+      "measured_checkpoint_gib": {
+        "mxfp4": 12.1
+      },
+      "no_formula_ceiling": true,
+      "ollama_arch": "gptoss",
+      "license": "Apache-2.0",
+      "notes": "KV B/token is an upper bound (sliding window on half the layers). Checkpoint 12.1 GiB (spec 7.5, 64 GB column).",
+      "source": "spec 7.3 row 6 (S80)"
+    },
+    {
+      "id": "nemotron-3-super-120b-a12b-nvfp4",
+      "name": "Nemotron-3-Super-120B-A12B NVFP4",
+      "aliases": [
+        "nemotron-3-super",
+        "nemotron-super-120b",
+        "nemotron-120b"
+      ],
+      "params_b": 120,
+      "active_params_b": 12,
+      "layers": 88,
+      "attention_layers": 8,
+      "kv_heads": 2,
+      "head_dim": 128,
+      "default_quant": "nvfp4",
+      "kv_bytes_per_token_f16": 8192,
+      "measured_slot_gb_at_262k": 7,
+      "measured_decode_tps": "23-38 tok/s measured (spec 7.4)",
+      "license": "NVIDIA Open Model License",
+      "notes": "Hybrid Mamba: 88 layers of which 8 attention (single source S81, unconfirmed); ~8 KiB attention KV/token plus a Mamba state term derived from the measured ~7 GB per Ollama slot at 262K (S81). hidden/heads/vocab not published in the spec.",
+      "source": "spec 7.3 row 7 (S81, single source)"
+    }
+  ]
+}

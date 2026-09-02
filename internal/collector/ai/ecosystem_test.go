@@ -92,6 +92,26 @@ func TestApplyEcosystemProbe(t *testing.T) {
 	if info2.TorchWarnings != nil {
 		t.Errorf("no stderr must give no warnings, got %v", info2.TorchWarnings)
 	}
+
+	// TRITON_PTXAS_PATH set: the path field stays the override and the
+	// version field still refers to the bundled binary (here: absent, so it
+	// stays empty). The bundled path must never leak into TritonPtxasPath.
+	t.Setenv("TRITON_PTXAS_PATH", "/usr/local/cuda/bin/ptxas")
+	info3 := types.EcosystemInfo{TritonPtxasPath: os.Getenv("TRITON_PTXAS_PATH")}
+	p.Triton.Ptxas = filepath.Join(t.TempDir(), "no-such-ptxas")
+	measureBundledPtxas(&info3, p, 5)
+	if info3.TritonPtxasPath != "/usr/local/cuda/bin/ptxas" {
+		t.Errorf("TritonPtxasPath must stay the TRITON_PTXAS_PATH value, got %q", info3.TritonPtxasPath)
+	}
+	if info3.TritonPtxasVersion != "" {
+		t.Errorf("missing bundled ptxas must leave TritonPtxasVersion empty, got %q", info3.TritonPtxasVersion)
+	}
+	// Unset override: the path stays empty even though Triton bundles a ptxas.
+	var info4 types.EcosystemInfo
+	measureBundledPtxas(&info4, p, 5)
+	if info4.TritonPtxasPath != "" {
+		t.Errorf("bundled path must not be copied into TritonPtxasPath, got %q", info4.TritonPtxasPath)
+	}
 }
 
 func TestParseDockerDaemonJSON(t *testing.T) {
@@ -177,5 +197,8 @@ func TestCollectEcosystemFromSimRoot(t *testing.T) {
 	}
 	if info.TritonPtxasPath != "/usr/local/cuda/bin/ptxas" {
 		t.Errorf("TritonPtxasPath = %q", info.TritonPtxasPath)
+	}
+	if info.TritonPtxasVersion != "" {
+		t.Errorf("no Python probe ran, so no bundled ptxas version is known; got %q", info.TritonPtxasVersion)
 	}
 }

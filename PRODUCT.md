@@ -830,7 +830,7 @@ Passwords, tokens, API keys, browser data, SSH keys, clipboard contents, process
 | Private/LAN IPv4 addresses | `<lan-ip>` |
 | Email addresses | `<email-redacted>` |
 | Wi-Fi SSIDs | `SSID: <redacted>` |
-| DGX Spark serial numbers (`DGX_SERIAL_NUMBER`, DMI serials) | `<serial>` |
+| DGX Spark serial number (`DGX_SERIAL_NUMBER`; DMI serial files are not read) | `<serial>` |
 | ConnectX-7 fabric addresses, `spark-xxxx` default hostnames | `<lan-ip>`, `<host>` (the existing rules cover them) |
 
 Four-part version numbers such as `11.0.7.247` (NVIDIA App) or `32.0.101.6078` (a driver) are recognised by the word that introduces them and are not treated as IP addresses. The home-directory match ends at a path separator, so a sibling profile such as `C:\Users\alice2` is never mistaken for `C:\Users\alice`.

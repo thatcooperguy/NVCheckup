@@ -38,6 +38,8 @@ Top: RTX Spark Developer Preview Driver
 | Unified memory | yes (nvidia-smi memory, fan, power limit and PCIe fields are [N/A] by design) |
 | Memory pool | 128.0 GiB total, 100.0 GiB available, 100.0 GiB allocatable (MemAvailable + SwapFree; HugePages override, spec 3.3) |
 | Windows on Arm | yes (native ARM64, NVCheckup emulated: no) |
+| Adapter | NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU) [PCI\VEN_10DE&DEV_2E03] |
+| WDDM driver | nv_surface_woa.inf, 616.00 Developer Preview |
 
 ## Unified Memory
 
@@ -86,7 +88,7 @@ Top: RTX Spark Developer Preview Driver
 | **WARN** (impact: persistent) | RTX Spark Developer Preview Driver | Driver 616.00 (nv_surface_woa.inf) is the RTX Spark Developer Preview branch ... | Check the RTX Spark Developer Preview thread (S24) and OEM/Windows Update for... |
 | **INFO** | Unified Memory: nvidia-smi Memory Fields Are [N/A] by Design | nvidia-smi memory '[N/A]' on GPU 0 (NVIDIA RTX Spark N1X (6144-core Blackwell... | Use /proc/meminfo MemAvailable (+SwapFree), free -h 'available' or the DGX Da... |
 | **INFO** | NVIDIA RTX Spark (N1X) Detected | RTX Spark N1X (6144-core, DEV_2E03), Windows build 26100 ARM64, Microsoft Sur... | Report total RAM as the GPU pool; record driver version and INF. |
-| **INFO** | nvidia-smi Not Found (may be absent on RTX Spark) | The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver pack... | No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup ... |
+| **INFO** | nvidia-smi Not Found (may be absent on RTX Spark) | The nvidia-smi utility was not found. Whether the RTX Spark Arm64 driver pack... | If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the ful... |
 
 ### Details
 
@@ -110,7 +112,7 @@ Top: RTX Spark Developer Preview Driver
 
 **ID:** `unified-memory-nvsmi-expected`
 
-**Evidence:** nvidia-smi memory '[N/A]' on GPU 0 (NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)) is expected on unified-memory iGPUs. Pool: MemTotal 128.0 GiB measured from /proc/meminfo. MemAvailable 100.0 GiB, swap 0.0 GiB. Fan, power limit, memory clock and PCIe gen/width are also [N/A] or misreported ('GEN 1@ 1x', S7).
+**Evidence:** nvidia-smi memory '[N/A]' on GPU 0 (NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)) is expected on unified-memory iGPUs. Pool: MemTotal 128.0 GiB measured from Win32_OperatingSystem TotalVisibleMemorySize. MemAvailable 100.0 GiB, swap 0.0 GiB. Fan, power limit, memory clock and PCIe gen/width are also [N/A] or misreported ('GEN 1@ 1x', S7).
 
 **Why it matters:** Suppresses low-vram, fan, power-limit and PCIe false alarms; cudaMemGetInfo also under-reports.
 
@@ -143,7 +145,7 @@ Top: RTX Spark Developer Preview Driver
 **Why it matters:** Without nvidia-smi the GPU, thermal and PCIe samples come from WMI only; memory is the unified pool (Win32_OperatingSystem.TotalVisibleMemorySize), not AdapterRAM.
 
 **Next steps:**
-- No action; if a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.
+- If a later RTX Spark driver adds nvidia-smi.exe, re-run NVCheckup for the fuller sample set.
 
 </details>
 
@@ -154,11 +156,12 @@ Top: RTX Spark Developer Preview Driver
 ## Recommended Next Steps
 
 1. Check the RTX Spark Developer Preview thread (S24) and OEM/Windows Update for a production Arm64 driver (read-only).
-2. Advisory: installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).
+2. **Advisory:** installing a different driver replaces the Developer Preview package (revert: reinstall the 616.00 DP package from the S24 thread).
 
 ---
 
 *This report was generated locally. No diagnostic data was transmitted.*  
-*Redaction was applied to remove usernames, hostnames, home paths and IP addresses.*  
+*Redaction was applied to remove usernames, hostnames, home paths, IP addresses and serial numbers.*  
 *The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation.*  
+*Steps marked "Advisory:" are advice with a revert command or a data-loss warning. NVCheckup did not run them.*  
 *NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.*
