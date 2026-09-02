@@ -3,10 +3,70 @@ package report
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
+
+// Footer sentences shared by the text and markdown renderers. The wording is
+// part of the documented CLI contract; change it together with the docs.
+const (
+	footerLocal    = "This report was generated locally. No diagnostic data was transmitted."
+	footerProbes   = "Network probes were run at your request (ICMP ping and traceroute to 1.1.1.1, DNS lookup of google.com)."
+	footerReadOnly = "The run command did not modify your system. Changes are made only by 'nvcheckup fix' after explicit confirmation."
+)
+
+// footerLines builds the privacy footer from the report metadata so the
+// statements are always true for the run that produced the report.
+func footerLines(meta types.ReportMetadata) []string {
+	lines := []string{footerLocal}
+	if meta.NetworkProbes {
+		lines = append(lines, footerProbes)
+	}
+	if meta.RedactionEnabled {
+		lines = append(lines, "Redaction was applied to remove usernames, hostnames, home paths and IP addresses.")
+	} else {
+		lines = append(lines, "Redaction was DISABLED. This report may contain identifying information.")
+	}
+	lines = append(lines, footerReadOnly)
+	return lines
+}
+
+// pcieSummary renders the PCIe link state on one line. A GPU sitting at P8
+// with Gen1 negotiated is normal power saving, not a downshift, so the idle
+// case is labelled explicitly to stop forum readers from chasing it.
+func pcieSummary(p *types.PCIeInfo) string {
+	cur := strings.TrimSpace(valueOrNA(p.CurrentSpeed) + " " + p.CurrentWidth)
+	switch {
+	case p.Downshifted:
+		return fmt.Sprintf("%s (DOWNSHIFTED, max %s %s)", cur, valueOrNA(p.MaxSpeed), p.MaxWidth)
+	case p.IdleLikely:
+		return fmt.Sprintf("%s (idle, max %s)", cur, valueOrNA(p.MaxSpeed))
+	default:
+		return fmt.Sprintf("%s (max %s %s)", cur, valueOrNA(p.MaxSpeed), p.MaxWidth)
+	}
+}
+
+// thermalSummary renders temperature, pstate and fan on one line.
+func thermalSummary(t *types.ThermalInfo) string {
+	parts := []string{fmt.Sprintf("%d°C", t.TemperatureC)}
+	if t.PowerState != "" {
+		parts = append(parts, t.PowerState)
+	}
+	if t.FanSupported {
+		parts = append(parts, fmt.Sprintf("fan %d%%", t.FanSpeedPct))
+	} else {
+		parts = append(parts, "fan N/A")
+	}
+	if t.PowerDrawW != "" && t.PowerLimitW != "" {
+		parts = append(parts, fmt.Sprintf("%s / %s W", t.PowerDrawW, t.PowerLimitW))
+	}
+	if t.SlowdownActive {
+		parts = append(parts, "SLOWDOWN: "+strings.Join(t.ThrottleReasons, ","))
+	}
+	return strings.Join(parts, ", ")
+}
 
 // GenerateText produces a human-readable report.txt
 func GenerateText(report *types.Report) string {
@@ -86,6 +146,12 @@ func GenerateText(report *types.Report) string {
 	// Driver Info
 	w("  NVIDIA Driver: %s\n", valueOrNA(report.Driver.Version))
 	w("  CUDA (driver): %s\n", valueOrNA(report.Driver.CUDAVersion))
+	if report.PCIe != nil {
+		w("  PCIe:          %s\n", pcieSummary(report.PCIe))
+	}
+	if report.Thermal != nil {
+		w("  Thermal:       %s\n", thermalSummary(report.Thermal))
+	}
 	line()
 
 	// Platform-specific sections
@@ -109,6 +175,11 @@ func GenerateText(report *types.Report) string {
 		line()
 	}
 
+	if report.Network != nil {
+		writeNetworkSection(&sb, report.Network)
+		line()
+	}
+
 	// Findings
 	w("\n== FINDINGS ==\n\n")
 	if len(report.Findings) == 0 {
@@ -129,12 +200,19 @@ func GenerateText(report *types.Report) string {
 	w("  Total: %d CRITICAL, %d WARNING, %d INFO\n\n", critCount, warnCount, infoCount)
 
 	for i, f := range report.Findings {
-		w("  [%s] #%d: %s\n", f.Severity, i+1, f.Title)
+		if f.ID != "" {
+			w("  [%s] #%d: %s (%s)\n", f.Severity, i+1, f.Title, f.ID)
+		} else {
+			w("  [%s] #%d: %s\n", f.Severity, i+1, f.Title)
+		}
 		w("    Evidence:     %s\n", f.Evidence)
 		w("    Why:          %s\n", f.WhyItMatters)
 		w("    Next Steps:\n")
 		for _, step := range f.NextSteps {
 			w("      • %s\n", step)
+		}
+		if f.Remediation != nil {
+			w("    Fix:          nvcheckup fix --id %s\n", f.Remediation.ID)
 		}
 		w("\n")
 	}
@@ -167,13 +245,9 @@ func GenerateText(report *types.Report) string {
 
 	// Privacy
 	w("\n== PRIVACY & DATA ==\n\n")
-	w("  This report was generated locally. No data was sent anywhere.\n")
-	if report.Metadata.RedactionEnabled {
-		w("  Redaction was applied to remove usernames, hostnames, and IP addresses.\n")
-	} else {
-		w("  Redaction was DISABLED. This report may contain identifying information.\n")
+	for _, l := range footerLines(report.Metadata) {
+		w("  %s\n", l)
 	}
-	w("  NVCheckup does not modify your system, drivers, or settings.\n")
 	w("\n")
 	line()
 	w("  %s\n", types.Disclaimer)
@@ -191,7 +265,10 @@ func writeWindowsSection(sb *strings.Builder, w *types.WindowsInfo) {
 	if len(w.Monitors) > 0 {
 		fmt.Fprintf(sb, "\n  Monitors:\n")
 		for _, m := range w.Monitors {
-			fmt.Fprintf(sb, "    - %s: %s @ %s\n", m.Name, m.Resolution, m.RefreshRate)
+			if m.Resolution == "" {
+				continue // placeholder entries from WMI carry no useful data
+			}
+			fmt.Fprintf(sb, "    - %s: %s @ %s\n", valueOrNA(m.Name), m.Resolution, valueOrNA(m.RefreshRate))
 		}
 	}
 
@@ -211,7 +288,7 @@ func writeWindowsSection(sb *strings.Builder, w *types.WindowsInfo) {
 
 	fmt.Fprintf(sb, "\n  Event Log Summary (last 30 days):\n")
 	fmt.Fprintf(sb, "    Driver Resets (4101):  %d event(s)\n", len(w.DriverResetEvents))
-	fmt.Fprintf(sb, "    nvlddmkm Errors:      %d event(s)\n", len(w.NvlddmkmErrors))
+	fmt.Fprintf(sb, "    nvlddmkm Errors:       %d event(s)\n", len(w.NvlddmkmErrors))
 	fmt.Fprintf(sb, "    WHEA Errors:           %d event(s)\n", len(w.WHEAErrors))
 
 	if len(w.RecentKBs) > 0 {
@@ -231,9 +308,15 @@ func writeLinuxSection(sb *strings.Builder, l *types.LinuxInfo) {
 
 	if l.LoadedModules != nil {
 		fmt.Fprintf(sb, "\n  Kernel Modules:\n")
-		for mod, loaded := range l.LoadedModules {
+		// Sorted so two reports from the same machine diff cleanly.
+		mods := make([]string, 0, len(l.LoadedModules))
+		for mod := range l.LoadedModules {
+			mods = append(mods, mod)
+		}
+		sort.Strings(mods)
+		for _, mod := range mods {
 			status := "loaded"
-			if !loaded {
+			if !l.LoadedModules[mod] {
 				status = "NOT loaded (exists but inactive)"
 			}
 			fmt.Fprintf(sb, "    - %-20s %s\n", mod, status)
@@ -249,10 +332,20 @@ func writeLinuxSection(sb *strings.Builder, l *types.LinuxInfo) {
 	fmt.Fprintf(sb, "  libcuda.so:     %s\n", valueOrNA(l.LibCudaPath))
 	fmt.Fprintf(sb, "  DKMS Status:    %s\n", valueOrNA(l.DKMSStatus))
 	fmt.Fprintf(sb, "  PRIME:          %s\n", valueOrNA(l.PRIMEStatus))
+	if l.GLRenderer != "" {
+		fmt.Fprintf(sb, "  GL Renderer:    %s\n", l.GLRenderer)
+	}
 
 	if l.ContainerRuntime != "" {
 		fmt.Fprintf(sb, "  Container:      %s\n", l.ContainerRuntime)
 		fmt.Fprintf(sb, "  NV Container:   %s\n", valueOrNA(l.NVContainerToolkit))
+	}
+
+	if len(l.XidErrors) > 0 {
+		fmt.Fprintf(sb, "\n  Xid Errors:\n")
+		for _, x := range l.XidErrors {
+			fmt.Fprintf(sb, "    - Xid %d x%d: %s\n", x.Code, x.Count, x.Message)
+		}
 	}
 
 	if len(l.NVIDIAPackages) > 0 {
@@ -315,6 +408,33 @@ func writeAISection(sb *strings.Builder, ai *types.AIInfo) {
 		fmt.Fprintf(sb, "\n  Key Packages:\n")
 		for _, pkg := range ai.KeyPackages {
 			fmt.Fprintf(sb, "    - %-20s %s\n", pkg.Name, pkg.Version)
+		}
+	}
+}
+
+func writeNetworkSection(sb *strings.Builder, n *types.NetworkInfo) {
+	fmt.Fprintf(sb, "\n== NETWORK (probes run at your request) ==\n\n")
+	fmt.Fprintf(sb, "  Interface:      %s (%s)\n", valueOrNA(n.InterfaceName), valueOrNA(n.InterfaceType))
+	if n.InterfaceType == "wifi" {
+		if n.WifiBand != "" {
+			fmt.Fprintf(sb, "  WiFi Band:      %s\n", n.WifiBand)
+		}
+		if n.WifiSignalDBM != 0 {
+			fmt.Fprintf(sb, "  WiFi Signal:    %d dBm\n", n.WifiSignalDBM)
+		}
+	}
+	fmt.Fprintf(sb, "  Latency:        %.2f ms\n", n.LatencyMs)
+	fmt.Fprintf(sb, "  Jitter:         %.2f ms\n", n.JitterMs)
+	fmt.Fprintf(sb, "  Packet Loss:    %.1f%%\n", n.PacketLossPct)
+	fmt.Fprintf(sb, "  DNS Time:       %.2f ms\n", n.DNSTimeMs)
+	if len(n.Hops) > 0 {
+		fmt.Fprintf(sb, "\n  Traceroute to 1.1.1.1:\n")
+		for _, hop := range n.Hops {
+			if hop.Loss {
+				fmt.Fprintf(sb, "    %2d. * (timeout)\n", hop.Number)
+			} else {
+				fmt.Fprintf(sb, "    %2d. %-22s %.2f ms\n", hop.Number, hop.Address, hop.LatencyMs)
+			}
 		}
 	}
 }
