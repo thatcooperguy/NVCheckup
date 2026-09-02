@@ -1,14 +1,17 @@
 name: Linux field test (simulated GPU)
 
 # GitHub's runners have no NVIDIA GPU, so this job gives the binary a
-# simulated one: small shims for nvidia-smi, lspci, lsmod, modinfo and dmesg
-# (.github/fieldtest/shims) answer the exact queries the collectors make from a
-# scenario file. That runs the GPU-dependent Linux code on real Linux (x86_64
-# and ARM64): per-GPU thermal/PCIe rows for a three-card rig, the analyzer's
-# multi-GPU attribution, Xid parsing, the blacklist-nouveau driver gate in
-# dry-run, and Jetson detection via /etc/nv_tegra_release. It is not a
-# substitute for real hardware (see issue #2); it is the closest thing we can
-# run on every push.
+# simulated one: small shims for nvidia-smi, lspci, lsmod, modinfo, dmesg and
+# the DGX OS tooling (.github/fieldtest/shims) answer the exact queries the
+# collectors make from a scenario file, and NVC_SIM_ROOT points the collectors
+# at a generated /etc, /proc and /sys tree (.github/fieldtest/simroot). That
+# runs the GPU-dependent Linux code on real Linux (x86_64 and ARM64): per-GPU
+# thermal/PCIe rows for a three-card rig, the analyzer's multi-GPU
+# attribution, Xid parsing, the blacklist-nouveau driver gate in dry-run,
+# Jetson detection via /etc/nv_tegra_release, and the DGX Spark (GB10)
+# unified-memory scenario of docs/roadmap/spark-support.md section 10 plus
+# its GSP-failure variant. It is not a substitute for real hardware (see
+# issue #2); it is the closest thing we can run on every push.
 
 on:
   push:
@@ -16,7 +19,9 @@ on:
     paths:
       - '**.go'
       - 'go.mod'
+      - 'knowledge/**'
       - '.github/fieldtest/**'
+      - 'scripts/make-simroot.sh'
       - '.github/workflows/linux-fieldtest-sim.yml'
   workflow_dispatch:
 
@@ -155,4 +160,296 @@ jobs:
             jetson/
             selftest.txt
             nouveau-dryrun.txt
+          if-no-files-found: warn
+
+  gb10:
+    # DGX Spark (GB10) simulation, spec docs/roadmap/spark-support.md section 10.
+    # ubuntu-24.04-arm is the primary runner (same CPU architecture as GB10, so
+    # runtime.GOARCH == arm64 and the aarch64 code paths are real); ubuntu-24.04
+    # (amd64) runs the same scenario to prove the detection does not depend on
+    # the host architecture. The shims answer every command; NVC_SIM_ROOT points
+    # the collectors at the generated /etc, /proc and /sys tree.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            arch: arm64
+          - os: ubuntu-24.04
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      SHIMS: ${{ github.workspace }}/.github/fieldtest/shims
+      SIMROOT: ${{ github.workspace }}/.github/fieldtest/simroot
+      SCENARIOS: ${{ github.workspace }}/.github/fieldtest/scenarios
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build, prepare shims, regenerate simroot
+        run: |
+          set -euo pipefail
+          go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=simtest" -o nvcheckup ./cmd/nvcheckup
+          chmod +x "$SHIMS"/* scripts/*.sh
+          for f in "$SHIMS"/*; do
+            case "$f" in *nvidia-smi|*nvc-sim-scenario) python3 -m py_compile "$f" ;; *.sh) bash -n "$f" ;; *) bash -n "$f" ;; esac
+          done
+          for s in "$SCENARIOS"/*.json; do python3 -m json.tool "$s" >/dev/null; done
+          # The committed simroot trees must match what the scenarios generate (also creates the empty dirs).
+          scripts/make-simroot.sh --all
+          git status --porcelain -- .github/fieldtest/simroot
+          test -z "$(git status --porcelain -- .github/fieldtest/simroot)" || { echo "simroot is stale: run scripts/make-simroot.sh --all and commit"; exit 1; }
+
+      - name: "Scenario gb10: shims answer the spec's exact strings"
+        env:
+          NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
+        run: |
+          set -euo pipefail
+          export PATH="$SHIMS:$PATH"
+          # spec 2.1: name "NVIDIA GB10", memory.* print "[N/A]", table shows "Not Supported", compute_cap 12.1, PCIe misreported GEN 1@1x
+          nvidia-smi -L | tee /dev/stderr | grep -q "NVIDIA GB10"
+          nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,noheader,nounits | tee /dev/stderr | grep -qx '\[N/A\], \[N/A\], \[N/A\]'
+          nvidia-smi --query-gpu=index,compute_cap --format=csv,noheader | tee /dev/stderr | grep -qx '0, 12.1'
+          nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits | grep -qx '0, 1, 1'
+          nvidia-smi | tee /dev/stderr | grep -q "Not Supported"
+          nvidia-smi -q -d PERFORMANCE | grep -q "Clocks Event Reasons"
+          # A rejected field prints the real error on stdout and exits 2 (self-test relies on this).
+          bad="$(nvidia-smi --query-gpu=index,does.not.exist --format=csv,noheader || true)"
+          test "$bad" = 'Field "does.not.exist" is not a valid field to query.'
+          # spec 3.1 row 5: lspci [10de:2e12] at 000f:01:00.0; 2.1: four ConnectX-7 functions [15b3:1021]
+          lspci -nn | grep -q '^000f:01:00.0 .*\[10de:2e12\]'
+          test "$(lspci -nn -d 15b3: | grep -c 1021)" -eq 4
+          # spec 3.1 row 10: DMI strings of a Founders Edition
+          test "$(dmidecode -s system-manufacturer)" = "NVIDIA"
+          test "$(dmidecode -s system-product-name)" = "NVIDIA_DGX_Spark"
+          test "$(dmidecode -s system-version)" = "A.7"
+          # spec 3.2 packages; 2.1 OTA checker and fwupdmgr
+          dpkg-query -W -f='${Package} ${Version}\n' nvidia-driver-580-open | grep -q '580.159.03'
+          nvidia-spark-ota-check summary | grep -q 'detected_ota OTA2607'
+          fwupdmgr get-devices | grep -q 'Current version'
+          systemctl is-active dgx-dashboard.service | grep -qx active
+          ibdev2netdev | grep -q 'rocep1s0f0 port 1 ==> enp1s0f0np0'
+          uname -r | grep -qx '6.17.0-1026-nvidia'
+          # NVC_SIM_ROOT files
+          grep -q 'DGX_NAME="DGX Spark"' "$SIMROOT/gb10/etc/dgx-release"
+          grep -q '^MemTotal: *125513944 kB' "$SIMROOT/gb10/proc/meminfo"
+          echo "OK: shims and simroot answer the spec's strings"
+
+      - name: "Scenario gb10: self-test sees the GB10"
+        env:
+          NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
+          NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          rc=0; ./nvcheckup self-test | tee gb10-selftest.txt || rc=$?
+          echo "self-test exit=$rc"
+          # 1 (warnings) is allowed: a runner has no torch / CUDA toolkit. 2 or 3 is a failure.
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]
+          grep -q "1 GPU(s) detected" gb10-selftest.txt
+          # spec 4: the compute_cap query is part of self-test (WP1-dependent: passes trivially until it is added).
+          grep -i "compute_cap\|compute capability" gb10-selftest.txt || echo "::notice::self-test does not report the compute_cap query yet (WP1)"
+
+      - name: "Scenario gb10: run --mode full"
+        env:
+          NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
+          NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          mkdir -p gb10
+          rc=0; ./nvcheckup run --mode full --json --md --out gb10 || rc=$?
+          echo "run exit=$rc"
+          # spec 10: a healthy DGX Spark exits 0 or 1 (INFO findings, at most WARN noise), never 2 or 3.
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]
+          echo "--- report.txt ---"; cat gb10/report.txt
+
+      - name: "Scenario gb10: assert platform, unified memory and findings (spec 10)"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          j = json.load(open("gb10/report.json", encoding="utf-8"))
+          by = {f["id"]: f for f in j["findings"]}
+          print("finding ids:", [(f["id"], f["severity"], f.get("impact")) for f in j["findings"]])
+          # --- platform (WP1: common.DetectPlatform + ApplyPlatformFlags) ---
+          plat = j.get("platform") or {}
+          print("platform:", {k: plat.get(k) for k in ("class", "vendor", "model", "product_version", "bios_version", "gpu_soc", "compute_cap", "unified_memory", "nvidia_kernel_flavour")})
+          assert plat.get("class") == "dgx-spark", plat                       # spec 3.1 rows 4/5
+          assert plat.get("unified_memory") is True, plat                      # spec 3.1 flag rule A
+          assert plat.get("vendor") in (None, "", "NVIDIA"), plat              # spec 3.1 row 10 (DMI)
+          # --- GPU (WP1) ---
+          gpus = j["gpus"]
+          assert len(gpus) == 1 and gpus[0]["is_nvidia"], gpus
+          assert "GB10" in gpus[0]["name"], gpus[0]                            # spec 2.1
+          assert gpus[0].get("memory_reporting") == "not-supported", gpus[0]   # spec 3.1 flag rule B
+          assert gpus[0].get("on_package") is True, gpus[0]                    # spec 3.1 flag rules A/B
+          assert gpus[0].get("compute_cap") in (None, "12.1"), gpus[0]         # spec 2.1 (None until the tolerant query lands)
+          for k, v in gpus[0].items():
+              if k.startswith("memory") and k != "memory_reporting":
+                  assert not (isinstance(v, (int, float)) and v > 0), (k, v)  # nvidia-smi memory is [N/A]: never a number
+          pcie = j.get("gpu_pcie") or []
+          assert pcie and pcie[0].get("on_package") is True, pcie             # spec 5.1: GEN 1@1x must not reach pcie-width-reduced
+          # --- unified memory (WP1: unified_memory.go from NVC_SIM_ROOT/proc/meminfo) ---
+          um = j.get("unified_memory")
+          assert um, "unified_memory section missing"
+          assert um.get("mem_total_kb") == 125513944, um                       # spec 2.1 / 10
+          assert um.get("mem_available_kb") == 121519624, um                   # scenario meminfo
+          assert um.get("allocatable_kb") == 121519624 + 16777212, um          # spec 3.3: MemAvailable + SwapFree, no hugepages
+          # --- findings (WP2) ---
+          for must in ("dgx-spark-detected", "unified-memory-nvsmi-expected"):
+              assert must in by, f"missing finding {must}"                    # spec 10
+          assert by["dgx-spark-detected"]["severity"] == "INFO", by["dgx-spark-detected"]
+          forbidden = ("low-vram", "fan-not-spinning", "gpu-power-cap", "gpu-clock-slowdown", "no-nvidia-gpu",
+                       "driver-not-detected", "nvidia-smi-missing", "jetson-detected", "dgx-spark-gsp-init-failure",
+                       "dgx-spark-ota-torn", "dgx-spark-foreign-driver-packages", "cx7-not-enumerated",
+                       "unified-memory-swap-in-use", "gb10-logless-hard-poweroff", "dgx-spark-non-nvidia-kernel",
+                       "dgx-spark-ota-outdated", "dgx-spark-driver-too-old", "rtx-spark-linux-unsupported")
+          for never in forbidden:
+              assert never not in by, f"unexpected finding {never}: {by[never]}"   # spec 10 and 5.1
+          for i in by:
+              assert not i.startswith("pcie-"), f"PCIe rule fired on an on-package GPU: {by[i]}"  # spec 5.1
+          for f in j["findings"]:
+              assert f.get("impact"), f"finding without impact: {f}"          # spec 5 / 10
+              assert f["impact"] in ("none", "reversible", "persistent", "irreversible", "data-loss"), f
+          for e in j.get("collector_errors") or []:
+              text = e["error"].lower()
+              assert "panic" not in text and "runtime error" not in text, e
+              print("collector note:", e["collector"], "->", e["error"][:120])
+          print("OK: GB10 platform, unified memory and findings match spec section 10")
+          PY
+          echo "--- summary lines ---"
+          # spec 5.1 / 10: the summary block replaces VRAM with a unified-memory line and adds a Platform line.
+          grep -n "Unified memory" gb10/report.txt
+          grep -n "Platform: DGX Spark" gb10/report.txt
+          ! grep -q "^\s*VRAM:" gb10/report.txt
+          grep -q "Unified memory" gb10/report.md
+          # spec 3.1 row 4: DGX_SERIAL_NUMBER is redacted (WP1).
+          for f in gb10/report.txt gb10/report.json gb10/report.md; do
+            if grep -qF "1234567890123" "$f"; then echo "DGX serial number leaked in $f"; exit 1; fi
+            if grep -qF -- "$(hostname)" "$f"; then echo "hostname leaked in $f"; exit 1; fi
+          done
+          echo "OK: summary lines present, serial and hostname redacted"
+
+      - name: "Scenario gb10: snapshot"
+        env:
+          NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
+          NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10
+        run: |
+          set -euo pipefail
+          export PATH="$SHIMS:$PATH"
+          mkdir -p gb10-snap
+          ./nvcheckup snapshot --out gb10-snap
+          a="$(ls gb10-snap/nvcheckup-snapshot-*.json | head -1)"
+          python3 - "$a" <<'PY'
+          import json, sys
+          j = json.load(open(sys.argv[1], encoding="utf-8"))
+          gpus = j.get("gpus") or []
+          assert gpus and "GB10" in gpus[0]["name"], gpus
+          print("snapshot gpus:", [(g["name"], g.get("memory_reporting")) for g in gpus])
+          PY
+          if grep -qF -- "$(hostname)" "$a"; then echo "hostname leaked in snapshot"; exit 1; fi
+          ./nvcheckup compare --md --out gb10-snap "$a" "$a"
+          test -s gb10-snap/comparison.md
+          echo "OK: snapshot/compare on GB10"
+
+      - name: "Scenario gb10: llm-plan (WP3-dependent)"
+        # WP3 ships `nvcheckup llm-plan` (spec section 7). Until it has merged the
+        # subcommand does not exist and this step only prints a notice; once it
+        # exists the plan must be produced from the measured MemTotal (spec 7.4:
+        # pool = 119.7 GiB, never "128 GB") and exit 0/1/2. continue-on-error
+        # stays until WP3 confirms the --model spelling for "Llama 3.1 8B
+        # Instruct" in knowledge/models.json; then remove it.
+        continue-on-error: true
+        env:
+          NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
+          NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          if ! ./nvcheckup help 2>&1 | grep -q "llm-plan"; then
+            echo "::notice::llm-plan is not in this build yet (WP3); skipping"
+            exit 0
+          fi
+          mkdir -p gb10-plan
+          # spec 7.1 flags: --model NAME --quant fp8 --context TOKENS --json --out DIR
+          rc=0; ./nvcheckup llm-plan --model "Llama 3.1 8B Instruct" --quant fp8 --context 8192 --json --out gb10-plan | tee gb10-plan/plan.txt || rc=$?
+          echo "llm-plan exit=$rc"
+          # spec 7.1: 0 fits, 1 fits with warnings, 2 does not fit, 3 error. An 8B FP8 model fits a 119.7 GiB pool.
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]
+          test -s gb10-plan/plan.json
+          python3 - <<'PY'
+          import json
+          p = json.load(open("gb10-plan/plan.json", encoding="utf-8"))
+          print({k: p.get(k) for k in ("platform", "memory", "fit", "estimates")})
+          total = p["memory"]["total_gib"]
+          assert abs(total - 119.7) < 0.1, total                       # spec 7.5: pool = measured MemTotal 119.7 GiB
+          assert p["fit"]["fits_total"] is True, p["fit"]
+          assert abs(p["fit"]["weights_gib"] - 7.5) < 0.1, p["fit"]   # spec 7.5: Llama 3.1 8B FP8 = 7.5 GiB
+          assert p["fit"]["total_gib"] <= total, p["fit"]
+          assert "128" not in json.dumps(p["memory"]), p["memory"]     # spec 7.9: never assume "128 GB"
+          PY
+          echo "OK: llm-plan sized from the measured pool"
+
+      - name: "Scenario gb10-gsp-fail: GSP init failure is a CRIT, not 'no GPU' (spec 10)"
+        env:
+          NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10-gsp-fail.json
+          NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10-gsp-fail
+        run: |
+          set -uo pipefail
+          export PATH="$SHIMS:$PATH"
+          # spec 3.2: nvidia-smi says "No devices were found"; dmesg carries the SEC2 / GSP lines; lspci still shows 10de:2e12.
+          nvidia-smi -L; echo "nvidia-smi exit=$?"
+          dmesg | grep -c "GSP\|SEC2"
+          mkdir -p gb10-gsp-fail
+          rc=0; ./nvcheckup run --mode full --json --md --out gb10-gsp-fail || rc=$?
+          echo "run exit=$rc"
+          # A CRIT finding means exit 2 by the documented exit codes; 3 would be an internal error.
+          [ "$rc" -eq 2 ]
+          echo "--- report.txt ---"; cat gb10-gsp-fail/report.txt
+          python3 - <<'PY'
+          import json
+          j = json.load(open("gb10-gsp-fail/report.json", encoding="utf-8"))
+          by = {f["id"]: f for f in j["findings"]}
+          print("finding ids:", [(f["id"], f["severity"]) for f in j["findings"]])
+          plat = j.get("platform") or {}
+          assert plat.get("class") == "dgx-spark", plat                          # spec 3.1 row 4 (dgx-release) and row 5 (lspci 10de:2e12)
+          assert "dgx-spark-gsp-init-failure" in by, "missing dgx-spark-gsp-init-failure (WP2)"   # spec 10
+          f = by["dgx-spark-gsp-init-failure"]
+          assert f["severity"] == "CRIT", f
+          assert f.get("impact"), f
+          for never in ("no-nvidia-gpu", "driver-not-detected"):               # spec 10 and 5.1
+              assert never not in by, f"{never} must not fire when dgx-spark-gsp-init-failure does: {by[never]}"
+          assert "jetson-detected" not in by, by.keys()
+          # spec 3.2: the OTA checker reports failed: ["driver"]; dgx-spark-ota-torn may fire, it is not forbidden here.
+          for e in j.get("collector_errors") or []:
+              assert "panic" not in e["error"].lower(), e
+          print("OK: GSP failure classified as dgx-spark-gsp-init-failure CRIT")
+          PY
+
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gb10-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            gb10/
+            gb10-snap/
+            gb10-plan/
+            gb10-gsp-fail/
+            gb10-selftest.txt
+          if-no-files-found: warn
+
+      - name: publish sample report for the docs (WP5)
+        # examples/sample-report-dgx-spark.txt is produced from this artifact (spec section 11).
+        if: always() && matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-report-dgx-spark
+          path: gb10/report.txt
           if-no-files-found: warn
