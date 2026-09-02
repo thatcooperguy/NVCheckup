@@ -98,6 +98,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write      # for the build-provenance attestation (Sigstore keyless signing)
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +108,17 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Attest build provenance
+        # Free, certificate-less provenance: records which workflow, commit and
+        # runner produced each binary. Users verify with
+        #   gh attestation verify nvcheckup-linux-amd64 --owner thatcooperguy
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/nvcheckup-windows-amd64.exe
+            dist/nvcheckup-linux-amd64
+            dist/nvcheckup-linux-arm64
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -125,6 +138,15 @@ jobs:
             | Windows | x86_64 | `nvcheckup-windows-amd64.exe` |
             | Linux | x86_64 | `nvcheckup-linux-amd64` |
             | Linux | ARM64 | `nvcheckup-linux-arm64` |
+
+            ### Provenance
+
+            Each binary carries a GitHub build-provenance attestation tying it to this
+            repository, commit and workflow run. With the GitHub CLI:
+
+            ```bash
+            gh attestation verify nvcheckup-linux-amd64 --owner thatcooperguy
+            ```
 
             ### Verify Downloads
 
