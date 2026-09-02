@@ -34,7 +34,14 @@ REPO="thatcooperguy/NVCheckup"
 #    eight hextet groups, optional /prefix) so that the last address on an
 #    `ip -br addr` line is caught while nvidia-smi timestamps (04:22:42),
 #    bus ids (0000000F:01:00.0), the RmInitAdapter tuple (0x62:0x65:2028)
-#    and MACs (replaced first) are left alone.
+#    and MACs (replaced first) are left alone; IPv4 runs before IPv6 so an
+#    IPv4-mapped address such as [::ffff:10.0.0.5]:port (ss dual-stack
+#    sockets) becomes ::ffff:<ip> rather than a half-redacted octet tail;
+#  - MACs are replaced longest first: the 20-byte InfiniBand link-layer
+#    address (ip link on an IB-mode ConnectX-7 port, last 8 bytes = port
+#    GUID), then 8-byte EUI-64, then 6-byte Ethernet; lspci -vv's
+#    hyphen-separated "Device Serial Number" (the PCIe DSN, derived from
+#    the ConnectX-7 port GUID) is redacted like the other serials.
 # `redact --self-test` runs the rules over built-in sample lines (including the
 # two `ip -br addr` shapes above) and exits non-zero on any miss; CI runs it.
 redact() {
@@ -53,19 +60,24 @@ import os, re, sys
 out, host, user, home = sys.argv[1:5]
 ipv4 = re.compile(r'(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])')
 # Whole-token IPv6: a run of hextets that either contains "::" or has exactly eight groups,
-# optionally followed by /prefix, not glued to other word characters, colons or dots.
-ipv6 = re.compile(r'(?i)(?<![\w:.])(?=[0-9a-f:]*::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4})(?:[0-9a-f]{1,4})?(?::[0-9a-f]{0,4}){2,7}(?:/\d{1,3})?(?![\w:])')
+# optionally followed by /prefix, not glued to other word characters, colons or dots. It also stops before "<"
+# so the ::ffff: prefix of an already-redacted IPv4-mapped address (::ffff:<ip>) is left readable.
+ipv6 = re.compile(r'(?i)(?<![\w:.])(?=[0-9a-f:]*::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4})(?:[0-9a-f]{1,4})?(?::[0-9a-f]{0,4}){2,7}(?:/\d{1,3})?(?![\w:<])')
 rules = [
     (re.compile(r'(?i)(DGX_SERIAL_NUMBER=)"[^"]*"'), r'\1"<serial>"'),
     (re.compile(r'(?i)(Serial Number\s*:\s*)\S.*'), r'\1<serial>'),
+    # lspci -vv PCIe DSN capability: "Device Serial Number 9c-63-c0-03-00-12-ab-34" (hyphens, no colon).
+    (re.compile(r'(?i)(Device Serial Number\s+)(?:[0-9a-f]{2}-){7}[0-9a-f]{2}'), r'\1<serial>'),
     (re.compile(r'(?i)("Serial"\s*:\s*)"[^"]*"'), r'\1"<serial>"'),
     (re.compile(r'(?i)(product_serial|board_serial|chassis_serial)\s*\n[^\n]*'), r'\1\n<serial>'),
     (re.compile(r'GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'), '<gpu-uuid>'),
     (re.compile(r'(?i)((?:Node|Port|System image)\s+GUID\s*:\s*)0x[0-9a-f]+'), r'\1<guid>'),
     (re.compile(r'(?i)(DeviceId"\s*:\s*)"[0-9a-f]{40}"'), r'\1"<device-id>"'),
     (re.compile(r'(?i)(Device ID:\s*)[0-9a-f]{40}'), r'\1<device-id>'),
-    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b'), '<mac>'),
-    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){7}[0-9a-fA-F]{2}\b'), '<mac>'),
+    # Longest first: a shorter rule applied first would leave the tail bytes (e.g. "<mac>:ab:34").
+    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){19}[0-9a-fA-F]{2}\b'), '<mac>'),   # 20-byte InfiniBand link-layer address
+    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){7}[0-9a-fA-F]{2}\b'), '<mac>'),    # 8-byte EUI-64
+    (re.compile(r'\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b'), '<mac>'),    # 6-byte Ethernet
     (re.compile(r'(?i)(ssid|psk|password|token)\s*[:=]\s*\S+'), r'\1=<redacted>'),
 ]
 keep_ip = {"127.0.0.1", "0.0.0.0", "1.1.1.1", "8.8.8.8", "255.255.255.255"}
@@ -78,11 +90,13 @@ def redact_text(text, name, counts):
     for rx, rep in rules:
         text, n = rx.subn(rep, text)
         counts[rx.pattern[:30]] = counts.get(rx.pattern[:30], 0) + n
-    text, n = ipv6.subn(lambda m: m.group(0) if m.group(0) in keep_ip6 else "<ipv6>", text)
-    counts["ipv6"] = counts.get("ipv6", 0) + n
+    # IPv4 first so an IPv4-mapped IPv6 address (::ffff:10.0.0.5) becomes ::ffff:<ip> instead of
+    # the IPv6 rule eating "::ffff:10" and leaving ".0.0.5" behind.
     if name not in version_only:
         text, n = ipv4.subn(lambda m: m.group(0) if m.group(0) in keep_ip else "<ip>", text)
         counts["ipv4"] = counts.get("ipv4", 0) + n
+    text, n = ipv6.subn(lambda m: m.group(0) if m.group(0) in keep_ip6 else "<ipv6>", text)
+    counts["ipv6"] = counts.get("ipv6", 0) + n
     if home and home != "/" and home != "/nonexistent":
         text = text.replace(home, "<home>")
     if host:
@@ -113,6 +127,17 @@ if out == "--self-test":
         ("25-listening-ports.txt", "tcp LISTEN 0 4096 0.0.0.0:11000 0.0.0.0:*", "tcp LISTEN 0 4096 0.0.0.0:11000 0.0.0.0:*"),
         ("25-listening-ports.txt", "tcp LISTEN 0 4096 [::]:11000 [::]:*", "tcp LISTEN 0 4096 [::]:11000 [::]:*"),
         ("25-listening-ports.txt", "tcp LISTEN 0 4096 10.20.30.40:22 0.0.0.0:*", "tcp LISTEN 0 4096 <ip>:22 0.0.0.0:*"),
+        # IPv4-mapped IPv6 (ss dual-stack sockets): the IPv4 pass runs first, the ::ffff: prefix stays readable.
+        ("25-listening-ports.txt", "tcp LISTEN 0 4096 [::ffff:10.0.0.5]:11000 [::]:*", "tcp LISTEN 0 4096 [::ffff:<ip>]:11000 [::]:*"),
+        ("28-ip.txt", "::ffff:192.168.1.5", "::ffff:<ip>"),
+        # 20-byte InfiniBand link-layer address (IB-mode ConnectX-7; last 8 bytes are the port GUID) and 8-byte EUI-64.
+        ("28-ip.txt", "    link/infiniband 00:00:10:49:fe:80:00:00:00:00:00:00:9c:63:c0:03:00:12:ab:34 brd 00:ff:ff:ff:ff:12:40:1b:ff:ff:00:00:00:00:00:00:ff:ff:ff:ff",
+                      "    link/infiniband <mac> brd <mac>"),
+        ("28-ip.txt", "    link/ether 9c:63:c0:ff:fe:03:00:12 brd ff:ff:ff:ff:ff:ff:ff:ff", "    link/ether <mac> brd <mac>"),
+        # lspci -vv PCIe DSN capability (hyphen-separated, no colon; the ConnectX-7 DSN is the port GUID).
+        ("12-lspci-mellanox.txt", "\tCapabilities: [48] Vital Product Data\n\t\tDevice Serial Number 9c-63-c0-03-00-12-ab-34",
+                                  "\tCapabilities: [48] Vital Product Data\n\t\tDevice Serial Number <serial>"),
+        ("11-lspci-nvidia.txt", "\t\tDevice Serial Number 00-00-00-00-00-00-00-00", "\t\tDevice Serial Number <serial>"),
         # spec 2.1 nvidia-smi table / -q shapes and the spec 3.2 RmInitAdapter tuple must survive.
         ("18-nvidia-smi-q.txt", "Timestamp                                 : Tue Sep  2 04:22:42 2026",
                                 "Timestamp                                 : Tue Sep  2 04:22:42 2026"),
@@ -327,7 +352,10 @@ if ! redact; then
     sed -i -E \
       -e 's/(DGX_SERIAL_NUMBER=)"[^"]*"/\1"<serial>"/I' \
       -e 's/(Serial Number[[:space:]]*:[[:space:]]*).*/\1<serial>/I' \
+      -e 's/(Device Serial Number[[:space:]]+)([0-9a-fA-F]{2}-){7}[0-9a-fA-F]{2}/\1<serial>/I' \
       -e 's/GPU-[0-9a-fA-F-]{36}/<gpu-uuid>/g' \
+      -e 's/\b([0-9a-fA-F]{2}:){19}[0-9a-fA-F]{2}\b/<mac>/g' \
+      -e 's/\b([0-9a-fA-F]{2}:){7}[0-9a-fA-F]{2}\b/<mac>/g' \
       -e 's/\b([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b/<mac>/g' \
       -e "s#${HOME:-/nonexistent}#<home>#g" \
       -e "s/\b${h}\b/<host>/g" \

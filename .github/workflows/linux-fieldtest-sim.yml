@@ -406,7 +406,9 @@ jobs:
           set -uo pipefail
           export PATH="$SHIMS:$PATH"
           # spec 3.2: nvidia-smi says "No devices were found"; dmesg carries the SEC2 / GSP lines; lspci still shows 10de:2e12.
-          nvidia-smi -L; echo "nvidia-smi exit=$?"
+          # The shim exits non-zero by design; under GitHub's default `bash -e` an unguarded call would abort the step
+          # before ./nvcheckup runs, so capture the code and assert the failure instead of tolerating it.
+          rc=0; nvidia-smi -L || rc=$?; echo "nvidia-smi exit=$rc"; [ "$rc" -ne 0 ]
           dmesg | grep -c "GSP\|SEC2"
           mkdir -p gb10-gsp-fail
           rc=0; ./nvcheckup run --mode full --json --md --out gb10-gsp-fail || rc=$?
