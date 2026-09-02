@@ -578,7 +578,7 @@ GitHub/Reddit-optimized markdown:
 - Same privacy footer as `report.txt`
 - Suitable for issue templates and forum posts
 
-### bundle.zip (with `--zip`)
+### nvcheckup-bundle-<timestamp>.zip (with `--zip`)
 
 Timestamped zip archive (`nvcheckup-bundle-YYYYMMDD-HHMMSS.zip`) containing the generated report files (`report.txt`, plus `report.json` and `report.md` when requested). Nothing else is added to the archive. `--include-logs` does not add files to the bundle; on Linux it adds `journalctl` and `dmesg` snippets to the report data itself, and on Windows it is ignored.
 
