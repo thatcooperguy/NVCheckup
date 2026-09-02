@@ -27,7 +27,7 @@ What actually happened.
 
 - OS: (e.g., Windows 11 24H2, Ubuntu 24.04)
 - Architecture: (x86_64, ARM64)
-- NVCheckup version: (output of `nvcheckup version`, e.g., v0.2.1)
+- NVCheckup version: (output of `nvcheckup version`, e.g., v0.2.2)
 - GPU: (e.g., RTX 4070)
 - Driver version: (e.g., 591.86)
 

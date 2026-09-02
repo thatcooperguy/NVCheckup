@@ -1,15 +1,17 @@
 <div align="center">
 
-# NVCheckup
+<img src="docs/assets/banner.svg" alt="NVCheckup: cross-platform NVIDIA diagnostics for gamers, AI developers, and creators" width="100%">
 
-**Cross-platform NVIDIA diagnostics for gamers, AI developers, and creators.**
-
-*For when `nvidia-smi` and PyTorch disagree about whether you own a GPU.*
+<br>
 
 [![CI](https://github.com/thatcooperguy/NVCheckup/actions/workflows/ci.yml/badge.svg)](https://github.com/thatcooperguy/NVCheckup/actions/workflows/ci.yml)
+[![Linux field test](https://github.com/thatcooperguy/NVCheckup/actions/workflows/linux-fieldtest.yml/badge.svg)](https://github.com/thatcooperguy/NVCheckup/actions/workflows/linux-fieldtest.yml)
+[![Release](https://img.shields.io/github/v/release/thatcooperguy/NVCheckup?color=76b900&label=release)](https://github.com/thatcooperguy/NVCheckup/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20ARM64-76b900.svg)](#supported-platforms)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://go.dev)
+
+**[Quick Start](#quick-start) · [What You Get](#what-you-get) · [Supported GPUs](#supported-gpus) · [Commands](#command-reference) · [Privacy](#privacy-and-safety) · [FAQ](#faq) · [Landing page](https://thatcooperguy.github.io/NVCheckup/)**
 
 *Unofficial community tool. Not affiliated with or endorsed by NVIDIA Corporation.*
 
@@ -81,9 +83,14 @@ go build -o nvcheckup ./cmd/nvcheckup
 
 The top of `report.txt` is a summary block designed to be pasted into a support thread exactly as-is. It answers "post your specs" in nine lines, two of which pre-empt "is it thermal throttling" and "is your PCIe link fine":
 
+<p align="center"><img src="docs/assets/summary.svg" alt="Terminal showing the NVCheckup summary block" width="920"></p>
+
+<details>
+<summary>The same block as plain text, with the report header</summary>
+
 ```
 ────────────────────────────────────────────────────────────────────────
-  NVCheckup v0.2.1 — NVIDIA Diagnostic Report
+  NVCheckup v0.2.2 — NVIDIA Diagnostic Report
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
   Generated: 2026-09-01 14:32:10 UTC
@@ -95,7 +102,7 @@ The top of `report.txt` is a summary block designed to be pasted into a support 
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.2.1 | 2026-09-01 14:32:10
+NVCheckup v0.2.2 | 2026-09-01 14:32:10
 OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64
 GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12282 MB
 CUDA (driver): 13.1 | CUDA Toolkit: 12.8
@@ -105,6 +112,8 @@ PCIe: Gen1 x16 (idle, max Gen4)
 Findings: 1 CRITICAL, 1 WARNING, 6 total | 2 auto-fixable
 Top: Display Driver Resets Detected (Event ID 4101); nvlddmkm Driver ...
 ```
+
+</details>
 
 The rest of the report holds the system, GPU, platform and AI/CUDA sections, then every finding with its evidence, why it matters, next steps, and (when one exists) the `nvcheckup fix --id ...` command that addresses it. Complete examples: [`examples/sample-report-gaming.txt`](examples/sample-report-gaming.txt) and [`examples/sample-report-ai-linux.txt`](examples/sample-report-ai-linux.txt).
 
@@ -257,6 +266,9 @@ NVCheckup is built on a simple principle: **your data stays on your machine.** I
 
 ### What Is Collected (Read-Only)
 
+<details>
+<summary>Full list</summary>
+
 - OS version, kernel version, CPU model, RAM total, disk free space
 - GPU model, driver version, VRAM, temperature, PCI bus ID, for every NVIDIA GPU
 - GPU thermal and throttle state (clocks, power draw and limit, fan speed, active slowdown reasons), per GPU
@@ -272,6 +284,8 @@ NVCheckup is built on a simple principle: **your data stays on your machine.** I
 - Python versions, PyTorch/TensorFlow/JAX versions and GPU visibility
 - CUDA toolkit, cuDNN, and nvidia-container-toolkit versions
 - With `--network` only: interface type, Wi-Fi band and signal, latency, jitter, packet loss, DNS time, traceroute hops
+
+</details>
 
 ### What Is Never Collected
 
@@ -468,6 +482,8 @@ nvcheckup
                             kept in lockstep with the analyzer by a test
 ```
 
+<p align="center"><img src="docs/assets/pipeline.svg" alt="The seven phases of nvcheckup run" width="100%"></p>
+
 The `run` pipeline has seven phases: collect system information, detect GPUs and drivers, collect thermal and PCIe data for every GPU, run platform-specific checks, check the AI/CUDA environment (mode-dependent), run network diagnostics (only with `--network`), and analyze results into findings.
 
 Every collector is split into "run the command" and "parse the output," so the parsers are tested against captured `nvidia-smi`, `netsh`, PowerShell and `ping` output from machines the maintainers do not own. Every analyzer rule produces a finding with a stable kebab-case id, severity, evidence, and safe next steps. There are more than 45 rules; the authoritative list is `internal/analyzer/analyzer.go`, and a test refuses to pass if `knowledge/rules.json` drifts from it. If a collector fails, NVCheckup records the error in the report's Collector Notes and continues. One missing command never takes down the whole run; a Windows event log with zero matching events, which older versions misread as a permissions failure, is now just a zero.
@@ -484,7 +500,7 @@ cd NVCheckup
 go build -o nvcheckup ./cmd/nvcheckup
 
 # Build with a specific version string baked in
-go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=0.2.1" -o nvcheckup ./cmd/nvcheckup
+go build -ldflags="-s -w -X github.com/thatcooperguy/nvcheckup/pkg/types.Version=0.2.2" -o nvcheckup ./cmd/nvcheckup
 
 # Cross-compile all targets
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/nvcheckup-windows-amd64.exe ./cmd/nvcheckup

@@ -5,7 +5,7 @@ import "time"
 
 // Version of NVCheckup. Overridden at build time via
 // -ldflags "-X github.com/thatcooperguy/nvcheckup/pkg/types.Version=x.y.z".
-var Version = "0.2.1"
+var Version = "0.2.2"
 
 // SchemaVersion identifies the report.json layout. Bump on breaking changes.
 const SchemaVersion = "1"

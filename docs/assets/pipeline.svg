@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="190" viewBox="0 0 1100 190" role="img" aria-label="The seven phases of nvcheckup run">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5a6d7c"/>
+    </marker>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a242e"/>
+      <stop offset="1" stop-color="#111920"/>
+    </linearGradient>
+    <linearGradient id="boxHi" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#274016"/>
+      <stop offset="1" stop-color="#1a2b10"/>
+    </linearGradient>
+  </defs>
+  <rect width="1100" height="190" rx="14" fill="#0d1218"/>
+  <rect x="0.5" y="0.5" width="1099" height="189" rx="14" fill="none" stroke="#2c3a47"/>
+
+  <g font-family="-apple-system, 'Segoe UI', Inter, Helvetica, Arial, sans-serif">
+    <text x="24" y="34" font-size="13" font-weight="700" fill="#76b900" letter-spacing="1.5">NVCHECKUP RUN</text>
+    <text x="196" y="34" font-size="13" fill="#6f7f8d">seven phases, every collector returns structured data and keeps going if one command is missing</text>
+
+    <!-- connectors -->
+    <g stroke="#5a6d7c" stroke-width="1.6" fill="none" marker-end="url(#arrow)">
+      <path d="M166 100 H180"/>
+      <path d="M322 100 H336"/>
+      <path d="M478 100 H492"/>
+      <path d="M634 100 H648"/>
+      <path d="M790 100 H804"/>
+      <path d="M946 100 H960"/>
+    </g>
+
+    <!-- phase boxes -->
+    <g font-size="13" text-anchor="middle">
+      <g transform="translate(24 66)">
+        <rect width="142" height="68" rx="10" fill="url(#box)" stroke="#2c3a47"/>
+        <text x="71" y="24" fill="#6f7f8d" font-size="11" font-weight="700">1</text>
+        <text x="71" y="45" fill="#e6edf3" font-weight="600">System</text>
+      </g>
+      <g transform="translate(180 66)">
+        <rect width="142" height="68" rx="10" fill="url(#box)" stroke="#2c3a47"/>
+        <text x="71" y="24" fill="#6f7f8d" font-size="11" font-weight="700">2</text>
+        <text x="71" y="45" fill="#e6edf3" font-weight="600">GPUs &amp; driver</text>
+      </g>
+      <g transform="translate(336 66)">
+        <rect width="142" height="68" rx="10" fill="url(#box)" stroke="#2c3a47"/>
+        <text x="71" y="24" fill="#6f7f8d" font-size="11" font-weight="700">3</text>
+        <text x="71" y="40" fill="#e6edf3" font-weight="600">Thermal &amp; PCIe</text>
+        <text x="71" y="56" fill="#a9b6c2" font-size="11">per GPU</text>
+      </g>
+      <g transform="translate(492 66)">
+        <rect width="142" height="68" rx="10" fill="url(#box)" stroke="#2c3a47"/>
+        <text x="71" y="24" fill="#6f7f8d" font-size="11" font-weight="700">4</text>
+        <text x="71" y="40" fill="#e6edf3" font-weight="600">Platform checks</text>
+        <text x="71" y="56" fill="#a9b6c2" font-size="11">Windows · Linux · WSL</text>
+      </g>
+      <g transform="translate(648 66)">
+        <rect width="142" height="68" rx="10" fill="url(#box)" stroke="#2c3a47"/>
+        <text x="71" y="24" fill="#6f7f8d" font-size="11" font-weight="700">5</text>
+        <text x="71" y="40" fill="#e6edf3" font-weight="600">AI / CUDA</text>
+        <text x="71" y="56" fill="#a9b6c2" font-size="11">ai · creator · full</text>
+      </g>
+      <g transform="translate(804 66)">
+        <rect width="142" height="68" rx="10" fill="url(#box)" stroke="#2c3a47" stroke-dasharray="5 4"/>
+        <text x="71" y="24" fill="#6f7f8d" font-size="11" font-weight="700">6</text>
+        <text x="71" y="40" fill="#e6edf3" font-weight="600">Network</text>
+        <text x="71" y="56" fill="#a9b6c2" font-size="11">only with --network</text>
+      </g>
+      <g transform="translate(960 66)">
+        <rect width="116" height="68" rx="10" fill="url(#boxHi)" stroke="#76b900"/>
+        <text x="58" y="24" fill="#b8e35a" font-size="11" font-weight="700">7</text>
+        <text x="58" y="40" fill="#e6edf3" font-weight="600">Analyze</text>
+        <text x="58" y="56" fill="#b8e35a" font-size="11">45+ rules → findings</text>
+      </g>
+    </g>
+
+    <text x="24" y="166" font-size="12" fill="#6f7f8d">Output: report.txt (always) · report.json (--json) · report.md (--md) · nvcheckup-bundle-&lt;timestamp&gt;.zip (--zip) · redaction on by default</text>
+  </g>
+</svg>

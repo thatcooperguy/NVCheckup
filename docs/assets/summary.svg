@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="392" viewBox="0 0 920 392" role="img" aria-label="Terminal showing the NVCheckup summary block">
+  <defs>
+    <clipPath id="win"><rect x="0" y="0" width="920" height="392" rx="14"/></clipPath>
+    <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a3541"/>
+      <stop offset="1" stop-color="#1f2933"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#win)">
+    <rect width="920" height="392" fill="#0d1218"/>
+    <rect width="920" height="42" fill="url(#bar)"/>
+    <circle cx="22" cy="21" r="6.5" fill="#ff5f57"/>
+    <circle cx="44" cy="21" r="6.5" fill="#febc2e"/>
+    <circle cx="66" cy="21" r="6.5" fill="#28c840"/>
+    <text x="460" y="26" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="13" fill="#a9b6c2">nvcheckup run --mode full --zip</text>
+  </g>
+  <rect x="0.5" y="0.5" width="919" height="391" rx="14" fill="none" stroke="#2c3a47"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14.5" xml:space="preserve">
+    <text x="28" y="76"  fill="#76b900">$ </text><text x="46" y="76" fill="#e6edf3">nvcheckup run --mode full --zip</text>
+    <text x="28" y="104" fill="#6f7f8d">[7/7] Analyzing results...</text>
+    <text x="28" y="132" fill="#6f7f8d">== SUMMARY (paste this in support threads) ==</text>
+
+    <text x="28" y="164" fill="#e6edf3">NVCheckup v0.2.2 | 2026-09-02 14:32:10</text>
+    <text x="28" y="188" fill="#a9b6c2">OS: <tspan fill="#e6edf3">Microsoft Windows 11 Pro 10.0.26100</tspan> | Arch: <tspan fill="#e6edf3">amd64</tspan></text>
+    <text x="28" y="212" fill="#a9b6c2">GPU: <tspan fill="#e6edf3">NVIDIA GeForce RTX 4070</tspan> | Driver: <tspan fill="#e6edf3">591.86</tspan> | VRAM: <tspan fill="#e6edf3">12282 MB</tspan></text>
+    <text x="28" y="236" fill="#a9b6c2">CUDA (driver): <tspan fill="#e6edf3">13.1</tspan> | CUDA Toolkit: <tspan fill="#e6edf3">12.8</tspan></text>
+    <text x="28" y="260" fill="#a9b6c2">PyTorch: <tspan fill="#e6edf3">2.5.1+cu118</tspan> <tspan fill="#76b900">(CUDA available)</tspan></text>
+    <text x="28" y="284" fill="#a9b6c2">Temp: <tspan fill="#e6edf3">42°C</tspan> | P-State: <tspan fill="#e6edf3">P8</tspan> | Util: <tspan fill="#e6edf3">0%</tspan></text>
+    <text x="28" y="308" fill="#a9b6c2">PCIe: <tspan fill="#e6edf3">Gen1 x16</tspan> <tspan fill="#6f7f8d">(idle, max Gen4)</tspan></text>
+    <text x="28" y="332" fill="#a9b6c2">Findings: <tspan fill="#ff6b6b" font-weight="700">1 CRITICAL</tspan>, <tspan fill="#febc2e" font-weight="700">1 WARNING</tspan>, 6 total | <tspan fill="#76b900">2 auto-fixable</tspan></text>
+    <text x="28" y="356" fill="#a9b6c2">Top: <tspan fill="#e6edf3">Display Driver Resets Detected (Event ID 4101); nvlddmkm Driver ...</tspan></text>
+  </g>
+  <rect x="28" y="368" width="9" height="16" fill="#76b900">
+    <animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite"/>
+  </rect>
+</svg>

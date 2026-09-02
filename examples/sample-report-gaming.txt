@@ -1,5 +1,5 @@
 ────────────────────────────────────────────────────────────────────────
-  NVCheckup v0.2.1 — NVIDIA Diagnostic Report
+  NVCheckup v0.2.2 — NVIDIA Diagnostic Report
   NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation.
 ────────────────────────────────────────────────────────────────────────
   Generated: 2026-09-01 14:32:10 UTC
@@ -11,7 +11,7 @@
 
 == SUMMARY (paste this in support threads) ==
 
-NVCheckup v0.2.1 | 2026-09-01 14:32:10
+NVCheckup v0.2.2 | 2026-09-01 14:32:10
 OS: Microsoft Windows 11 Pro 10.0.26100 | Arch: amd64
 GPU: NVIDIA GeForce RTX 4070 | Driver: 591.86 | VRAM: 12282 MB
 CUDA (driver): 13.1

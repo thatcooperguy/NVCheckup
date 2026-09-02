@@ -95,7 +95,7 @@ The field lists are the exported constants `GPUQueryFields`,
 `ThermalQueryFields`, `ThermalEventQueryFields` (or
 `ThermalEventQueryFieldsLegacy` on drivers before R535) and `PCIeQueryFields` in
 `internal/collector/common`; copy them from the source so the fixture matches
-the query. As of 0.2.1 that is:
+the query. As of 0.2.2 that is:
 
 ```bash
 # GPU inventory (gpu.go)

@@ -1,6 +1,6 @@
 {
   "description": "Reference knowledge pack. The Go analyzer defines its rules in internal/analyzer; TestRulesJSON_MatchesAnalyzer keeps the ids, categories and remediation ids here identical to the analyzer.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "rules": [
     {
       "id": "no-nvidia-gpu",
