@@ -309,9 +309,9 @@ func TestAnalyzeThermal_Table(t *testing.T) {
 		forbid  []string
 	}{
 		{
-			name: "gpu_idle mask from an old collector is not a slowdown",
-			thermal: types.ThermalInfo{TemperatureC: 38, PowerState: "P8", SlowdownActive: true,
-				SlowdownReason: "0x0000000000000001", FanSupported: true, FanSpeedPct: 0},
+			name: "gpu_idle decoded by the collector is not a slowdown",
+			thermal: types.ThermalInfo{TemperatureC: 38, PowerState: "P8", SlowdownActive: false,
+				SlowdownReason: "0x0000000000000001", ThrottleReasons: []string{"gpu_idle"}, FanSupported: true, FanSpeedPct: 0},
 			wantIDs: map[string]types.Severity{},
 			forbid:  []string{"thermal-throttling", "gpu-clock-slowdown", "gpu-power-state-stuck", "fan-not-spinning"},
 		},
@@ -404,36 +404,32 @@ func TestAnalyzeThermal_Table(t *testing.T) {
 }
 
 func TestAnalyzeThermal_SlowdownNamesReasons(t *testing.T) {
-	th := &types.ThermalInfo{TemperatureC: 70, SlowdownActive: true, SlowdownReason: "0x0000000000000084"}
+	// The collector decodes the mask; the analyzer only reports its names.
+	th := &types.ThermalInfo{TemperatureC: 70, SlowdownActive: true, SlowdownReason: "0x0000000000000084",
+		ThrottleReasons: []string{"sw_power_cap", "hw_power_brake_slowdown"}}
 	findings := analyzeThermal(&types.Report{Thermal: th})
 	f := findByID(findings, "gpu-clock-slowdown")
 	if f == nil {
 		t.Fatalf("expected gpu-clock-slowdown, got %v", ids(findings))
 	}
 	if !strings.Contains(f.Evidence, "sw_power_cap") || !strings.Contains(f.Evidence, "hw_power_brake_slowdown") {
-		t.Errorf("evidence should decode the mask bits, got %q", f.Evidence)
+		t.Errorf("evidence should name the collector-decoded reasons, got %q", f.Evidence)
 	}
 }
 
-func TestParseThrottleMask(t *testing.T) {
-	tests := []struct {
-		in     string
-		mask   uint64
-		wantOK bool
-	}{
-		{"0x0000000000000001", 0x1, true},
-		{"0x0000000000000044", 0x44, true},
-		{"4", 0x4, true},
-		{"Not Active", 0, true},
-		{"None", 0, true},
-		{"", 0, false},
-		{"garbage", 0, false},
+func TestAnalyzeThermal_TrustsCollectorNotRawMask(t *testing.T) {
+	// A decimal raw mask ("4") used to be re-parsed here as hex and disagree
+	// with the collector. The analyzer must now follow the collector's fields
+	// regardless of how the raw string is spelled.
+	th := &types.ThermalInfo{TemperatureC: 70, PowerState: "P0", UtilizationPct: 99,
+		SlowdownActive: true, SlowdownReason: "4", ThrottleReasons: []string{"sw_power_cap"}}
+	findings := analyzeThermal(&types.Report{Thermal: th})
+	if findByID(findings, "gpu-clock-slowdown") == nil || findByID(findings, "thermal-throttling") != nil {
+		t.Errorf("expected only the collector's sw_power_cap slowdown, got %v", ids(findings))
 	}
-	for _, tt := range tests {
-		mask, ok := parseThrottleMask(tt.in)
-		if ok != tt.wantOK || mask != tt.mask {
-			t.Errorf("parseThrottleMask(%q) = (%#x, %v), want (%#x, %v)", tt.in, mask, ok, tt.mask, tt.wantOK)
-		}
+	quiet := &types.ThermalInfo{TemperatureC: 40, PowerState: "P8", SlowdownReason: "0x0000000000000020"}
+	if got := analyzeThermal(&types.Report{Thermal: quiet}); len(got) != 0 {
+		t.Errorf("raw mask alone must not be re-decoded by the analyzer, got %v", ids(got))
 	}
 }
 
@@ -616,6 +612,38 @@ func TestAnalyzeNetwork_HealthyWithSamples(t *testing.T) {
 	if len(findings) != 1 || findings[0].ID != "network-healthy" {
 		t.Errorf("expected only network-healthy, got %v", ids(findings))
 	}
+	if strings.Contains(findings[0].Evidence, "Latency: 0.0 ms") {
+		t.Errorf("healthy evidence must carry the measured latency, got %q", findings[0].Evidence)
+	}
+}
+
+func TestAnalyzeNetwork_HopsWithoutPingIsNotHealthy(t *testing.T) {
+	// traceroute worked, ping failed: no latency/jitter/loss verdict is possible.
+	report := &types.Report{Network: &types.NetworkInfo{
+		InterfaceType: "ethernet", JitterMs: 40, DNSTimeMs: 20,
+		Hops: []types.HopInfo{{Number: 1, LatencyMs: 1}, {Number: 2, LatencyMs: 9}},
+	}}
+	findings := analyzeNetwork(report)
+	if findByID(findings, "network-healthy") != nil {
+		t.Errorf("hops alone must not produce network-healthy, got %v", ids(findings))
+	}
+	if findByID(findings, "high-jitter") != nil {
+		t.Errorf("jitter rule must not fire without ping samples, got %v", ids(findings))
+	}
+	f := findByID(findings, "network-ping-unavailable")
+	if f == nil {
+		t.Fatalf("expected network-ping-unavailable, got %v", ids(findings))
+	}
+	if f.Severity != types.SeverityInfo || !strings.Contains(f.Evidence, "Ping produced no samples; latency, jitter and loss could not be measured") {
+		t.Errorf("unexpected ping-unavailable finding: %+v", *f)
+	}
+
+	// Loss with zero latency is still ping evidence (every probe was lost).
+	lossOnly := &types.Report{Network: &types.NetworkInfo{PacketLossPct: 100, Hops: []types.HopInfo{{Number: 1}}}}
+	got := analyzeNetwork(lossOnly)
+	if findByID(got, "packet-loss") == nil || findByID(got, "network-ping-unavailable") != nil {
+		t.Errorf("100%% loss is ping evidence, got %v", ids(got))
+	}
 }
 
 func TestAnalyzeNetwork_WifiCongestionNeedsSignal(t *testing.T) {
@@ -672,7 +700,7 @@ func syntheticBusyReport() *types.Report {
 			PyTorchInfo:        &types.PyTorchInfo{Version: "2.7.0+cu128", CUDAVersion: "12.8", CUDAAvailable: false},
 			TensorFlowInfo:     &types.TFInfo{Version: "2.16.1"},
 		},
-		Thermal: &types.ThermalInfo{TemperatureC: 86, PowerState: "P8", UtilizationPct: 80, SlowdownActive: true, SlowdownReason: "0x0000000000000004", FanSupported: true, FanSpeedPct: 0},
+		Thermal: &types.ThermalInfo{TemperatureC: 86, PowerState: "P8", UtilizationPct: 80, SlowdownActive: true, SlowdownReason: "0x0000000000000004", ThrottleReasons: []string{"sw_power_cap"}, FanSupported: true, FanSpeedPct: 0},
 		PCIe:    &types.PCIeInfo{CurrentSpeed: "Gen4", MaxSpeed: "Gen4", CurrentWidth: "x8", MaxWidth: "x16", PowerState: "P0", UtilizationPct: 80},
 		Displays: []types.DisplayInfo{
 			{Name: "A", RefreshHz: 144}, {Name: "B", RefreshHz: 60}, {Name: "C", RefreshHz: 60},
@@ -731,11 +759,12 @@ func TestAnalyze_EveryAnalyzerAssignsIDs(t *testing.T) {
 		analyzeTensorFlow(&types.Report{AI: &types.AIInfo{TensorFlowInfo: &types.TFInfo{Version: "2.16", GPUs: []string{"/GPU:0"}}}}),
 		analyzeTensorFlow(&types.Report{AI: &types.AIInfo{TensorFlowInfo: &types.TFInfo{Error: "boom"}}}),
 		analyzeWSL(&types.Report{WSL: &types.WSLInfo{IsWSL: true, DevDxgExists: true, NvidiaSmiOK: false}}),
-		analyzeThermal(&types.Report{Thermal: &types.ThermalInfo{TemperatureC: 95, SlowdownReason: "0x40"}}),
+		analyzeThermal(&types.Report{Thermal: &types.ThermalInfo{TemperatureC: 95, ThermalThrottle: true, SlowdownActive: true, SlowdownReason: "0x40", ThrottleReasons: []string{"hw_thermal_slowdown"}}}),
 		analyzeThermal(&types.Report{Thermal: &types.ThermalInfo{TemperatureC: 95}}),
 		analyzePCIe(&types.Report{PCIe: &types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", IdleLikely: true}}),
 		analyzePCIe(&types.Report{PCIe: &types.PCIeInfo{CurrentSpeed: "Gen1", MaxSpeed: "Gen4", CurrentWidth: "x16", MaxWidth: "x16", PowerState: "P0", UtilizationPct: 99}}),
 		analyzeNetwork(&types.Report{Network: &types.NetworkInfo{LatencyMs: 10}}),
+		analyzeNetwork(&types.Report{Network: &types.NetworkInfo{Hops: []types.HopInfo{{Number: 1}}}}),
 		analyzeOverlays(&types.Report{Windows: &types.WindowsInfo{GFEVersion: "3.28"}}),
 	}
 	for _, findings := range extra {

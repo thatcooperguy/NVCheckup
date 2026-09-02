@@ -72,7 +72,7 @@ func GenerateMarkdown(report *types.Report) string {
 
 	w("**NVIDIA Driver:** %s | **CUDA (driver):** %s\n\n", valueOrNA(report.Driver.Version), valueOrNA(report.Driver.CUDAVersion))
 	if report.PCIe != nil {
-		w("**PCIe:** %s\n\n", pcieSummary(report.PCIe))
+		w("**PCIe:** %s\n\n", pcieSummary(report))
 	}
 	if report.Thermal != nil {
 		w("**Thermal:** %s\n\n", thermalSummary(report.Thermal))
@@ -86,9 +86,9 @@ func GenerateMarkdown(report *types.Report) string {
 		row("HAGS", valueOrNA(win.HAGSEnabled))
 		row("Game Mode", valueOrNA(win.GameMode))
 		row("Power Plan", valueOrNA(win.PowerPlan))
-		row("Driver resets (4101)", fmt.Sprintf("%d in last 30 days", len(win.DriverResetEvents)))
-		row("nvlddmkm errors", fmt.Sprintf("%d in last 30 days", len(win.NvlddmkmErrors)))
-		row("WHEA errors", fmt.Sprintf("%d in last 30 days", len(win.WHEAErrors)))
+		row("Driver resets (4101)", eventCountMD(report.CollectorErrors, "windows.event4101", len(win.DriverResetEvents)))
+		row("nvlddmkm errors", eventCountMD(report.CollectorErrors, "windows.nvlddmkm", len(win.NvlddmkmErrors)))
+		row("WHEA errors", eventCountMD(report.CollectorErrors, "windows.whea", len(win.WHEAErrors)))
 		if win.NVIDIAAppVersion != "" {
 			row("NVIDIA App", "v"+win.NVIDIAAppVersion)
 		}
@@ -267,6 +267,14 @@ func GenerateMarkdown(report *types.Report) string {
 	w("*%s*\n", types.Disclaimer)
 
 	return sb.String()
+}
+
+// eventCountMD is the markdown counterpart of eventCount.
+func eventCountMD(errs []types.CollectorError, collector string, n int) string {
+	if collectorFailed(errs, collector) {
+		return "not readable (see Collector Notes)"
+	}
+	return fmt.Sprintf("%d in last 30 days", n)
 }
 
 // mdCell makes a string safe for a markdown table cell: pipes are escaped and

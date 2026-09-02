@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -46,21 +45,11 @@ func RunCommand(timeoutSec int, name string, args ...string) CommandResult {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = waitDelay
-	if runtime.GOOS == "windows" {
-		// Killing only the direct child leaves its children (a shell's ping,
-		// PowerShell's native helpers) running and holding our pipes. taskkill
-		// /T walks the whole tree; fall back to Kill if taskkill itself fails.
-		cmd.Cancel = func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			err := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
-			if err != nil {
-				return cmd.Process.Kill()
-			}
-			return nil
-		}
-	}
+	// Killing only the direct child on timeout leaves its children (a shell's
+	// ping, PowerShell's native helpers, a forked "sh -c" grandchild) running
+	// and holding our pipes. configureProcessTreeKill (exec_linux.go /
+	// exec_other.go) makes Cancel take the whole tree down.
+	configureProcessTreeKill(cmd)
 
 	err := cmd.Run()
 	duration := time.Since(start)

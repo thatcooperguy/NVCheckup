@@ -221,74 +221,6 @@ func analyzeDriverBasics(report *types.Report) []types.Finding {
 
 // ── Thermal Analysis ──────────────────────────────────────────────────
 
-// Bits of nvidia-smi's clocks_event_reasons.active bitmask (historically
-// named clocks_throttle_reasons). Only a subset of these are real slowdowns.
-const (
-	throttleGPUIdle       uint64 = 0x1   // clocks lowered because nothing is running: NOT a slowdown
-	throttleAppClocks     uint64 = 0x2   // user-configured application clocks: informational
-	throttleSWPowerCap    uint64 = 0x4   // power limit reached
-	throttleHWSlowdown    uint64 = 0x8   // external hardware brake (power connector, hot spot)
-	throttleSyncBoost     uint64 = 0x10  // multi-GPU sync boost: informational
-	throttleSWThermal     uint64 = 0x20  // driver thermal slowdown
-	throttleHWThermal     uint64 = 0x40  // hardware thermal slowdown
-	throttleHWPowerBrake  uint64 = 0x80  // hardware power brake
-	throttleDisplayClocks uint64 = 0x100 // display clock setting: informational
-)
-
-// throttleThermalBits are the bits that mean "the GPU is too hot".
-const throttleThermalBits = throttleSWThermal | throttleHWThermal
-
-// throttleSlowdownBits are every bit that represents a genuine performance
-// reduction. gpu_idle, application clocks, sync boost and display clocks
-// are deliberately excluded: an idle GPU parked at low clocks is healthy.
-const throttleSlowdownBits = throttleSWPowerCap | throttleHWSlowdown |
-	throttleSWThermal | throttleHWThermal | throttleHWPowerBrake
-
-var throttleBitNames = []struct {
-	bit  uint64
-	name string
-}{
-	{throttleGPUIdle, "gpu_idle"},
-	{throttleAppClocks, "applications_clocks_setting"},
-	{throttleSWPowerCap, "sw_power_cap"},
-	{throttleHWSlowdown, "hw_slowdown"},
-	{throttleSyncBoost, "sync_boost"},
-	{throttleSWThermal, "sw_thermal_slowdown"},
-	{throttleHWThermal, "hw_thermal_slowdown"},
-	{throttleHWPowerBrake, "hw_power_brake_slowdown"},
-	{throttleDisplayClocks, "display_clock_setting"},
-}
-
-// parseThrottleMask decodes the raw clocks_event_reasons.active value
-// ("0x0000000000000004", "4", "Not Active", "None"). ok is false when the
-// value is empty or not understood, in which case callers should fall back
-// to the collector's boolean flags.
-func parseThrottleMask(raw string) (mask uint64, ok bool) {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	switch {
-	case s == "":
-		return 0, false
-	case s == "none", strings.Contains(s, "not active"), strings.Contains(s, "n/a"):
-		return 0, true
-	}
-	v, err := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 64)
-	if err != nil {
-		return 0, false
-	}
-	return v, true
-}
-
-// decodeThrottleMask returns the human-readable names of every set bit.
-func decodeThrottleMask(mask uint64) []string {
-	var names []string
-	for _, b := range throttleBitNames {
-		if mask&b.bit != 0 {
-			names = append(names, b.name)
-		}
-	}
-	return names
-}
-
 // parsePState turns "P8" into 8. ok is false for empty/unknown values.
 func parsePState(s string) (int, bool) {
 	s = strings.TrimSpace(strings.ToUpper(s))
@@ -313,27 +245,19 @@ func reasonsMentionThermal(reasons []string) bool {
 	return false
 }
 
-// thermalState resolves the collector's flags against the raw bitmask. When
-// the mask is available it wins, because older collectors set SlowdownActive
-// for gpu_idle and ThermalThrottle for any temperature >= 85C.
+// thermalState trusts the collector-provided fields. The collector decodes
+// the clocks_event_reasons bitmask exactly once (hex or decimal) into
+// ThrottleReasons, SlowdownActive and ThermalThrottle; re-parsing the raw
+// SlowdownReason string here previously let the two disagree.
 //
-// Without a usable mask, the collector's ThermalThrottle flag is only trusted
-// when a decoded reason actually says "thermal"; otherwise the flag may just
-// be that temperature heuristic, and the temperature thresholds in
-// analyzeThermal decide on their own.
+// ThermalThrottle is only honored when a decoded reason actually says
+// "thermal". Without such a reason (older collectors set the flag for any
+// temperature >= 85C, and hw_slowdown at high temperature is an inference)
+// the flag is ignored and the temperature thresholds in analyzeThermal decide
+// on their own.
 func thermalState(t *types.ThermalInfo) (thermal, slowdown bool, reasons []string) {
 	slowdown = t.SlowdownActive
 	reasons = t.ThrottleReasons
-
-	if mask, ok := parseThrottleMask(t.SlowdownReason); ok {
-		thermal = mask&throttleThermalBits != 0
-		slowdown = mask&throttleSlowdownBits != 0
-		if len(reasons) == 0 {
-			reasons = decodeThrottleMask(mask & throttleSlowdownBits)
-		}
-		return thermal, slowdown, reasons
-	}
-
 	thermal = t.ThermalThrottle && reasonsMentionThermal(reasons)
 	return thermal, slowdown, reasons
 }
@@ -639,11 +563,18 @@ func analyzeDisplay(report *types.Report) []types.Finding {
 
 // ── Network Analysis ──────────────────────────────────────────────────
 
-// networkHasSamples reports whether the probes actually produced data. A
-// zero latency with zero loss and no hops means ping/traceroute never ran
-// or failed entirely, and saying "healthy" about that would be a lie.
+// networkHasPingSamples reports whether ping actually produced data. A zero
+// latency with zero loss means ping never ran or every probe failed, so
+// latency, jitter and loss are unknown, not zero. Traceroute hops alone are
+// not ping evidence.
+func networkHasPingSamples(n *types.NetworkInfo) bool {
+	return n.LatencyMs > 0 || n.PacketLossPct > 0
+}
+
+// networkHasSamples reports whether any probe produced data at all. When it
+// is false the probes never ran (or all failed) and the analyzer stays quiet.
 func networkHasSamples(n *types.NetworkInfo) bool {
-	return n.LatencyMs != 0 || n.PacketLossPct != 0 || len(n.Hops) != 0
+	return networkHasPingSamples(n) || len(n.Hops) != 0
 }
 
 func analyzeNetwork(report *types.Report) []types.Finding {
@@ -655,9 +586,29 @@ func analyzeNetwork(report *types.Report) []types.Finding {
 
 	n := report.Network
 	hasIssue := false
+	pinged := networkHasPingSamples(n)
 
-	// High jitter
-	if n.JitterMs > 15 {
+	// Traceroute worked but ping did not: say so instead of declaring 0.0 ms
+	// latency "healthy". The latency/jitter/loss rules below need ping data.
+	if !pinged {
+		hasIssue = true
+		findings = append(findings, types.Finding{
+			ID:           "network-ping-unavailable",
+			Severity:     types.SeverityInfo,
+			Title:        "Ping Produced No Samples",
+			Evidence:     fmt.Sprintf("Ping produced no samples; latency, jitter and loss could not be measured. Traceroute recorded %d hop(s). Interface: %s (%s).", len(n.Hops), n.InterfaceName, n.InterfaceType),
+			WhyItMatters: "Without ping samples the latency, jitter and packet-loss checks cannot run, so no verdict on network quality is possible from this run.",
+			NextSteps: []string{
+				"ICMP echo may be blocked by a firewall or security software; allow ping or re-run from a network that permits it.",
+				"Re-run 'nvcheckup network-test' to see whether the failure persists.",
+			},
+			Category:   "network",
+			Confidence: 70,
+		})
+	}
+
+	// High jitter (only meaningful when ping produced samples)
+	if pinged && n.JitterMs > 15 {
 		hasIssue = true
 		findings = append(findings, types.Finding{
 			ID:           "high-jitter",
@@ -743,8 +694,8 @@ func analyzeNetwork(report *types.Report) []types.Finding {
 		})
 	}
 
-	// Network healthy
-	if !hasIssue {
+	// Network healthy: requires real ping samples, never hops alone.
+	if !hasIssue && pinged {
 		findings = append(findings, types.Finding{
 			ID:           "network-healthy",
 			Severity:     types.SeverityInfo,

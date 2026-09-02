@@ -498,6 +498,15 @@
       "description": "GPU is in P5 or lower while utilization is 60% or higher — the driver or power management is holding clocks down."
     },
     {
+      "id": "network-ping-unavailable",
+      "title": "Ping Produced No Samples",
+      "category": "network",
+      "severity": "INFO",
+      "base_confidence": 70,
+      "modes": ["gaming", "ai", "creator", "streaming", "full"],
+      "description": "Traceroute produced hops but ping returned no samples, so latency, jitter and packet loss could not be measured and no network-quality verdict is possible. ICMP echo is often blocked by firewalls or security software. Only evaluated when --network was passed."
+    },
+    {
       "id": "network-healthy",
       "title": "Network Appears Healthy",
       "category": "network",

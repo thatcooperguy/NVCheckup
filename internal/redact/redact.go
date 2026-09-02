@@ -366,6 +366,10 @@ func ApplyToReport(r *types.Report, red *Redactor) {
 	if r.AI != nil {
 		redactAI(r.AI, red)
 	}
+	// Displays carry the same EDID monitor name as Windows.Monitors.
+	for i := range r.Displays {
+		r.Displays[i].Name = red.Redact(r.Displays[i].Name)
+	}
 
 	if r.Network != nil {
 		r.Network.InterfaceName = red.Redact(r.Network.InterfaceName)

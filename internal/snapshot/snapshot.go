@@ -101,7 +101,9 @@ func Compare(pathA, pathB, outDir string, markdown bool) error {
 	output := formatComparison(result, markdown)
 	fmt.Println(output)
 
-	if outDir != "" && outDir != "." {
+	// An empty outDir means console only; "." is the current directory and
+	// is a real destination, not "write nothing".
+	if outDir != "" {
 		if err := os.MkdirAll(outDir, 0755); err != nil {
 			return fmt.Errorf("cannot create output directory: %w", err)
 		}
@@ -112,6 +114,9 @@ func Compare(pathA, pathB, outDir string, markdown bool) error {
 		outPath := filepath.Join(outDir, "comparison"+ext)
 		if err := os.WriteFile(outPath, []byte(output), 0644); err != nil {
 			return fmt.Errorf("cannot write comparison: %w", err)
+		}
+		if abs, err := filepath.Abs(outPath); err == nil {
+			outPath = abs
 		}
 		fmt.Printf("\nComparison written to: %s\n", outPath)
 	}
