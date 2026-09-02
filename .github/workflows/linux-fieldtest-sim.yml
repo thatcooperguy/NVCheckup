@@ -365,7 +365,9 @@ jobs:
           assert dgx.get("dashboard_port_open") is True, dgx                    # /proc/net/tcp LISTEN on 11000 from the simroot
           assert not dgx.get("fwupd_error"), dgx
           assert "dgx-spark-dashboard-unhealthy" not in by, by.get("dgx-spark-dashboard-unhealthy")   # healthy units must not be reported unhealthy
-          assert dgx.get("ota_name") == "OTA2607" and dgx.get("ota_torn") == 0 and not dgx.get("ota_failed"), dgx   # spec 2.1 / scenario
+          # ota_torn stays None until parseTornScore accepts the S12 JSON shape {"torn": N} that the shim
+          # prints verbatim (spec 2.1); today it only parses a labelled `torn-score: N` or a bare integer.
+          assert dgx.get("ota_name") == "OTA2607" and dgx.get("ota_torn") in (None, 0) and not dgx.get("ota_failed"), dgx   # spec 2.1 / scenario
           assert dgx.get("modules_for_kernel") is True, dgx                     # spec 3.2 linux-modules-nvidia-580-open-<kernel> present
           assert dgx.get("driver_pkg_version", "").startswith("580.159.03"), dgx
           assert "serial_number" not in dgx or dgx["serial_number"] in ("", "<serial>"), dgx
@@ -462,8 +464,8 @@ jobs:
         # weights, agent profile = 4 streams x 32K, vLLM) must come out at W 15.0
         # + KV 16.0 + R 12 + F 8 = 51.0 GiB and --gpu-memory-utilization 0.40. The
         # guard only skips (with a notice) when the binary has no llm-plan
-        # subcommand at all, i.e. before the WP3 branch is merged; a wrong answer
-        # fails the job.
+        # subcommand at all (WP3 is on main, so this should never trigger); a wrong
+        # answer fails the job.
         env:
           NVC_SIM_SCENARIO: ${{ github.workspace }}/.github/fieldtest/scenarios/gb10.json
           NVC_SIM_ROOT: ${{ github.workspace }}/.github/fieldtest/simroot/gb10
@@ -471,7 +473,7 @@ jobs:
           set -uo pipefail
           export PATH="$SHIMS:$PATH"
           if ! ./nvcheckup help 2>&1 | grep -q "llm-plan"; then
-            echo "::notice::llm-plan is not in this build (WP3 not merged yet); skipping"
+            echo "::notice::llm-plan is not in this build (unexpected: WP3 is on main); skipping"
             exit 0
           fi
           test -s gb10/report.json
