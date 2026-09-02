@@ -27,7 +27,7 @@ Diagnostics (`run`, `snapshot`, `compare`, `doctor`, `self-test`) never change s
 | Linux (Ubuntu, Debian, Fedora, RHEL, Arch, and others) | x86_64 | Beta. Builds and unit-tests in CI; needs field reports. |
 | Linux | ARM64 (aarch64) | Beta. Builds and unit-tests in CI; needs field reports. |
 | WSL2 (inside Linux guest) | x86_64 | Limited (GPU passthrough diagnostics) |
-| Jetson / Tegra (L4T, JetPack) | ARM64 | Limited. Detected; `nvidia-smi` does not exist on these boards, so thermal, PCIe and driver checks are skipped and `tegrastats` is suggested. |
+| Jetson / Tegra (L4T, JetPack) | ARM64 | Limited. Detected; `nvidia-smi` does not exist on these boards, so the no-GPU / no-driver / `nvidia-smi` findings are suppressed and `tegrastats` is suggested. |
 
 Build targets: `windows/amd64`, `linux/amd64`, `linux/arm64`. All produce static binaries of a few megabytes with zero runtime dependencies.
 
@@ -47,7 +47,7 @@ NVCheckup contains no GPU-model-specific logic. Every reading comes from the ins
 | Datacenter H-series | H100 (PCIe and SXM5), H200 | Supported. In MIG mode `utilization.gpu` is `[N/A]`, so idle/load inference falls back to the P-state. |
 | Multi-GPU systems | Two or more of any of the above | Supported. Every GPU is collected and analyzed. The report prints one `Thermal:` and one `PCIe:` line per GPU, `report.json` carries `gpu_thermal[]` and `gpu_pcie[]` (one object per GPU, keyed by `gpu_index`), and the summary block adds `GPUs: N NVIDIA (worst temp XX°C on GPU i)`. |
 | Older drivers | Any driver before R535 | Supported. When the driver rejects `clocks_event_reasons.active`, the collector re-queries the legacy `clocks_throttle_reasons.active` field, which carries the same bits. |
-| Jetson / Tegra | Jetson Orin, Xavier, Nano (L4T / JetPack) | Detected, limited. These boards have no `nvidia-smi`. NVCheckup recognises the platform from the L4T release markers, reports `system.is_jetson` and `system.jetson_release`, emits the INFO finding `jetson-detected`, suppresses the no-GPU / no-driver / `nvidia-smi` missing findings that would otherwise be wrong, and suggests `tegrastats` for thermal and load data. |
+| Jetson / Tegra | Jetson Orin, Xavier, Nano (L4T / JetPack) | Detected, limited. These boards have no `nvidia-smi`. NVCheckup recognises the platform from `/etc/nv_tegra_release` (or an `NVIDIA Jetson` model string in `/proc/device-tree/model`), reports `system.is_jetson` and `system.jetson_release`, emits the INFO finding `jetson-detected`, suppresses the no-GPU / no-driver / `nvidia-smi` missing findings that would otherwise be wrong, and suggests `tegrastats` for thermal and load data. |
 | vGPU and cloud instances | GRID / vGPU profiles, cloud GPU VMs | Expected to work wherever `nvidia-smi` works. Untested; fixture contributions are welcome (see `CONTRIBUTING.md`). |
 
 If a GPU you own is not in this table, it still works as long as `nvidia-smi` does. Rows captured from hardware not listed here are the most useful contribution you can make; `CONTRIBUTING.md` explains how to capture them.
@@ -228,7 +228,7 @@ NVCheckup collects roughly 60 data points through five collector packages (`comm
 | System uptime | WMI boot time calculation | `uptime -p` |
 | Timezone | Go `time.Now().Location()` | Go `time.Now().Location()` |
 | Hostname | `os.Hostname()` | `os.Hostname()` |
-| Jetson / Tegra detection (`is_jetson`, `jetson_release`) | N/A | L4T release markers (`/etc/nv_tegra_release`, Tegra device-tree model) |
+| Jetson / Tegra detection (`is_jetson`, `jetson_release`) | N/A | `/etc/nv_tegra_release` (its first line becomes `jetson_release`) or `/proc/device-tree/model` containing `NVIDIA Jetson` |
 
 ### GPU & Driver Inventory
 
@@ -237,7 +237,7 @@ NVCheckup collects roughly 60 data points through five collector packages (`comm
 | GPU list (name, vendor, index) | `nvidia-smi -L` + WMI/lspci |
 | PCI vendor/device IDs | WMI PNPDeviceID / `lspci -nn` |
 | PCI bus ID | `nvidia-smi --query-gpu` |
-| GPU index (row attribution on multi-GPU systems) | `nvidia-smi --query-gpu=index` (present in every query) |
+| GPU index (row attribution on multi-GPU systems) | `nvidia-smi --query-gpu=index` (first field of the inventory, thermal and PCIe queries) |
 | Driver version | `nvidia-smi --query-gpu=driver_version` |
 | VRAM total/used/free (MB) | `nvidia-smi --query-gpu=memory.*` |
 | GPU temperature (°C) | `nvidia-smi --query-gpu=temperature.gpu` |
@@ -622,7 +622,7 @@ Objects not shown above because they are absent on Windows:
 The `network` object was taken from a separate `--network` run (its `metadata.network_probes` is
 `true`); `wifi_band` and `wifi_signal_dbm` appear only on Wi-Fi. `system.kernel_version` appears on
 Linux. On Jetson/Tegra boards `system.is_jetson` is `true` and `system.jetson_release` carries the
-L4T release string; elsewhere `is_jetson` is `false` and `jetson_release` is absent. `gpu_thermal[]`
+L4T release string; elsewhere both `is_jetson` and `jetson_release` are absent. `gpu_thermal[]`
 and `gpu_pcie[]` have one element per NVIDIA GPU in `index` order (the example above shows a
 single-GPU machine, so each array has one element identical to `thermal` / `pcie` apart from
 `gpu_index`). `gpus[]` may also carry `pci_vendor_id`, `pci_device_id`, `pcie_link_speed` and

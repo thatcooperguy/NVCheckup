@@ -132,7 +132,12 @@ Fixtures are string constants next to the tests, named by package:
 |--------|-----------|---------------------------|
 | Thermal rows and event/throttle masks | `internal/collector/common/thermal_test.go` | `parseThermalCSV`, `parseThrottleMask` |
 | PCIe rows | `internal/collector/common/pcie_test.go` | `parsePCIeCSV` |
-| Inventory rows and the plain table | `internal/collector/common/gpu_test.go` | `stripProcessSection`, inventory parsing |
+| Inventory rows and the plain table | `internal/collector/common/gpu_test.go` | `stripProcessSection`, `parseGPUList`, `applyGPUQueryRows` |
+
+If `applyGPUQueryRows` is not present on your checkout, the `--query-gpu` row
+parsing is still inline in `collectFromNvidiaSmi`; extracting it into a pure
+function that takes the CSV text is a good first PR, and the fixture goes in
+with it.
 
 Add a constant with a comment that names the GPU, driver and condition
 (`// Tesla T4, driver 535.104, passive cooling, idle`), then a test that asserts
