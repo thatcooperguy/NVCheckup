@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/bundle"
-	"github.com/nicholasgasior/nvcheckup/internal/collector/common"
-	"github.com/nicholasgasior/nvcheckup/internal/core"
-	"github.com/nicholasgasior/nvcheckup/internal/doctor"
-	"github.com/nicholasgasior/nvcheckup/internal/remediate"
-	"github.com/nicholasgasior/nvcheckup/internal/selftest"
-	"github.com/nicholasgasior/nvcheckup/internal/snapshot"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/bundle"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
+	"github.com/thatcooperguy/nvcheckup/internal/core"
+	"github.com/thatcooperguy/nvcheckup/internal/doctor"
+	"github.com/thatcooperguy/nvcheckup/internal/remediate"
+	"github.com/thatcooperguy/nvcheckup/internal/selftest"
+	"github.com/thatcooperguy/nvcheckup/internal/snapshot"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func main() {

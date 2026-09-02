@@ -3,7 +3,7 @@ package remediate
 import (
 	"testing"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // MockExecutor records commands without executing them.

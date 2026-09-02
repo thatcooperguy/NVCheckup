@@ -3,8 +3,12 @@ package types
 
 import "time"
 
-// Version of NVCheckup
-const Version = "0.2.0"
+// Version of NVCheckup. Overridden at build time via
+// -ldflags "-X github.com/thatcooperguy/nvcheckup/pkg/types.Version=x.y.z".
+var Version = "0.2.1"
+
+// SchemaVersion identifies the report.json layout. Bump on breaking changes.
+const SchemaVersion = "1"
 
 // Disclaimer shown in all reports
 const Disclaimer = "NVCheckup is an unofficial community tool, not affiliated with or endorsed by NVIDIA Corporation."
@@ -13,11 +17,11 @@ const Disclaimer = "NVCheckup is an unofficial community tool, not affiliated wi
 type RunMode string
 
 const (
-	ModeGaming   RunMode = "gaming"
-	ModeAI       RunMode = "ai"
-	ModeCreator  RunMode = "creator"
+	ModeGaming    RunMode = "gaming"
+	ModeAI        RunMode = "ai"
+	ModeCreator   RunMode = "creator"
 	ModeStreaming RunMode = "streaming"
-	ModeFull     RunMode = "full"
+	ModeFull      RunMode = "full"
 )
 
 // Severity levels for findings
@@ -48,18 +52,18 @@ const (
 
 // RunConfig holds all CLI flags and options for a run
 type RunConfig struct {
-	Mode        RunMode
-	OutDir      string
-	Zip         bool
-	JSON        bool
-	Markdown    bool
-	Verbose     bool
-	NoAdmin     bool
-	Timeout     int // seconds
-	Redact      bool
-	IncludeLogs    bool
-	NetworkTest    bool // run network diagnostics
-	KnowledgePath  string // optional path to override embedded knowledge pack
+	Mode          RunMode
+	OutDir        string
+	Zip           bool
+	JSON          bool
+	Markdown      bool
+	Verbose       bool
+	NoAdmin       bool
+	Timeout       int // seconds
+	Redact        bool
+	IncludeLogs   bool
+	NetworkTest   bool   // run network diagnostics
+	KnowledgePath string // optional path to override embedded knowledge pack
 }
 
 // DefaultRunConfig returns a RunConfig with safe defaults
@@ -131,7 +135,7 @@ type WindowsInfo struct {
 	PowerPlan         string          `json:"power_plan,omitempty"`
 	Monitors          []MonitorInfo   `json:"monitors,omitempty"`
 	DriverResetEvents []EventLogEntry `json:"driver_reset_events,omitempty"`
-	NvlddmkmErrors   []EventLogEntry `json:"nvlddmkm_errors,omitempty"`
+	NvlddmkmErrors    []EventLogEntry `json:"nvlddmkm_errors,omitempty"`
 	WHEAErrors        []EventLogEntry `json:"whea_errors,omitempty"`
 	RecentKBs         []WindowsUpdate `json:"recent_kbs,omitempty"`
 	NVIDIAAppVersion  string          `json:"nvidia_app_version,omitempty"`
@@ -182,7 +186,7 @@ type LinuxInfo struct {
 	ContainerRuntime   string          `json:"container_runtime,omitempty"`
 	NVContainerToolkit string          `json:"nv_container_toolkit,omitempty"`
 	JournalSnippets    string          `json:"journal_snippets,omitempty"` // opt-in
-	DmesgSnippets      string          `json:"dmesg_snippets,omitempty"`  // opt-in
+	DmesgSnippets      string          `json:"dmesg_snippets,omitempty"`   // opt-in
 	XidErrors          []XidError      `json:"xid_errors,omitempty"`
 	LlvmpipeFallback   bool            `json:"llvmpipe_fallback"`
 	GLRenderer         string          `json:"gl_renderer,omitempty"`
@@ -241,6 +245,7 @@ type WSLInfo struct {
 
 // Finding represents an actionable diagnostic finding
 type Finding struct {
+	ID           string             `json:"id,omitempty"` // stable rule id, e.g. "pcie-downshift"
 	Severity     Severity           `json:"severity"`
 	Title        string             `json:"title"`
 	Evidence     string             `json:"evidence"`
@@ -293,25 +298,31 @@ type ChangeJournalEntry struct {
 
 // ThermalInfo holds GPU thermal and power state data
 type ThermalInfo struct {
-	TemperatureC    int    `json:"temperature_c"`
-	ThermalThrottle bool   `json:"thermal_throttle"`
-	PowerState      string `json:"power_state"`       // P0-P12
-	CurrentClockMHz int    `json:"current_clock_mhz"`
-	MaxClockMHz     int    `json:"max_clock_mhz"`
-	PowerLimitW     string `json:"power_limit_w"`
-	PowerDrawW      string `json:"power_draw_w"`
-	FanSpeedPct     int    `json:"fan_speed_pct"`
-	SlowdownActive  bool   `json:"slowdown_active"`
-	SlowdownReason  string `json:"slowdown_reason,omitempty"`
+	TemperatureC    int      `json:"temperature_c"`
+	ThermalThrottle bool     `json:"thermal_throttle"`
+	PowerState      string   `json:"power_state"` // P0-P12
+	CurrentClockMHz int      `json:"current_clock_mhz"`
+	MaxClockMHz     int      `json:"max_clock_mhz"`
+	PowerLimitW     string   `json:"power_limit_w"`
+	PowerDrawW      string   `json:"power_draw_w"`
+	FanSpeedPct     int      `json:"fan_speed_pct"`
+	FanSupported    bool     `json:"fan_supported"`              // false when nvidia-smi reports [N/A] (passive/water-cooled)
+	SlowdownActive  bool     `json:"slowdown_active"`            // true only for thermal/power/HW slowdown bits, never idle
+	SlowdownReason  string   `json:"slowdown_reason,omitempty"`  // raw clocks_event_reasons.active bitmask
+	ThrottleReasons []string `json:"throttle_reasons,omitempty"` // decoded active reasons, e.g. "sw_thermal_slowdown"
+	UtilizationPct  int      `json:"utilization_pct"`            // utilization.gpu at sample time
 }
 
 // PCIeInfo holds PCIe link state data
 type PCIeInfo struct {
-	CurrentSpeed string `json:"current_speed"` // "Gen4"
-	MaxSpeed     string `json:"max_speed"`     // "Gen4"
-	CurrentWidth string `json:"current_width"` // "x16"
-	MaxWidth     string `json:"max_width"`     // "x16"
-	Downshifted  bool   `json:"downshifted"`
+	CurrentSpeed   string `json:"current_speed"`         // "Gen4"
+	MaxSpeed       string `json:"max_speed"`             // "Gen4"
+	CurrentWidth   string `json:"current_width"`         // "x16"
+	MaxWidth       string `json:"max_width"`             // "x16"
+	Downshifted    bool   `json:"downshifted"`           // gen or width below max while the GPU is NOT idle
+	PowerState     string `json:"power_state,omitempty"` // pstate at sample time, e.g. "P8"
+	UtilizationPct int    `json:"utilization_pct"`       // utilization.gpu at sample time
+	IdleLikely     bool   `json:"idle_likely"`           // P5+ or low utilization: link power-saving is expected
 }
 
 // DisplayInfo holds display/monitor pipeline data
@@ -394,6 +405,8 @@ type ReportMetadata struct {
 	RuntimeSeconds   float64   `json:"runtime_seconds"`
 	RedactionEnabled bool      `json:"redaction_enabled"`
 	Platform         string    `json:"platform"` // "windows", "linux", "wsl"
+	SchemaVersion    string    `json:"schema_version"`
+	NetworkProbes    bool      `json:"network_probes"` // true when ping/DNS/traceroute probes were run (--network)
 }
 
 // Snapshot is a timestamped JSON snapshot for comparison

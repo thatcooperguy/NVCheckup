@@ -2,7 +2,7 @@
 
 **Cross-platform NVIDIA diagnostics. For gamers, AI developers, and creators.**
 
-[![CI](https://github.com/nicholasgasior/nvcheckup/actions/workflows/ci.yml/badge.svg)](https://github.com/nicholasgasior/nvcheckup/actions/workflows/ci.yml)
+[![CI](https://github.com/thatcooperguy/nvcheckup/actions/workflows/ci.yml/badge.svg)](https://github.com/thatcooperguy/nvcheckup/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20ARM64-76b900.svg)](#supported-platforms)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev)
@@ -360,7 +360,7 @@ Every collector returns structured data. Every analyzer produces findings with s
 ## Building from Source
 
 ```bash
-git clone https://github.com/nicholasgasior/nvcheckup.git
+git clone https://github.com/thatcooperguy/nvcheckup.git
 cd nvcheckup
 
 # Build for current platform

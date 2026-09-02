@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // Executor abstracts command execution so remediation actions can be tested

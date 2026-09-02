@@ -4,8 +4,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectGPUInfo gathers GPU and NVIDIA driver information.

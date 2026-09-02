@@ -8,13 +8,13 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/analyzer"
-	"github.com/nicholasgasior/nvcheckup/internal/collector/ai"
-	"github.com/nicholasgasior/nvcheckup/internal/collector/common"
-	"github.com/nicholasgasior/nvcheckup/internal/collector/wsl"
-	"github.com/nicholasgasior/nvcheckup/internal/redact"
-	"github.com/nicholasgasior/nvcheckup/internal/report"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/analyzer"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/ai"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/wsl"
+	"github.com/thatcooperguy/nvcheckup/internal/redact"
+	"github.com/thatcooperguy/nvcheckup/internal/report"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // Run executes the full diagnostic pipeline and returns the completed report.

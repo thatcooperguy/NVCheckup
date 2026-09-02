@@ -3,7 +3,7 @@ package analyzer
 import (
 	"testing"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func TestAnalyzeGPUPresence_NoGPU(t *testing.T) {

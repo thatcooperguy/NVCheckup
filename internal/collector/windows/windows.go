@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectWindowsInfo gathers Windows-specific diagnostic data.
@@ -210,15 +210,15 @@ func collectOverlaySoftware(info *types.WindowsInfo, errs *[]types.CollectorErro
 	if r.Err == nil {
 		appList := strings.ToLower(r.Stdout)
 		overlays := map[string]string{
-			"xbox game bar":     "Xbox Game Bar",
-			"discord":           "Discord (may have overlay)",
-			"msi afterburner":   "MSI Afterburner",
-			"rivatuner":         "RivaTuner Statistics Server (RTSS)",
-			"obs studio":        "OBS Studio",
-			"shadowplay":        "NVIDIA ShadowPlay",
-			"overwolf":          "Overwolf",
-			"medal":             "Medal.tv",
-			"action!":           "Action! Screen Recorder",
+			"xbox game bar":   "Xbox Game Bar",
+			"discord":         "Discord (may have overlay)",
+			"msi afterburner": "MSI Afterburner",
+			"rivatuner":       "RivaTuner Statistics Server (RTSS)",
+			"obs studio":      "OBS Studio",
+			"shadowplay":      "NVIDIA ShadowPlay",
+			"overwolf":        "Overwolf",
+			"medal":           "Medal.tv",
+			"action!":         "Action! Screen Recorder",
 		}
 		for pattern, label := range overlays {
 			if strings.Contains(appList, pattern) {

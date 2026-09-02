@@ -13,11 +13,11 @@ import (
 
 // Redactor holds patterns for redaction
 type Redactor struct {
-	enabled     bool
-	username    string
-	hostname    string
-	homeDir     string
-	patterns    []*replacementPattern
+	enabled  bool
+	username string
+	hostname string
+	homeDir  string
+	patterns []*replacementPattern
 }
 
 type replacementPattern struct {
@@ -56,7 +56,7 @@ func (r *Redactor) buildPatterns() {
 		}
 		// Windows paths: C:\Users\username
 		r.patterns = append(r.patterns, &replacementPattern{
-			re:          regexp.MustCompile(flags + `(?:C:\\Users\\|/home/|/Users/)` + regexp.QuoteMeta(r.username)),
+			re: regexp.MustCompile(flags + `(?:C:\\Users\\|/home/|/Users/)` + regexp.QuoteMeta(r.username)),
 			replacement: func() string {
 				if runtime.GOOS == "windows" {
 					return `C:\Users\<user>`

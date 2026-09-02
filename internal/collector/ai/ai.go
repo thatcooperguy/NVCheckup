@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectAIInfo gathers AI framework and CUDA environment information.

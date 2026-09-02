@@ -5,7 +5,7 @@ package remediate
 import (
 	"fmt"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // getAvailableActions returns nil on unsupported platforms. Remediation actions

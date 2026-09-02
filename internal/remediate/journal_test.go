@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func TestJournal_AppendAndRead(t *testing.T) {

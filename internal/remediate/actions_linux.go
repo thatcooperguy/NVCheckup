@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // nouveauBlacklistPath is the file path for the nouveau blacklist modprobe config.
@@ -43,7 +43,7 @@ func (e *Engine) actionBlacklistNouveau() (output, undoInfo string, err error) {
 	}
 
 	return fmt.Sprintf("Created %s. Reboot required for changes to take effect. "+
-		"You may also need to run 'update-initramfs -u' or 'dracut -f'.", nouveauBlacklistPath),
+			"You may also need to run 'update-initramfs -u' or 'dracut -f'.", nouveauBlacklistPath),
 		nouveauBlacklistPath, // undo info = file path to remove
 		nil
 }

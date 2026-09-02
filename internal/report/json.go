@@ -3,7 +3,7 @@ package report
 import (
 	"encoding/json"
 
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // GenerateJSON produces a structured JSON report.

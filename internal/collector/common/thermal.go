@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // CollectThermalInfo gathers GPU thermal, power state, and clock data via nvidia-smi.

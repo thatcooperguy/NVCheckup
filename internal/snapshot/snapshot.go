@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/collector/ai"
-	"github.com/nicholasgasior/nvcheckup/internal/collector/common"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/ai"
+	"github.com/thatcooperguy/nvcheckup/internal/collector/common"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // Create generates a timestamped JSON snapshot of the current system state.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // knownXidDescriptions maps NVIDIA Xid error codes to human-readable descriptions.
@@ -113,9 +113,9 @@ func parseAndGroupXidErrors(lines []string) []types.XidError {
 
 	// Group by Xid code: track count and last seen timestamp
 	type xidGroup struct {
-		code      int
-		count     int
-		lastSeen  time.Time
+		code     int
+		count    int
+		lastSeen time.Time
 	}
 	groups := make(map[int]*xidGroup)
 	var seenOrder []int // preserve order of first occurrence

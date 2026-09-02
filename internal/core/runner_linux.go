@@ -3,8 +3,8 @@
 package core
 
 import (
-	linuxCollector "github.com/nicholasgasior/nvcheckup/internal/collector/linux"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	linuxCollector "github.com/thatcooperguy/nvcheckup/internal/collector/linux"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 func collectPlatformSpecific(r *types.Report, cfg types.RunConfig) []types.CollectorError {

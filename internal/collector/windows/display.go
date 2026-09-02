@@ -7,17 +7,17 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/util"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/util"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // wmiVideoController represents a Win32_VideoController WMI object.
 type wmiVideoController struct {
-	Name                       string
+	Name                        string
 	CurrentHorizontalResolution int
 	CurrentVerticalResolution   int
 	CurrentRefreshRate          int
-	AdapterCompatibility       string
+	AdapterCompatibility        string
 }
 
 // CollectDisplayInfo gathers display/monitor information on Windows via WMI

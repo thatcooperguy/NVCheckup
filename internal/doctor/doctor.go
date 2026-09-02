@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nicholasgasior/nvcheckup/internal/core"
-	"github.com/nicholasgasior/nvcheckup/pkg/types"
+	"github.com/thatcooperguy/nvcheckup/internal/core"
+	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
 // RunInteractive runs the interactive doctor mode.
