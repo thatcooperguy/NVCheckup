@@ -7,6 +7,8 @@
 
 ## What NVCheckup Is
 
+LLM deployment plans separate memory estimates from runtime verification: exact image/tag and architecture checks remain inventory checks, unresolved checkpoint formats are explicit placeholders, and saved-report planning uses the target report's environment. Runtime commands preserve the requested per-stream context and concurrency. See [runtime recipe verification](docs/runtime-recipes.md) for the current implementation contract and demo validation steps.
+
 NVCheckup is a single-binary, cross-platform diagnostic CLI for NVIDIA GPU environments. It scans your system, identifies common failure patterns across gaming, AI/CUDA, and streaming workloads, and generates clean, privacy-safe reports with ranked findings and actionable next steps.
 
 It is designed for four moments:

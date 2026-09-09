@@ -360,26 +360,24 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 	// Container image, docker GPU runtime, ipc/shm.
 	if in.Runtime.IsContainer() {
 		if r != nil && r.Ecosystem != nil && len(r.Ecosystem.Images) > 0 {
-			repo := cmd.Image
-			if i := strings.LastIndex(repo, ":"); i > 0 {
-				repo = repo[:i]
-			}
 			status, detail := StatusWarn, fmt.Sprintf("%s not present locally; pull it yourself (llm-plan never pulls)", cmd.Image)
 			for _, img := range r.Ecosystem.Images {
-				if !strings.HasPrefix(img.Ref, repo) {
+				// A different tag or similarly named repository is not evidence
+				// about the image the printed command actually starts.
+				if img.Ref != cmd.Image {
 					continue
 				}
 				switch {
+				case img.Arch == "":
+					status, detail = StatusWarn, img.Ref+" present, architecture not reported"
 				case img.Arch != "" && img.Arch != "arm64" && f.GOOS == "linux" && isArm(r):
 					status, detail = StatusFail, fmt.Sprintf("%s is %s, not linux/arm64 (arm64-container-amd64-image)", img.Ref, img.Arch)
-				case img.Ref == cmd.Image:
-					status, detail = StatusPass, img.Ref+" present"
+				case f.GOOS == "linux" && isAMD64(r) && img.Arch != "amd64":
+					status, detail = StatusFail, fmt.Sprintf("%s is %s, not linux/amd64", img.Ref, img.Arch)
 				default:
-					status, detail = StatusWarn, fmt.Sprintf("%s present but the spec names %s", img.Ref, cmd.Image)
+					status, detail = StatusPass, img.Ref+" present (inventory only; inference not tested)"
 				}
-				if status == StatusPass {
-					break
-				}
+				break
 			}
 			add("container-image", status, detail)
 		} else {
@@ -387,8 +385,10 @@ func Evaluate(f Facts, in Inputs, s Sizing, cmd Command) []Prereq {
 		}
 
 		switch {
-		case f.GOOS == "windows":
+		case windowsOnArm(r, f.GOOS):
 			add("docker-gpu-runtime", StatusWarn, "GPU containers for "+in.Runtime.Display()+" are not covered on Windows on Arm (spec 7.6: no win_arm64 torch wheels on the cu130 index as of 2026-09-02, S93); use llama.cpp")
+		case f.GOOS == "windows":
+			add("docker-gpu-runtime", StatusWarn, "the command targets Linux containers; verify GPU passthrough inside WSL2/Linux separately from this Windows host report")
 		case r == nil || r.Linux == nil:
 			add("docker-gpu-runtime", StatusSkip, "container runtime not probed")
 		case r.Ecosystem != nil && r.Ecosystem.SnapDocker:
@@ -450,6 +450,11 @@ func orNA(s string) string {
 func isArm(r *types.Report) bool {
 	a := strings.ToLower(r.System.Architecture)
 	return strings.Contains(a, "aarch64") || strings.Contains(a, "arm64")
+}
+
+func isAMD64(r *types.Report) bool {
+	a := strings.ToLower(r.System.Architecture)
+	return a == "amd64" || a == "x86_64" || a == "x64"
 }
 
 func hasNvidiaRuntime(rts []string) bool {

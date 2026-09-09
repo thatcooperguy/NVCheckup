@@ -61,15 +61,20 @@ _Read-only; estimates, not measurements._
 Build:
 
 ```sh
-cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real
+cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON
 ```
 
 ```sh
-llama-server -hf meta-llama/Llama-3.1-8B-Instruct:BF16 --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 8192 -np 1 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja
+llama-server -hf {gguf-repo}:BF16 --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 8192 -np 1 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja
 ```
+- -c 8192 allocates the total context for 1 parallel streams of 8192 tokens each; verify the server's per-slot context after startup.
 - --no-mmap avoids the Spark mmap slow-load; keep the KV cache at q8_0 or higher (spec 7.6).
 - Optional speculative decoding for models that ship MTP heads: --spec-type draft-mtp --spec-draft-n-max 3 (spec 7.6).
 - -hf {repo}:{quant} names a GGUF repo on Hugging Face; llama-server fetches it on first start, llm-plan does not.
+
+Unconfirmed / not covered by the spec:
+
+- Replace {gguf-repo} with a repository containing the requested GGUF file; the catalogue's base Hugging Face checkpoint is not a GGUF download. Verify the llama-server version and build for the target GPU.
 
 ## Warnings
 

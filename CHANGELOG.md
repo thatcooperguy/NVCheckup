@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- `llm-plan` runtime recipes preserve the sized context and concurrency: llama.cpp receives total context across parallel slots, while TensorRT-LLM and SGLang receive explicit request limits. Overflowing llama.cpp context products are rejected.
+- TensorRT-LLM's Docker command mounts `cfg.yaml` read-only and passes the required environment into the container.
+- Quantized plans no longer launch the unquantized base checkpoint, and llama.cpp no longer treats a base Hugging Face repository as a GGUF repository. Unresolved checkpoint choices are explicit placeholders with warnings.
+- llama.cpp builds no longer hard-code Spark's CUDA architecture for ordinary RTX machines. Windows Ollama recipes use PowerShell; x64 Windows container plans are distinguished from Windows on Arm.
+- Offline plans use the saved report's Triton environment. Container preflight checks the exact image/tag and architecture, so unrelated tags cannot hide an incompatible requested image. Floating SGLang image tags are labelled for digest pinning before a demo.
+
+These are recipe and preflight corrections verified with fixtures and code tests; they do not constitute a real Spark capture or an inference benchmark.
 
 ## [0.2.3] - 2026-09-02
 

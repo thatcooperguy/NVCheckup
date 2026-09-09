@@ -158,7 +158,8 @@ type Inputs struct {
 	Context     int     // tokens per stream
 	Concurrency int     // streams (agent: 1 + subagents, spec 7.2)
 	Runtime     Runtime
-	Nodes       int // 1 or 2 (spec 7.1 target: single node / cluster of two)
+	GOOS        string // target OS for command rendering; never inferred from the rendering host
+	Nodes       int    // 1 or 2 (spec 7.1 target: single node / cluster of two)
 
 	PoolBytes            float64 // measured MemTotal (or VRAM total on discrete GPUs); never "128 GB"
 	AvailableBytes       float64 // MemAvailable now; 0 = unknown

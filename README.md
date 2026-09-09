@@ -252,6 +252,8 @@ Clustering two Sparks over the QSFP cage is where most of the field reports come
 
 ### `nvcheckup llm-plan`: will this model fit?
 
+A fit estimate is not a completed runtime setup. Checkpoint placeholders must be replaced with an export matching the sized weight format, and a present container image does not prove inference works. See [runtime recipe verification](docs/runtime-recipes.md) for corrected context/concurrency, TensorRT configuration, Windows setup and a repeatable demo check.
+
 The question every Spark owner asks first, answered from measured memory instead of the number on the box.
 
 ```

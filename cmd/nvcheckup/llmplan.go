@@ -174,7 +174,7 @@ func runLLMPlan(args []string, stdin io.Reader, stdout, stderr io.Writer, intera
 	}
 
 	pool, notes := llmplan.DerivePool(report, o.GOOS, o.Timeout, o.MemoryGiB, o.Offline)
-	ports, known := llmplan.ListeningPorts(report, o.GOOS)
+	ports, known := llmplan.ListeningPorts(report, o.GOOS, o.Offline)
 	plan, err := llmplan.Build(report, pool, ports, known, o)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)

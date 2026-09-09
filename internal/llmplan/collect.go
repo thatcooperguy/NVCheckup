@@ -402,12 +402,13 @@ var watchedPorts = []int{8000, 30000, 11434, 8355}
 
 // ListeningPorts returns the TCP ports in LISTEN state, from the ecosystem
 // collector when present, else from /proc/net/tcp{,6} (read-only, under
-// NVC_SIM_ROOT when set). known is false when neither source was readable.
-func ListeningPorts(r *types.Report, goos string) (ports []int, known bool) {
+// NVC_SIM_ROOT when set). Offline reports never probe the rendering host.
+// known is false when no permitted source was readable.
+func ListeningPorts(r *types.Report, goos string, offline bool) (ports []int, known bool) {
 	if r != nil && r.Ecosystem != nil && len(r.Ecosystem.ListeningPorts) > 0 {
 		return append([]int(nil), r.Ecosystem.ListeningPorts...), true
 	}
-	if goos != "linux" && common.SimRoot() == "" {
+	if offline || (goos != "linux" && common.SimRoot() == "") {
 		return nil, false
 	}
 	set := map[int]bool{}

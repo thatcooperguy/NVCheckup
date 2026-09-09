@@ -72,9 +72,19 @@ func TestSimRoot_ReadMeminfoAndPorts(t *testing.T) {
 		t.Errorf("source = %s", p.Source)
 	}
 
-	ports, known := ListeningPorts(&types.Report{}, "windows") // sim root makes the files readable on any OS
+	ports, known := ListeningPorts(&types.Report{}, "windows", false) // sim root makes the files readable on any OS
 	if !known || fmtInts(ports) != "8000,11434" {
 		t.Errorf("listening ports = %v known=%v, want [8000 11434]", ports, known)
+	}
+	// A saved report must not inherit this workstation's (or simulation's) ports.
+	ports, known = ListeningPorts(&types.Report{}, "linux", true)
+	if known || len(ports) != 0 {
+		t.Errorf("offline ports = %v known=%v, want unknown", ports, known)
+	}
+	recorded := &types.Report{Ecosystem: &types.EcosystemInfo{ListeningPorts: []int{8355}}}
+	ports, known = ListeningPorts(recorded, "linux", true)
+	if !known || fmtInts(ports) != "8355" {
+		t.Errorf("offline recorded ports = %v known=%v, want [8355]", ports, known)
 	}
 
 	// DerivePool without a unified-memory struct falls back to the sim meminfo.

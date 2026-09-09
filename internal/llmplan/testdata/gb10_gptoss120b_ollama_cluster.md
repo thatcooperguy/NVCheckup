@@ -36,7 +36,7 @@ _Read-only; estimates, not measurements._
 
 - Keep MXFP4: MXFP4 is the least lossy format that fits with the 8.0 GiB headroom (margin 78.0 GiB).
 - Headroom: more than 1M tokens per stream would still fit at MXFP4 with 4 streams; the KV cache is not the limit here.
-- Ollama does not batch: aggregate throughput equals one stream; vLLM aggregate reaches hundreds of tok/s at c=8..256 (spec 7.4).
+- Ollama supports parallel requests when memory permits; context memory scales with concurrency. Compare measured aggregate throughput on your model and hardware instead of treating the one-stream estimate as an aggregate benchmark.
 
 | Quant | Weights GiB | Total GiB | Fits | Margin GiB |
 |---|---:|---:|---|---:|
@@ -75,9 +75,10 @@ OLLAMA_NUM_PARALLEL=4
 OLLAMA_MAX_LOADED_MODELS=1
 OLLAMA_CONTEXT_LENGTH=32768
 ```
+- The systemd drop-in takes effect only after restarting the Ollama service; llm-plan does not restart it.
 - q8_0 KV only for FA-capable architectures (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl); otherwise Ollama silently falls back to f16 (spec 7.6).
 - Verify 'ollama ps' shows 100% GPU; the default context 4096 is too small for agents (spec 7.6).
-- Ollama does not batch: aggregate throughput equals a single stream (spec 7.4).
+- Ollama supports parallel requests when memory permits. Measure aggregate throughput on the chosen model and backend; the one-stream ceiling is not an aggregate benchmark (Ollama FAQ, concurrent requests).
 
 Unconfirmed / not covered by the spec:
 

@@ -64,18 +64,20 @@ _Read-only; estimates, not measurements._
 Build:
 
 ```sh
-cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real
+cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON
 ```
 
 ```sh
-llama-server -hf {repo}:{quant} --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 65536 -np 2 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja
+llama-server -hf {gguf-repo}:{quant} --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 131072 -np 2 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja
 ```
+- -c 131072 allocates the total context for 2 parallel streams of 65536 tokens each; verify the server's per-slot context after startup.
 - --no-mmap avoids the Spark mmap slow-load; keep the KV cache at q8_0 or higher (spec 7.6).
 - Optional speculative decoding for models that ship MTP heads: --spec-type draft-mtp --spec-draft-n-max 3 (spec 7.6).
 - -hf {repo}:{quant} names a GGUF repo on Hugging Face; llama-server fetches it on first start, llm-plan does not.
 
 Unconfirmed / not covered by the spec:
 
+- Replace {gguf-repo} with a repository containing the requested GGUF file; the catalogue's base Hugging Face checkpoint is not a GGUF download. Verify the llama-server version and build for the target GPU.
 - NVFP4 has no GGUF equivalent; pick a Q4_K_M or Q8_0 GGUF of this model for llama.cpp (the sizing above used the NVFP4 factor).
 
 Exit code 1 (0 fits, 1 fits with warnings, 2 does not fit, 3 error).
