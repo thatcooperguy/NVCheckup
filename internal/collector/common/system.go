@@ -107,6 +107,11 @@ func collectWindowsSystem(info *types.SystemInfo, errs *[]types.CollectorError, 
 	}
 
 	collectWindowsBoot(info, errs, timeout)
+	if memory, err := CollectWindowsHostMemory(timeout); err == nil {
+		info.WindowsMemory = memory
+	} else {
+		*errs = append(*errs, types.CollectorError{Collector: "system.windows_memory", Error: err.Error()})
+	}
 }
 
 // secureBootScript reports three independent sources on separate lines.

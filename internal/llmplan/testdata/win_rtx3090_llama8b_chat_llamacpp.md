@@ -8,6 +8,7 @@ _Read-only; estimates, not measurements._
 | GPU | NVIDIA GeForce RTX 3090 |
 | Pool | 24.0 GiB (nvidia-smi memory.total of NVIDIA GeForce RTX 3090 (dedicated VRAM, discrete GPU)) |
 | VRAM free | 22.5 GiB |
+| Host commit | unknown (not recorded; host readiness is not established) |
 | Bandwidth | unknown for this GPU (no figure in the spec) |
 | OS floor F | 0 GiB: dedicated VRAM of a discrete GPU (assumption; spec 7.4 F is a unified-memory reservation; set --headroom-gib to reserve VRAM) |
 

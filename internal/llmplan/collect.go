@@ -1,7 +1,6 @@
 package llmplan
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -30,9 +29,10 @@ type MemoryPool struct {
 	AllocatableBytes  float64 // spec 3.3 arithmetic
 	SwapKnown         bool
 
-	Source   string // where TotalBytes came from, printed in the plan
-	Unified  bool   // one CPU/GPU pool (GB10/N1X)
-	Discrete bool   // dedicated VRAM of a discrete GPU
+	Source        string                   // where TotalBytes came from, printed in the plan
+	Unified       bool                     // one CPU/GPU pool (GB10/N1X)
+	Discrete      bool                     // dedicated VRAM of a discrete GPU
+	WindowsMemory *types.WindowsMemoryInfo // host diagnostic only; never added to this pool
 }
 
 // Allocatable is spec 3.3: allocatable = MemAvailable + SwapFree; if
@@ -142,32 +142,27 @@ func poolFromUnifiedMemory(u *types.UnifiedMemoryInfo) MemoryPool {
 	return p
 }
 
-// windowsMemory is the Win32_OperatingSystem projection (kB values).
-type windowsMemory struct {
-	TotalVisibleMemorySize float64 `json:"TotalVisibleMemorySize"`
-	FreePhysicalMemory     float64 `json:"FreePhysicalMemory"`
+// windowsPool reuses the system collector's bounded read-only CIM projection.
+func windowsPool(timeout int) (MemoryPool, error) {
+	w, err := common.CollectWindowsHostMemory(timeout)
+	if err != nil {
+		return MemoryPool{}, err
+	}
+	return poolFromWindowsMemory(w)
 }
 
-// windowsPool reads TotalVisibleMemorySize/FreePhysicalMemory (spec 7.1,
-// spec 8) with one read-only CIM query.
-func windowsPool(timeout int) (MemoryPool, error) {
-	r := util.RunCommand(timeout, "powershell", "-NoProfile", "-NonInteractive", "-Command",
-		"Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json -Compress")
-	if r.Err != nil && r.Stdout == "" {
-		return MemoryPool{}, fmt.Errorf("Win32_OperatingSystem query failed: %v", r.Err)
-	}
-	var w windowsMemory
-	if err := json.Unmarshal([]byte(r.Stdout), &w); err != nil {
-		return MemoryPool{}, fmt.Errorf("Win32_OperatingSystem query: %w", err)
-	}
-	if w.TotalVisibleMemorySize <= 0 {
+func poolFromWindowsMemory(w *types.WindowsMemoryInfo) (MemoryPool, error) {
+	if w == nil || w.PhysicalTotalKB == nil || *w.PhysicalTotalKB == 0 {
 		return MemoryPool{}, fmt.Errorf("Win32_OperatingSystem returned no TotalVisibleMemorySize")
 	}
 	p := MemoryPool{
-		TotalBytes:     w.TotalVisibleMemorySize * 1024,
-		AvailableBytes: w.FreePhysicalMemory * 1024,
-		FreeBytes:      w.FreePhysicalMemory * 1024,
-		Source:         "Win32_OperatingSystem.TotalVisibleMemorySize (measured)",
+		TotalBytes:    float64(*w.PhysicalTotalKB) * 1024,
+		Source:        "Win32_OperatingSystem.TotalVisibleMemorySize (measured)",
+		WindowsMemory: w,
+	}
+	if w.PhysicalFreeKB != nil {
+		p.AvailableBytes = float64(*w.PhysicalFreeKB) * 1024
+		p.FreeBytes = p.AvailableBytes
 	}
 	p.AllocatableBytes = p.AvailableBytes
 	return p, nil
@@ -285,6 +280,10 @@ func PlatformLabel(r *types.Report) string {
 // offline (--report) means the plan is for the machine the report was taken
 // on: the live /proc/meminfo and CIM fallbacks of this host are skipped.
 func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, offline bool) (MemoryPool, []string) {
+	return derivePool(r, goos, timeout, memoryGiB, offline, windowsPool)
+}
+
+func derivePool(r *types.Report, goos string, timeout int, memoryGiB float64, offline bool, readWindows func(int) (MemoryPool, error)) (MemoryPool, []string) {
 	var notes []string
 	unified := IsUnified(r)
 	var pool MemoryPool
@@ -335,8 +334,17 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, of
 			notes = append(notes, "could not read /proc/meminfo: "+err.Error())
 		}
 	}
-	if !found && !offline && goos == "windows" {
-		if p, err := windowsPool(timeout); err == nil {
+	// Reuse a recorded snapshot for both live and saved reports, without
+	// mixing a second moment (or the rendering host) into the report.
+	hasWindowsSnapshot := goos == "windows" && r != nil && r.System.WindowsMemory != nil
+	if !found && hasWindowsSnapshot {
+		if p, err := poolFromWindowsMemory(r.System.WindowsMemory); err == nil {
+			pool = p
+			found = true
+		}
+	}
+	if !found && !offline && goos == "windows" && !hasWindowsSnapshot {
+		if p, err := readWindows(timeout); err == nil {
 			pool = p
 			found = true
 		} else {
@@ -349,6 +357,9 @@ func DerivePool(r *types.Report, goos string, timeout int, memoryGiB float64, of
 	}
 	if unified {
 		pool.Unified = true
+	}
+	if goos == "windows" && r != nil && r.System.WindowsMemory != nil {
+		pool.WindowsMemory = r.System.WindowsMemory
 	}
 	if memoryGiB > 0 {
 		pool.TotalBytes = memoryGiB * GiB

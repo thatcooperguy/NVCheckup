@@ -252,6 +252,11 @@ Clustering two Sparks over the QSFP cage is where most of the field reports come
 
 ### `nvcheckup llm-plan`: will this model fit?
 
+Windows reports and plans also show [host commit headroom](docs/windows-host-memory.md)
+to help spot allocation pressure when games, builds and local AI run together.
+This separate diagnostic does not increase GPU capacity or change model-fit math;
+saved reports keep their recorded snapshot without probing the PC reading them.
+
 A fit estimate is not a completed runtime setup. Checkpoint placeholders must be replaced with an export matching the sized weight format, and a present container image does not prove inference works. See [runtime recipe verification](docs/runtime-recipes.md) for corrected context/concurrency, TensorRT configuration, Windows setup and a repeatable demo check.
 
 The question every Spark owner asks first, answered from measured memory instead of the number on the box.

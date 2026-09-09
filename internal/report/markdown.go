@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -41,6 +42,12 @@ func GenerateMarkdown(report *types.Report) string {
 	row("Architecture", report.System.Architecture)
 	row("CPU", report.System.CPUModel)
 	row("RAM", fmt.Sprintf("%d MB", report.System.RAMTotalMB))
+	if report.System.WindowsMemory != nil || report.Metadata.Platform == "windows" {
+		row("Host commit", util.WindowsMemorySummary(report.System.WindowsMemory))
+		if warning := util.WindowsMemoryWarning(report.System.WindowsMemory); warning != "" {
+			row("Host memory warning", warning)
+		}
+	}
 	row("Boot Mode", valueOrNA(report.System.BootMode))
 	row("Secure Boot", valueOrNA(report.System.SecureBoot))
 	if report.System.Uptime != "" {

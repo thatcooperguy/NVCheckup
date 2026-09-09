@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -52,18 +53,19 @@ func ProfileNames() string { return "chat|agent|batch|rag" }
 
 // Plan is the complete result (spec 7.8 plan.json layout plus advice).
 type Plan struct {
-	Verdict       string        `json:"verdict"`
-	ExitCode      int           `json:"exit_code"`
-	Platform      PlanPlatform  `json:"platform"`
-	Memory        PlanMemory    `json:"memory"`
-	Model         PlanModel     `json:"model"`
-	Fit           PlanFit       `json:"fit"`
-	Estimates     PlanEstimates `json:"estimates"`
-	Runtime       Command       `json:"runtime"`
-	Advice        PlanAdvice    `json:"advice"`
-	Prerequisites []Prereq      `json:"prerequisites"`
-	Warnings      []string      `json:"warnings"`
-	Notes         []string      `json:"notes,omitempty"`
+	Verdict           string                   `json:"verdict"`
+	ExitCode          int                      `json:"exit_code"`
+	Platform          PlanPlatform             `json:"platform"`
+	Memory            PlanMemory               `json:"memory"`
+	HostWindowsMemory *types.WindowsMemoryInfo `json:"host_windows_memory,omitempty"`
+	Model             PlanModel                `json:"model"`
+	Fit               PlanFit                  `json:"fit"`
+	Estimates         PlanEstimates            `json:"estimates"`
+	Runtime           Command                  `json:"runtime"`
+	Advice            PlanAdvice               `json:"advice"`
+	Prerequisites     []Prereq                 `json:"prerequisites"`
+	Warnings          []string                 `json:"warnings"`
+	Notes             []string                 `json:"notes,omitempty"`
 }
 
 // PlanPlatform is plan.json "platform".
@@ -352,6 +354,9 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 			}
 		}
 	}
+	if o.GOOS == "windows" {
+		p.HostWindowsMemory = pool.WindowsMemory
+	}
 	if s.FitsNowKnown {
 		v := s.FitsNow
 		p.Fit.FitsNow = &v
@@ -431,6 +436,11 @@ const woaLlamaCppUnconfirmed = "Unconfirmed - Windows on Arm: build llama.cpp wi
 // planWarnings collects the plan-level warnings (spec 7.8 warnings[]).
 func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Command, goos string, woa bool) []string {
 	var w []string
+	if goos == "windows" {
+		if warning := util.WindowsMemoryWarning(pool.WindowsMemory); warning != "" {
+			w = append(w, warning)
+		}
+	}
 	for _, p := range prereqs {
 		if p.Status == StatusFail || p.Status == StatusWarn {
 			w = append(w, fmt.Sprintf("%s %s: %s", p.Status, p.ID, p.Detail))
