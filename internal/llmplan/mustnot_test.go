@@ -47,9 +47,9 @@ func TestMustNot_NoNetworkOrExecImports(t *testing.T) {
 // forbiddenCommands are things llm-plan must never run (spec 7.9).
 var forbiddenCommands = []string{"docker", "podman", "pip", "pip3", "uv", "ollama", "systemctl", "sysctl", "swapon", "swapoff", "nvidia-smi", "huggingface-cli", "hf", "curl", "wget", "git", "vllm", "llama-server", "trtllm-serve", "gsettings", "nvpmodel"}
 
-// TestMustNot_OnlyReadOnlyCommand allows exactly one command invocation in
-// the package: the read-only Win32_OperatingSystem memory query.
-func TestMustNot_OnlyReadOnlyCommand(t *testing.T) {
+// Host probing belongs to the shared collector, whose read-only projection is
+// separately tested. The planner must contain no direct command invocation.
+func TestMustNot_NoDirectCommands(t *testing.T) {
 	var calls []string
 	for path, f := range packageFiles(t) {
 		ast.Inspect(f, func(n ast.Node) bool {
@@ -81,8 +81,8 @@ func TestMustNot_OnlyReadOnlyCommand(t *testing.T) {
 			return true
 		})
 	}
-	if len(calls) != 1 || !strings.Contains(calls[0], "powershell") || !strings.Contains(calls[0], "Win32_OperatingSystem") {
-		t.Errorf("expected exactly one read-only command (the Win32_OperatingSystem query), got %v", calls)
+	if len(calls) != 0 {
+		t.Errorf("expected no direct commands outside the shared collector, got %v", calls)
 	}
 }
 

@@ -206,8 +206,11 @@ func RenderCommand(in Inputs, s Sizing, profile string, cluster ClusterFacts) Co
 	ctx := fmt.Sprintf("%d", in.Context)
 	n := fmt.Sprintf("%d", in.Concurrency)
 	model := modelArg(in.Model)
-	if in.Runtime.IsContainer() && in.Model.HFRepo != "" && in.Quant.Rank() != Quant(in.Model.DefaultQuant).Rank() {
-		c.Notes = append(c.Notes, fmt.Sprintf("%s is the base checkpoint (%s); point the model argument at the %s export of this model instead (llm-plan does not choose or download repositories).", model, in.Model.DefaultQuant, strings.ToUpper(string(in.Quant))))
+	if in.Runtime.IsContainer() && in.Model.HFRepo != "" && !sameCheckpointFormat(in.Quant, Quant(in.Model.DefaultQuant)) {
+		c.Unconfirmed = append(c.Unconfirmed, fmt.Sprintf("Replace {quantized-model-repo} with a verified %s export of %s. The base checkpoint is %s and would not match the memory estimate; llm-plan does not choose or download exports.", strings.ToUpper(string(in.Quant)), model, in.Model.DefaultQuant))
+		model = "{quantized-model-repo}"
+	} else if in.Runtime.IsContainer() && model == "{model}" {
+		c.Unconfirmed = append(c.Unconfirmed, "Replace {model} with a verified checkpoint matching the model shape and weight format used in this estimate.")
 	}
 
 	switch in.Runtime {
@@ -237,16 +240,19 @@ func RenderCommand(in Inputs, s Sizing, profile string, cluster ClusterFacts) Co
 		// spec 7.6 TensorRT-LLM (S91), verbatim template.
 		c.Image = ImageTRTLLM
 		c.Command = "docker run --rm -it --gpus all --ipc host --network host --ulimit memlock=-1 --ulimit stack=67108864 -v ~/.cache/huggingface:/root/.cache/huggingface " +
-			c.Image + " trtllm-serve " + model + " --backend pytorch --port 8355 --max_batch_size " + n + " --extra_llm_api_options cfg.yaml"
+			`--mount type=bind,src="$(pwd)/cfg.yaml",dst=/etc/nvcheckup/cfg.yaml,readonly ` +
+			"-e TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1 -e TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas " +
+			c.Image + " trtllm-serve " + model + " --backend pytorch --port 8355 --max_batch_size " + n + " --max_seq_len " + ctx + " --extra_llm_api_options /etc/nvcheckup/cfg.yaml"
 		c.Extra = append(c.Extra, "cfg.yaml:", "kv_cache_config:", "  free_gpu_memory_fraction: "+u)
 		c.Env = append(c.Env, "TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1", "TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas")
-		c.Notes = append(c.Notes, "free_gpu_memory_fraction reuses u (spec 7.4).")
+		c.Notes = append(c.Notes, "Save the cfg.yaml content below in the current directory before running the command; Docker bind-mounts it read-only and passes the required environment into the container.", "free_gpu_memory_fraction reuses u (spec 7.4).")
 	case RuntimeSGLang:
 		// spec 7.6 SGLang (S94), verbatim template.
 		c.Image = ImageSGLang
 		cmd := "docker run --gpus all --ipc=host --shm-size 32g -p 30000:30000 " + c.Image +
 			" python3 -m sglang.launch_server --model-path " + model +
-			" --host 0.0.0.0 --port 30000 --trust-remote-code --tp 1 --attention-backend flashinfer --mem-fraction-static " + u
+			" --host 0.0.0.0 --port 30000 --trust-remote-code --tp 1 --attention-backend flashinfer --mem-fraction-static " + u +
+			" --context-length " + ctx + " --max-running-requests " + n
 		if in.Quant == QuantNVFP4 {
 			cmd += " --quantization modelopt_fp4"
 		}
@@ -256,21 +262,26 @@ func RenderCommand(in Inputs, s Sizing, profile string, cluster ClusterFacts) Co
 		}
 		c.Command = cmd
 		c.Notes = append(c.Notes, "--mem-fraction-static reuses u (spec 7.4; the SGLang playbook default is 0.75).")
+		c.Unconfirmed = append(c.Unconfirmed, "The SGLang image uses a floating latest-cu130 tag; record and pin its resolved digest, and verify the model and flags on that build before a demo. The local image inventory does not prove runtime compatibility.")
 	case RuntimeLlamaCpp:
 		// spec 7.6 llama.cpp (S95 S96), verbatim build and run lines.
-		c.Build = "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real"
-		repo := model
-		if repo == "{model}" {
-			repo = "{repo}"
-		}
+		// CMake detects the build machine's CUDA architecture. Hard-coding
+		// sm_121 here produced unusable binaries for ordinary RTX desktops.
+		c.Build = "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON"
+		repo := "{gguf-repo}"
+		c.Unconfirmed = append(c.Unconfirmed, "Replace {gguf-repo} with a repository containing the requested GGUF file; the catalogue's base Hugging Face checkpoint is not a GGUF download. Verify the llama-server version and build for the target GPU.")
 		kv := string(in.KV)
+		// -c is the total KV context across -np slots, while llm-plan's
+		// --context and sizing are per stream (llama.cpp server README).
+		totalCtx := fmt.Sprintf("%d", int64(in.Context)*int64(in.Concurrency))
 		c.Command = "llama-server -hf " + repo + ":" + ggufQuantTag(in.Quant) +
-			" --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c " + ctx + " -np " + n +
+			" --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c " + totalCtx + " -np " + n +
 			" --cache-type-k " + kv + " --cache-type-v " + kv + " -b 2048 -ub 2048 --jinja"
 		if ggufQuantTag(in.Quant) == "{quant}" {
 			c.Unconfirmed = append(c.Unconfirmed, fmt.Sprintf("%s has no GGUF equivalent; pick a Q4_K_M or Q8_0 GGUF of this model for llama.cpp (the sizing above used the %s factor).", strings.ToUpper(string(in.Quant)), strings.ToUpper(string(in.Quant))))
 		}
 		c.Notes = append(c.Notes,
+			fmt.Sprintf("-c %s allocates the total context for %s parallel streams of %s tokens each; verify the server's per-slot context after startup.", totalCtx, n, ctx),
 			"--no-mmap avoids the Spark mmap slow-load; keep the KV cache at q8_0 or higher (spec 7.6).",
 			"Optional speculative decoding for models that ship MTP heads: --spec-type draft-mtp --spec-draft-n-max 3 (spec 7.6).",
 			"-hf {repo}:{quant} names a GGUF repo on Hugging Face; llama-server fetches it on first start, llm-plan does not.",
@@ -284,10 +295,20 @@ func RenderCommand(in Inputs, s Sizing, profile string, cluster ClusterFacts) Co
 			fmt.Sprintf(`Environment="OLLAMA_FLASH_ATTENTION=1" "OLLAMA_KV_CACHE_TYPE=%s" "OLLAMA_NUM_PARALLEL=%s" "OLLAMA_MAX_LOADED_MODELS=1" "OLLAMA_CONTEXT_LENGTH=%s"`, kv, n, ctx),
 		)
 		c.Env = append(c.Env, "OLLAMA_FLASH_ATTENTION=1", "OLLAMA_KV_CACHE_TYPE="+kv, "OLLAMA_NUM_PARALLEL="+n, "OLLAMA_MAX_LOADED_MODELS=1", "OLLAMA_CONTEXT_LENGTH="+ctx)
+		if in.GOOS == "windows" {
+			c.Command = "ollama serve"
+			c.Extra = []string{"PowerShell: quit an existing Ollama app/server, then set these values in the same terminal before running ollama serve:"}
+			for _, env := range c.Env {
+				key, value, _ := strings.Cut(env, "=")
+				c.Extra = append(c.Extra, fmt.Sprintf("$env:%s = '%s'", key, value))
+			}
+		} else {
+			c.Notes = append(c.Notes, "The systemd drop-in takes effect only after restarting the Ollama service; llm-plan does not restart it.")
+		}
 		c.Notes = append(c.Notes,
 			"q8_0 KV only for FA-capable architectures (gemma3, gptoss, mistral3, qwen3/qwen3moe, qwen3vl); otherwise Ollama silently falls back to f16 (spec 7.6).",
 			"Verify 'ollama ps' shows 100% GPU; the default context 4096 is too small for agents (spec 7.6).",
-			"Ollama does not batch: aggregate throughput equals a single stream (spec 7.4).",
+			"Ollama supports parallel requests when memory permits. Measure aggregate throughput on the chosen model and backend; the one-stream ceiling is not an aggregate benchmark (Ollama FAQ, concurrent requests).",
 		)
 		if in.KV == KVQ8_0 && !OllamaSupportsQ8KV(in.Model.OllamaArch) {
 			c.Unconfirmed = append(c.Unconfirmed, fmt.Sprintf("architecture %q is not in the FA-capable list; Ollama will fall back to f16 KV, which doubles the KV figure above.", in.Model.OllamaArch))
@@ -309,6 +330,12 @@ func RenderCommand(in Inputs, s Sizing, profile string, cluster ClusterFacts) Co
 		}
 	}
 	return c
+}
+
+// Equal bit widths do not imply interchangeable checkpoint formats. Only
+// bf16/fp16 can use the same unquantized source with a runtime dtype conversion.
+func sameCheckpointFormat(requested, native Quant) bool {
+	return requested == native || (requested.Rank() == 0 && native.Rank() == 0)
 }
 
 // clusterEnv is the NCCL environment of spec 9: NCCL_IB_HCA names both twins

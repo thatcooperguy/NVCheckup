@@ -238,7 +238,7 @@ func RunWithReport(r *bufio.Reader, w io.Writer, report *types.Report, goos stri
 		return types.ExitError
 	}
 	pool, notes := DerivePool(report, goos, o.Timeout, o.MemoryGiB, o.Offline)
-	ports, known := ListeningPorts(report, goos)
+	ports, known := ListeningPorts(report, goos, o.Offline)
 	p, err := Build(report, pool, ports, known, o)
 	if err != nil {
 		fmt.Fprintf(w, "Error: %v\n", err)

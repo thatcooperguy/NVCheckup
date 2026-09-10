@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/thatcooperguy/nvcheckup/internal/util"
 )
 
 // Footer statements of the plan; the wording mirrors spec 7.9 and is part of
@@ -41,12 +43,18 @@ func RenderText(p *Plan) string {
 	default:
 		w("%-14s unknown", avail+":")
 	}
+	if p.Platform.OS == "windows" {
+		w("Host commit:   %s", util.WindowsMemorySummary(p.HostWindowsMemory))
+	}
 	w("Bandwidth:     %s", p.Platform.BandwidthNote)
 	w("OS floor F:    %s", p.Memory.HeadroomReason)
 	w("")
 
 	w("VERDICT")
 	w("  %s", p.Verdict)
+	if warning := util.WindowsMemoryWarning(p.HostWindowsMemory); warning != "" {
+		w("  HOST WARNING: %s", warning)
+	}
 	w("")
 
 	m, f := p.Model, p.Fit
@@ -231,12 +239,19 @@ func RenderMarkdown(p *Plan) string {
 	default:
 		w("| %s | unknown |", avail)
 	}
+	if p.Platform.OS == "windows" {
+		w("| Host commit | %s |", strings.NewReplacer("|", "\\|", "\r", " ", "\n", " ").Replace(util.WindowsMemorySummary(p.HostWindowsMemory)))
+	}
 	w("| Bandwidth | %s |", p.Platform.BandwidthNote)
 	w("| OS floor F | %s |", p.Memory.HeadroomReason)
 	w("")
 	w("## Verdict")
 	w("")
 	w("**%s**", p.Verdict)
+	if warning := util.WindowsMemoryWarning(p.HostWindowsMemory); warning != "" {
+		w("")
+		w("**Host warning:** %s", warning)
+	}
 	w("")
 	w("## Sizing (spec 7.4)")
 	w("")

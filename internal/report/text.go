@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -269,6 +270,12 @@ func GenerateText(report *types.Report) string {
 	w("  Architecture: %s\n", report.System.Architecture)
 	w("  CPU:          %s\n", report.System.CPUModel)
 	w("  RAM:          %d MB\n", report.System.RAMTotalMB)
+	if report.System.WindowsMemory != nil || report.Metadata.Platform == "windows" {
+		w("  Host commit:  %s\n", util.WindowsMemorySummary(report.System.WindowsMemory))
+		if warning := util.WindowsMemoryWarning(report.System.WindowsMemory); warning != "" {
+			w("  WARNING:      %s\n", warning)
+		}
+	}
 	if report.System.StorageFreeMB > 0 {
 		w("  Storage Free: %d MB\n", report.System.StorageFreeMB)
 	}

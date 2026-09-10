@@ -24,6 +24,7 @@ Top: RTX Spark Developer Preview Driver
 | Architecture | arm64 |
 | CPU | NVIDIA N1X (20 cores) |
 | RAM | 131072 MB |
+| Host commit | unknown (not recorded; host readiness is not established) |
 | Boot Mode | UEFI |
 | Secure Boot | Enabled |
 | Uptime | 0d 4h 12m |

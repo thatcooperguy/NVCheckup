@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/thatcooperguy/nvcheckup/internal/util"
 	"github.com/thatcooperguy/nvcheckup/pkg/types"
 )
 
@@ -52,18 +53,19 @@ func ProfileNames() string { return "chat|agent|batch|rag" }
 
 // Plan is the complete result (spec 7.8 plan.json layout plus advice).
 type Plan struct {
-	Verdict       string        `json:"verdict"`
-	ExitCode      int           `json:"exit_code"`
-	Platform      PlanPlatform  `json:"platform"`
-	Memory        PlanMemory    `json:"memory"`
-	Model         PlanModel     `json:"model"`
-	Fit           PlanFit       `json:"fit"`
-	Estimates     PlanEstimates `json:"estimates"`
-	Runtime       Command       `json:"runtime"`
-	Advice        PlanAdvice    `json:"advice"`
-	Prerequisites []Prereq      `json:"prerequisites"`
-	Warnings      []string      `json:"warnings"`
-	Notes         []string      `json:"notes,omitempty"`
+	Verdict           string                   `json:"verdict"`
+	ExitCode          int                      `json:"exit_code"`
+	Platform          PlanPlatform             `json:"platform"`
+	Memory            PlanMemory               `json:"memory"`
+	HostWindowsMemory *types.WindowsMemoryInfo `json:"host_windows_memory,omitempty"`
+	Model             PlanModel                `json:"model"`
+	Fit               PlanFit                  `json:"fit"`
+	Estimates         PlanEstimates            `json:"estimates"`
+	Runtime           Command                  `json:"runtime"`
+	Advice            PlanAdvice               `json:"advice"`
+	Prerequisites     []Prereq                 `json:"prerequisites"`
+	Warnings          []string                 `json:"warnings"`
+	Notes             []string                 `json:"notes,omitempty"`
 }
 
 // PlanPlatform is plan.json "platform".
@@ -197,7 +199,7 @@ func resolveInputs(o Options, m ModelShape, pool MemoryPool, floor float64, bw f
 	if !ok {
 		return Inputs{}, "", nil, fmt.Errorf("unknown profile %q; use %s", o.Profile, ProfileNames())
 	}
-	in := Inputs{Model: m, Context: o.Context, Concurrency: o.Concurrency, Nodes: o.Nodes,
+	in := Inputs{Model: m, Context: o.Context, Concurrency: o.Concurrency, Nodes: o.Nodes, GOOS: o.GOOS,
 		PoolBytes: pool.TotalBytes, AvailableBytes: pool.AvailableBytes, FloorBytes: floor, BandwidthBytesPerSec: bw}
 	if in.Context <= 0 {
 		in.Context = def.ctx
@@ -237,6 +239,12 @@ func resolveInputs(o Options, m ModelShape, pool MemoryPool, floor float64, bw f
 		rt = ChooseRuntime(in, kv, o.GOOS)
 	}
 	in.Runtime = rt
+	// llama.cpp represents the total KV context with a 32-bit token count.
+	// Reject products that cannot be represented instead of emitting a wrapped
+	// or truncated context in the launch recipe.
+	if rt == RuntimeLlamaCpp && uint64(in.Context) > uint64(1<<31-1)/uint64(in.Concurrency) {
+		return in, "", nil, fmt.Errorf("context x concurrency must be <= %d tokens for llama.cpp", 1<<31-1)
+	}
 	if !rt.SupportsQuant(q) {
 		return in, "", nil, fmt.Errorf("%s is a GGUF format; use --runtime llamacpp or ollama, or pick bf16/fp8/nvfp4 for %s", q, rt.Display())
 	}
@@ -280,7 +288,11 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 	if cmd.Env == nil {
 		cmd.Env = []string{} // spec 7.8: runtime.env is always present
 	}
-	facts := Facts{Report: report, Pool: pool, Ports: ports, PortsKnown: portsKnown, TritonEnv: os.Getenv("TRITON_PTXAS_PATH"), GOOS: o.GOOS}
+	tritonEnv := ""
+	if !o.Offline {
+		tritonEnv = os.Getenv("TRITON_PTXAS_PATH")
+	}
+	facts := Facts{Report: report, Pool: pool, Ports: ports, PortsKnown: portsKnown, TritonEnv: tritonEnv, GOOS: o.GOOS}
 	prereqs := Evaluate(facts, in, s, cmd)
 
 	p := &Plan{
@@ -341,6 +353,9 @@ func Build(report *types.Report, pool MemoryPool, ports []int, portsKnown bool, 
 				break
 			}
 		}
+	}
+	if o.GOOS == "windows" {
+		p.HostWindowsMemory = pool.WindowsMemory
 	}
 	if s.FitsNowKnown {
 		v := s.FitsNow
@@ -421,6 +436,11 @@ const woaLlamaCppUnconfirmed = "Unconfirmed - Windows on Arm: build llama.cpp wi
 // planWarnings collects the plan-level warnings (spec 7.8 warnings[]).
 func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Command, goos string, woa bool) []string {
 	var w []string
+	if goos == "windows" {
+		if warning := util.WindowsMemoryWarning(pool.WindowsMemory); warning != "" {
+			w = append(w, warning)
+		}
+	}
 	for _, p := range prereqs {
 		if p.Status == StatusFail || p.Status == StatusWarn {
 			w = append(w, fmt.Sprintf("%s %s: %s", p.Status, p.ID, p.Detail))
@@ -433,8 +453,10 @@ func planWarnings(in Inputs, s Sizing, pool MemoryPool, prereqs []Prereq, cmd Co
 	if pool.Unified && pool.HugePagesTotal != 0 {
 		w = append(w, fmt.Sprintf("HugePages are configured: allocatable = HugePages_Free x Hugepagesize = %s and swap counts 0 (spec 3.3).", fmtGiB(pool.Allocatable())))
 	}
-	if goos == "windows" && in.Runtime.IsContainer() {
+	if woa && in.Runtime.IsContainer() {
 		w = append(w, "Windows on Arm: only llama.cpp (clang-cl) and, when released, Arm64 Ollama/LM Studio are covered (spec 7.6).")
+	} else if goos == "windows" && in.Runtime.IsContainer() {
+		w = append(w, "The container command is a Linux shell recipe. Run it in a separately configured WSL2/Linux GPU environment; the Windows host report does not verify that environment.")
 	}
 	if woa && (in.Runtime == RuntimeLlamaCpp || in.Runtime == RuntimeOllama) {
 		w = append(w, woaLlamaCppUnconfirmed)
@@ -545,7 +567,7 @@ func advise(in Inputs, s Sizing, m ModelShape, pool MemoryPool) PlanAdvice {
 		a.Lines = append(a.Lines, fmt.Sprintf("u = ceil05((W + KV + R) / MemTotal) = %.2f, clamped to 0.30..0.85 (spec 7.4).", s.Utilization))
 	}
 	if in.Runtime == RuntimeOllama {
-		a.Lines = append(a.Lines, "Ollama does not batch: aggregate throughput equals one stream; vLLM aggregate reaches hundreds of tok/s at c=8..256 (spec 7.4).")
+		a.Lines = append(a.Lines, "Ollama supports parallel requests when memory permits; context memory scales with concurrency. Compare measured aggregate throughput on your model and hardware instead of treating the one-stream estimate as an aggregate benchmark.")
 	}
 
 	// Catalogue models that would fit at their default quant with the same context/concurrency.

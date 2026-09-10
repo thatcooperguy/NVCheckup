@@ -81,21 +81,22 @@ func DefaultRunConfig() RunConfig {
 
 // SystemInfo holds universal system snapshot data
 type SystemInfo struct {
-	OSName        string `json:"os_name"`
-	OSVersion     string `json:"os_version"`
-	OSBuild       string `json:"os_build,omitempty"`
-	KernelVersion string `json:"kernel_version,omitempty"`
-	Architecture  string `json:"architecture"`
-	BootMode      string `json:"boot_mode,omitempty"`
-	SecureBoot    string `json:"secure_boot,omitempty"`
-	CPUModel      string `json:"cpu_model"`
-	RAMTotalMB    int64  `json:"ram_total_mb"`
-	StorageFreeMB int64  `json:"storage_free_mb,omitempty"`
-	Uptime        string `json:"uptime"`
-	Timezone      string `json:"timezone,omitempty"`
-	Hostname      string `json:"hostname,omitempty"`       // will be redacted
-	IsJetson      bool   `json:"is_jetson,omitempty"`      // NVIDIA Jetson / Tegra board (no nvidia-smi; GPU is not on PCIe)
-	JetsonRelease string `json:"jetson_release,omitempty"` // first line of /etc/nv_tegra_release, e.g. "# R36 (release), REVISION: 4.3, ..."
+	OSName        string             `json:"os_name"`
+	OSVersion     string             `json:"os_version"`
+	OSBuild       string             `json:"os_build,omitempty"`
+	KernelVersion string             `json:"kernel_version,omitempty"`
+	Architecture  string             `json:"architecture"`
+	BootMode      string             `json:"boot_mode,omitempty"`
+	SecureBoot    string             `json:"secure_boot,omitempty"`
+	CPUModel      string             `json:"cpu_model"`
+	RAMTotalMB    int64              `json:"ram_total_mb"`
+	WindowsMemory *WindowsMemoryInfo `json:"windows_memory,omitempty"`
+	StorageFreeMB int64              `json:"storage_free_mb,omitempty"`
+	Uptime        string             `json:"uptime"`
+	Timezone      string             `json:"timezone,omitempty"`
+	Hostname      string             `json:"hostname,omitempty"`       // will be redacted
+	IsJetson      bool               `json:"is_jetson,omitempty"`      // NVIDIA Jetson / Tegra board (no nvidia-smi; GPU is not on PCIe)
+	JetsonRelease string             `json:"jetson_release,omitempty"` // first line of /etc/nv_tegra_release, e.g. "# R36 (release), REVISION: 4.3, ..."
 }
 
 // GPUInfo holds information about a single GPU

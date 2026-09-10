@@ -41,7 +41,7 @@ func TestRenderCommand_TRTLLM(t *testing.T) {
 	in, s := llama8BInputs(t, RuntimeTRTLLM, KVF16)
 	c := RenderCommand(in, s, "chat", ClusterFacts{})
 	for _, frag := range []string{
-		"docker run --rm -it --gpus all --ipc host --network host --ulimit memlock=-1 --ulimit stack=67108864 -v ~/.cache/huggingface:/root/.cache/huggingface nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 trtllm-serve meta-llama/Llama-3.1-8B-Instruct --backend pytorch --port 8355 --max_batch_size 4 --extra_llm_api_options cfg.yaml",
+		`docker run --rm -it --gpus all --ipc host --network host --ulimit memlock=-1 --ulimit stack=67108864 -v ~/.cache/huggingface:/root/.cache/huggingface --mount type=bind,src="$(pwd)/cfg.yaml",dst=/etc/nvcheckup/cfg.yaml,readonly -e TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1 -e TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13 trtllm-serve meta-llama/Llama-3.1-8B-Instruct --backend pytorch --port 8355 --max_batch_size 4 --max_seq_len 32768 --extra_llm_api_options /etc/nvcheckup/cfg.yaml`,
 	} {
 		if c.Command != frag {
 			t.Errorf("TRT-LLM command:\n got %s\nwant %s", c.Command, frag)
@@ -59,7 +59,7 @@ func TestRenderCommand_TRTLLM(t *testing.T) {
 func TestRenderCommand_SGLang(t *testing.T) {
 	in, s := llama8BInputs(t, RuntimeSGLang, KVF16)
 	c := RenderCommand(in, s, "chat", ClusterFacts{})
-	want := "docker run --gpus all --ipc=host --shm-size 32g -p 30000:30000 lmsysorg/sglang:latest-cu130 python3 -m sglang.launch_server --model-path meta-llama/Llama-3.1-8B-Instruct --host 0.0.0.0 --port 30000 --trust-remote-code --tp 1 --attention-backend flashinfer --mem-fraction-static 0.35"
+	want := "docker run --gpus all --ipc=host --shm-size 32g -p 30000:30000 lmsysorg/sglang:latest-cu130 python3 -m sglang.launch_server --model-path meta-llama/Llama-3.1-8B-Instruct --host 0.0.0.0 --port 30000 --trust-remote-code --tp 1 --attention-backend flashinfer --mem-fraction-static 0.35 --context-length 32768 --max-running-requests 4"
 	if c.Command != want {
 		t.Errorf("SGLang command:\n got %s\nwant %s", c.Command, want)
 	}
@@ -73,10 +73,10 @@ func TestRenderCommand_LlamaCpp(t *testing.T) {
 	in, s := llama8BInputs(t, RuntimeLlamaCpp, KVQ8_0)
 	in.Quant = QuantQ4KM
 	c := RenderCommand(in, s, "chat", ClusterFacts{})
-	if c.Build != "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON -DCMAKE_CUDA_ARCHITECTURES=121a-real" {
+	if c.Build != "cmake -B build -DGGML_NATIVE=ON -DGGML_CUDA=ON -DGGML_CURL=ON" {
 		t.Errorf("build line: %s", c.Build)
 	}
-	want := "llama-server -hf meta-llama/Llama-3.1-8B-Instruct:Q4_K_M --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 32768 -np 4 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja"
+	want := "llama-server -hf {gguf-repo}:Q4_K_M --host 0.0.0.0 --port 30000 -ngl 999 -fa on --no-mmap -c 131072 -np 4 --cache-type-k q8_0 --cache-type-v q8_0 -b 2048 -ub 2048 --jinja"
 	if c.Command != want {
 		t.Errorf("llama.cpp command:\n got %s\nwant %s", c.Command, want)
 	}
